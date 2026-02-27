@@ -325,7 +325,10 @@ mod tests {
 
     #[test]
     fn sanitize_filename_keeps_safe_chars() {
-        assert_eq!(sanitize_filename("report-2024_v1.pdf"), "report-2024_v1.pdf");
+        assert_eq!(
+            sanitize_filename("report-2024_v1.pdf"),
+            "report-2024_v1.pdf"
+        );
     }
 
     #[test]

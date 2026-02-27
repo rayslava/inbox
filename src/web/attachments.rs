@@ -1,8 +1,10 @@
+use anodized::contract;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use std::path::{Component, PathBuf};
 use tracing::warn;
 
 use super::AdminState;
@@ -14,15 +16,31 @@ pub(crate) async fn serve_attachment(
     State(state): State<AdminState>,
     Path(path): Path<String>,
 ) -> Response {
-    // Reject any attempt at path traversal before touching the filesystem
-    if path.contains("..") {
+    let Some(rel_path) = normalize_relative_path(&path) else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+
+    let base = &state.cfg.general.attachments_dir;
+    let base_canon = tokio::fs::canonicalize(base)
+        .await
+        .unwrap_or_else(|_| base.clone());
+    let file_path = base.join(&rel_path);
+    let file_canon = match tokio::fs::canonicalize(&file_path).await {
+        Ok(path) => path,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(e) => {
+            warn!(?e, path, "Attachment canonicalize error");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    if !file_canon.starts_with(&base_canon) {
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let base = &state.cfg.general.attachments_dir;
-    let file_path = base.join(&path);
-
-    let data = match tokio::fs::read(&file_path).await {
+    let data = match tokio::fs::read(&file_canon).await {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return StatusCode::NOT_FOUND.into_response();
@@ -33,9 +51,28 @@ pub(crate) async fn serve_attachment(
         }
     };
 
-    let mime = mime_guess::from_path(&file_path)
+    let mime = mime_guess::from_path(&file_canon)
         .first_or_octet_stream()
         .to_string();
 
     ([(axum::http::header::CONTENT_TYPE, mime)], data).into_response()
+}
+
+#[must_use]
+#[contract(requires: !path.is_empty())]
+fn normalize_relative_path(path: &str) -> Option<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for component in std::path::Path::new(path).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) | Component::ParentDir => return None,
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        return None;
+    }
+
+    Some(normalized)
 }

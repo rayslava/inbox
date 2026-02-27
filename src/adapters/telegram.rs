@@ -1,6 +1,7 @@
 use std::fmt::Write;
 use std::path::PathBuf;
 
+use anodized::contract;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -56,7 +57,7 @@ impl InputAdapter for TelegramAdapter {
 }
 
 /// Build the teloxide update handler tree. Exposed for integration tests.
-#[must_use] 
+#[must_use]
 pub fn build_handler(
     allowed_user_ids: Vec<i64>,
     attachments_dir: PathBuf,
@@ -150,7 +151,7 @@ async fn extract_message_content(
 
     // File to download: (file_id_str, filename, media_kind)
     let file_info: Option<(String, String, MediaKind)> = if let Some(doc) = msg.document() {
-        let name = doc.file_name.clone().unwrap_or_else(|| "document".into());
+        let name = sanitize_filename(&doc.file_name.clone().unwrap_or_else(|| "document".into()));
         Some((doc.file.id.to_string(), name, MediaKind::Document))
     } else if let Some(photos) = msg.photo() {
         photos
@@ -161,7 +162,11 @@ async fn extract_message_content(
             .file_name
             .clone()
             .unwrap_or_else(|| "audio.mp3".into());
-        Some((audio.file.id.to_string(), name, MediaKind::Audio))
+        Some((
+            audio.file.id.to_string(),
+            sanitize_filename(&name),
+            MediaKind::Audio,
+        ))
     } else if let Some(voice) = msg.voice() {
         Some((
             voice.file.id.to_string(),
@@ -173,7 +178,11 @@ async fn extract_message_content(
             .file_name
             .clone()
             .unwrap_or_else(|| "video.mp4".into());
-        Some((video.file.id.to_string(), name, MediaKind::Video))
+        Some((
+            video.file.id.to_string(),
+            sanitize_filename(&name),
+            MediaKind::Video,
+        ))
     } else if let Some(sticker) = msg.sticker() {
         Some((
             sticker.file.id.to_string(),
@@ -185,7 +194,11 @@ async fn extract_message_content(
             .file_name
             .clone()
             .unwrap_or_else(|| "animation.mp4".into());
-        Some((anim.file.id.to_string(), name, MediaKind::Animation))
+        Some((
+            anim.file.id.to_string(),
+            sanitize_filename(&name),
+            MediaKind::Animation,
+        ))
     } else {
         None
     };
@@ -246,4 +259,30 @@ async fn download_telegram_file(
         mime_type: mime,
         media_kind,
     })
+}
+
+#[must_use]
+#[contract(requires: !name.is_empty())]
+fn sanitize_filename(name: &str) -> String {
+    let basename = std::path::Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("attachment");
+
+    let cleaned: String = basename
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    if cleaned.is_empty() {
+        "attachment".to_owned()
+    } else {
+        cleaned
+    }
 }

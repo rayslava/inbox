@@ -94,10 +94,7 @@ async fn blocked_user_is_not_enqueued() {
     bot.dispatch().await;
 
     let msg = rx.try_recv();
-    assert!(
-        msg.is_err(),
-        "blocked user should not produce a message"
-    );
+    assert!(msg.is_err(), "blocked user should not produce a message");
 }
 
 // ── Special message types ─────────────────────────────────────────────────────

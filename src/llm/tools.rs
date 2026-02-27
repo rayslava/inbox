@@ -491,7 +491,12 @@ mod tests {
         let executor = default_tools(test_fetcher());
         let id = uuid::Uuid::new_v4();
         let result = executor
-            .execute("nonexistent", &serde_json::json!({}), id, std::path::Path::new("/tmp"))
+            .execute(
+                "nonexistent",
+                &serde_json::json!({}),
+                id,
+                std::path::Path::new("/tmp"),
+            )
             .await;
         assert!(result.is_err());
     }
@@ -501,7 +506,12 @@ mod tests {
         let executor = default_tools(test_fetcher());
         let id = uuid::Uuid::new_v4();
         let result = executor
-            .execute("scrape_page", &serde_json::json!({}), id, std::path::Path::new("/tmp"))
+            .execute(
+                "scrape_page",
+                &serde_json::json!({}),
+                id,
+                std::path::Path::new("/tmp"),
+            )
             .await;
         assert!(result.is_err());
     }
@@ -511,7 +521,12 @@ mod tests {
         let executor = default_tools(test_fetcher());
         let id = uuid::Uuid::new_v4();
         let result = executor
-            .execute("download_file", &serde_json::json!({}), id, std::path::Path::new("/tmp"))
+            .execute(
+                "download_file",
+                &serde_json::json!({}),
+                id,
+                std::path::Path::new("/tmp"),
+            )
             .await;
         assert!(result.is_err());
     }
@@ -547,7 +562,9 @@ mod tests {
             response_path: "",
             timeout_secs: 5,
         };
-        let result = run_http_tool(&client, cfg, "http://x.com", "").await.unwrap();
+        let result = run_http_tool(&client, cfg, "http://x.com", "")
+            .await
+            .unwrap();
         assert_eq!(result.text(), "page text");
     }
 
@@ -597,7 +614,9 @@ mod tests {
             response_path: "",
             timeout_secs: 5,
         };
-        let result = run_http_tool(&client, cfg, "http://x.com", "").await.unwrap();
+        let result = run_http_tool(&client, cfg, "http://x.com", "")
+            .await
+            .unwrap();
         assert_eq!(result.text(), "ok");
     }
 

@@ -108,16 +108,23 @@ impl LlmClient for OpenRouterClient {
 
     #[instrument(skip(self, req), fields(model = %self.model))]
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
+        let LlmRequest {
+            system_prompt,
+            user_content,
+            tool_definitions,
+            ..
+        } = req;
+
         let messages = vec![
             ChatMessage {
                 role: "system".into(),
-                content: serde_json::Value::String(req.system_prompt),
+                content: serde_json::Value::String(system_prompt),
                 tool_calls: None,
                 tool_call_id: None,
             },
             ChatMessage {
                 role: "user".into(),
-                content: serde_json::Value::String(req.user_content),
+                content: serde_json::Value::String(user_content),
                 tool_calls: None,
                 tool_call_id: None,
             },
@@ -126,7 +133,7 @@ impl LlmClient for OpenRouterClient {
         let body = ChatRequest {
             model: &self.model,
             messages,
-            tools: vec![],
+            tools: tool_definitions,
             tool_choice: None,
         };
 
@@ -298,10 +305,7 @@ mod tests {
             .await;
 
         let client = make_client(&server.uri());
-        let req = LlmRequest {
-            system_prompt: "sys".into(),
-            user_content: "user".into(),
-        };
+        let req = LlmRequest::simple("sys", "user");
         let result = client.complete(req).await.unwrap();
         assert!(matches!(result, LlmCompletion::Message(_)));
     }
@@ -316,10 +320,7 @@ mod tests {
             .await;
 
         let client = make_client(&server.uri());
-        let req = LlmRequest {
-            system_prompt: "sys".into(),
-            user_content: "user".into(),
-        };
+        let req = LlmRequest::simple("sys", "user");
         let result = client.complete(req).await;
         assert!(result.is_err());
     }
@@ -339,10 +340,7 @@ mod tests {
             .await;
 
         let client = make_client(&server.uri());
-        let req = LlmRequest {
-            system_prompt: "sys".into(),
-            user_content: "user".into(),
-        };
+        let req = LlmRequest::simple("sys", "user");
         let result = client.complete(req).await;
         assert!(result.is_err());
     }
@@ -372,10 +370,7 @@ mod tests {
             .await;
 
         let client = make_client(&server.uri());
-        let req = LlmRequest {
-            system_prompt: "sys".into(),
-            user_content: "user".into(),
-        };
+        let req = LlmRequest::simple("sys", "user");
         let result = client.complete(req).await.unwrap();
         assert!(matches!(result, LlmCompletion::ToolCalls(_)));
     }

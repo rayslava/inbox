@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anodized::contract;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -22,6 +23,7 @@ pub struct Pipeline {
     pub llm: Arc<crate::llm::LlmChain>,
     pub writer: Arc<dyn OutputWriter>,
     pub fetcher: UrlFetcher,
+    in_flight: Arc<tokio::sync::Semaphore>,
 }
 
 impl Pipeline {
@@ -31,19 +33,27 @@ impl Pipeline {
         writer: Arc<dyn OutputWriter>,
     ) -> Self {
         let fetcher = UrlFetcher::new(&config.url_fetch);
+        let in_flight_limit =
+            std::thread::available_parallelism().map_or(8, std::num::NonZeroUsize::get) * 4;
         Self {
             config,
             llm,
             writer,
             fetcher,
+            in_flight: Arc::new(tokio::sync::Semaphore::new(in_flight_limit)),
         }
     }
 
+    #[contract(requires: true)]
     pub async fn run(self: Arc<Self>, mut rx: mpsc::Receiver<IncomingMessage>) {
         info!("Pipeline started, waiting for messages");
         while let Some(msg) = rx.recv().await {
+            let Ok(permit) = Arc::clone(&self.in_flight).acquire_owned().await else {
+                break;
+            };
             let pipeline = Arc::clone(&self);
             tokio::spawn(async move {
+                let _permit = permit;
                 let source = msg.source_name();
                 let timer_start = std::time::Instant::now();
                 match pipeline.process(msg).await {
@@ -194,7 +204,11 @@ impl Pipeline {
             "Starting LLM processing"
         );
 
-        let req = LlmRequest::from_enriched(&enriched, &self.config.llm);
+        let req = LlmRequest::from_enriched(
+            &enriched,
+            &self.config.llm,
+            &self.config.general.attachments_dir,
+        );
         match self.llm.complete(req).await {
             LlmOutcome::Success(resp) => {
                 info!(

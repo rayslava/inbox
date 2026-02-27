@@ -35,7 +35,12 @@ pub fn is_authenticated(headers: &HeaderMap, store: &SessionStore, ttl_days: u64
     };
     let age = Utc::now() - *entry;
     let ttl = Duration::days(i64::try_from(ttl_days).unwrap_or(365 * 10));
-    age < ttl
+    let valid = age < ttl;
+    if !valid {
+        drop(entry);
+        store.remove(&token);
+    }
+    valid
 }
 
 /// Verify a plain-text password against a stored Argon2id hash.

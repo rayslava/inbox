@@ -36,6 +36,7 @@ pub fn admin_router(
     session_store: Arc<auth::SessionStore>,
     metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
 ) -> Router {
+    let web_ui_enabled = cfg.web_ui.enabled;
     let state = AdminState {
         cfg,
         readiness,
@@ -43,15 +44,20 @@ pub fn admin_router(
         metrics_handle,
     };
 
-    Router::new()
+    let mut router = Router::new()
         .route("/health/live", get(live_handler))
         .route("/health/ready", get(ready_handler))
-        .route("/metrics", get(metrics_handler))
-        .route("/login", get(login_get).post(login_post))
-        .route("/logout", get(logout_handler))
-        .route("/ui", get(ui_handler))
-        .route("/attachments/{*path}", get(attachments::serve_attachment))
-        .with_state(state)
+        .route("/metrics", get(metrics_handler));
+
+    if web_ui_enabled {
+        router = router
+            .route("/login", get(login_get).post(login_post))
+            .route("/logout", get(logout_handler))
+            .route("/ui", get(ui_handler))
+            .route("/attachments/{*path}", get(attachments::serve_attachment));
+    }
+
+    router.with_state(state)
 }
 
 // ── Health handlers ───────────────────────────────────────────────────────────
@@ -290,17 +296,19 @@ mod tests {
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(ct.contains("text/html"));
     }
 
     #[tokio::test]
     async fn ui_without_session_redirects_to_login() {
         let router = make_router(true);
-        let req = Request::builder()
-            .uri("/ui")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/ui").body(Body::empty()).unwrap();
         let resp = router.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let loc = resp.headers().get("location").unwrap().to_str().unwrap();
@@ -330,10 +338,7 @@ mod tests {
         let resp = router.oneshot(req).await.unwrap();
         // Redirect to /login
         let status = resp.status();
-        assert!(
-            status.is_redirection(),
-            "expected redirect, got {status}"
-        );
+        assert!(status.is_redirection(), "expected redirect, got {status}");
     }
 
     #[tokio::test]

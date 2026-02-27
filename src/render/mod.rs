@@ -5,8 +5,8 @@ use crate::message::ProcessedMessage;
 
 pub struct AttachmentRef<'a> {
     pub name: &'a str,
-    pub path: &'a str,
-    pub path_rel: &'a str, // relative to attachments_dir, for /attachments/* URL
+    pub path: String,
+    pub path_rel: String, // relative to attachments_dir, for /attachments/* URL
 }
 
 #[derive(Template)]
@@ -67,8 +67,8 @@ pub fn render_org_node(
             let rel = relative_path(&a.saved_path, attachments_dir);
             AttachmentRef {
                 name: &a.original_name,
-                path: Box::leak(path_str.into_owned().into_boxed_str()),
-                path_rel: Box::leak(rel.into_boxed_str()),
+                path: path_str.into_owned(),
+                path_rel: rel,
             }
         })
         .collect();
@@ -185,8 +185,16 @@ mod tests {
             source: "http",
             urls: &[],
             attachments: &[
-                AttachmentRef { name: "a.pdf", path: "/p/a.pdf", path_rel: "a.pdf" },
-                AttachmentRef { name: "b.jpg", path: "/p/b.jpg", path_rel: "b.jpg" },
+                AttachmentRef {
+                    name: "a.pdf",
+                    path: "/p/a.pdf".to_owned(),
+                    path_rel: "a.pdf".to_owned(),
+                },
+                AttachmentRef {
+                    name: "b.jpg",
+                    path: "/p/b.jpg".to_owned(),
+                    path_rel: "b.jpg".to_owned(),
+                },
             ],
             llm_backend: "mock",
             summary: "s",

@@ -94,15 +94,22 @@ impl LlmClient for OllamaClient {
 
     #[instrument(skip(self, req), fields(model = %self.model))]
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
+        let LlmRequest {
+            system_prompt,
+            user_content,
+            tool_definitions,
+            ..
+        } = req;
+
         let messages = vec![
             OllamaMessage {
                 role: "system".into(),
-                content: req.system_prompt,
+                content: system_prompt,
                 tool_calls: None,
             },
             OllamaMessage {
                 role: "user".into(),
-                content: req.user_content,
+                content: user_content,
                 tool_calls: None,
             },
         ];
@@ -111,7 +118,7 @@ impl LlmClient for OllamaClient {
             model: &self.model,
             messages,
             stream: false,
-            tools: vec![],
+            tools: tool_definitions,
         };
 
         let resp = self
@@ -188,10 +195,7 @@ mod tests {
             .await;
 
         let client = make_client(&server.uri());
-        let req = LlmRequest {
-            system_prompt: "sys".into(),
-            user_content: "user".into(),
-        };
+        let req = LlmRequest::simple("sys", "user");
         let result = client.complete(req).await.unwrap();
         assert!(matches!(result, LlmCompletion::Message(_)));
     }
@@ -206,10 +210,7 @@ mod tests {
             .await;
 
         let client = make_client(&server.uri());
-        let req = LlmRequest {
-            system_prompt: "sys".into(),
-            user_content: "user".into(),
-        };
+        let req = LlmRequest::simple("sys", "user");
         assert!(client.complete(req).await.is_err());
     }
 
@@ -236,10 +237,7 @@ mod tests {
             .await;
 
         let client = make_client(&server.uri());
-        let req = LlmRequest {
-            system_prompt: "sys".into(),
-            user_content: "user".into(),
-        };
+        let req = LlmRequest::simple("sys", "user");
         let result = client.complete(req).await.unwrap();
         assert!(matches!(result, LlmCompletion::ToolCalls(_)));
     }

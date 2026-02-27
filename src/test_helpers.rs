@@ -14,7 +14,7 @@ use crate::{
 #[must_use]
 pub fn mock_llm_chain(response: LlmResponse) -> Arc<LlmChain> {
     let client = Box::new(MockLlm::new(response)) as Box<dyn LlmClient>;
-    Arc::new(LlmChain::new(vec![client], FallbackMode::Raw, 3))
+    Arc::new(LlmChain::new(vec![client], FallbackMode::Raw, 3, None))
 }
 
 /// Build a default `LlmResponse` for use in tests.
