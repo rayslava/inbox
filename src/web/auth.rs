@@ -74,3 +74,33 @@ pub struct LoginForm {
     pub username: String,
     pub password: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_session_token, is_authenticated, new_session_store};
+    use axum::http::{HeaderMap, HeaderValue, header};
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn extract_session_token_from_cookie_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str("a=1; session=abc123; z=9").expect("header"),
+        );
+        assert_eq!(extract_session_token(&headers).as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn is_authenticated_removes_expired_session() {
+        let store = new_session_store();
+        store.insert("deadbeef".into(), Utc::now() - Duration::days(8));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str("session=deadbeef").expect("header"),
+        );
+        assert!(!is_authenticated(&headers, &store, 7));
+        assert!(!store.contains_key("deadbeef"));
+    }
+}

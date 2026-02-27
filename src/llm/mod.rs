@@ -291,6 +291,7 @@ mod tests {
     use crate::config::FallbackMode;
     use crate::message::{EnrichedMessage, IncomingMessage, MessageSource, SourceMetadata};
     use crate::url_content::UrlContent;
+    use async_trait::async_trait;
 
     fn make_enriched(text: &str) -> EnrichedMessage {
         let msg = IncomingMessage::new(
@@ -385,6 +386,64 @@ mod tests {
     fn max_tool_turns_accessor() {
         let chain = LlmChain::new(vec![], FallbackMode::Raw, 7, None);
         assert_eq!(chain.max_tool_turns(), 7);
+    }
+
+    struct ToolCallsLlm;
+    #[async_trait]
+    impl LlmClient for ToolCallsLlm {
+        fn name(&self) -> &str {
+            "toolcalls"
+        }
+        fn retries(&self) -> u32 {
+            1
+        }
+        async fn complete(&self, _req: LlmRequest) -> Result<LlmCompletion, InboxError> {
+            Ok(LlmCompletion::ToolCalls(vec![ToolCall {
+                id: "t1".into(),
+                name: "scrape_page".into(),
+                arguments: serde_json::json!({"url":"https://example.com"}),
+            }]))
+        }
+    }
+
+    struct EmptyToolCallsLlm;
+    #[async_trait]
+    impl LlmClient for EmptyToolCallsLlm {
+        fn name(&self) -> &str {
+            "empty_toolcalls"
+        }
+        fn retries(&self) -> u32 {
+            1
+        }
+        async fn complete(&self, _req: LlmRequest) -> Result<LlmCompletion, InboxError> {
+            Ok(LlmCompletion::ToolCalls(vec![]))
+        }
+    }
+
+    #[tokio::test]
+    async fn chain_tool_calls_without_executor_falls_back() {
+        let chain = LlmChain::new(
+            vec![Box::new(ToolCallsLlm) as Box<dyn LlmClient>],
+            FallbackMode::Raw,
+            2,
+            None,
+        );
+        let req = LlmRequest::simple("s", "u");
+        let outcome = chain.complete(req).await;
+        assert!(matches!(outcome, LlmOutcome::RawFallback));
+    }
+
+    #[tokio::test]
+    async fn chain_empty_tool_calls_falls_back() {
+        let chain = LlmChain::new(
+            vec![Box::new(EmptyToolCallsLlm) as Box<dyn LlmClient>],
+            FallbackMode::Raw,
+            2,
+            None,
+        );
+        let req = LlmRequest::simple("s", "u");
+        let outcome = chain.complete(req).await;
+        assert!(matches!(outcome, LlmOutcome::RawFallback));
     }
 }
 

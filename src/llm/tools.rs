@@ -693,6 +693,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_crawl_url_missing_url_arg_errors() {
+        let tools = vec![Tool {
+            name: "crawl_url".into(),
+            description: "crawl".into(),
+            enabled: true,
+            backend: ToolBackendConfig::Crawler {
+                endpoint: "http://localhost:11235/crawl".into(),
+                auth_header: None,
+                timeout_secs: 5,
+                priority: 10,
+            },
+        }];
+        let executor = ToolExecutor::new(tools, test_fetcher());
+        let id = uuid::Uuid::new_v4();
+        let result = executor
+            .execute(
+                "crawl_url",
+                &serde_json::json!({}),
+                id,
+                std::path::Path::new("/tmp"),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_crawl_url_with_wrong_backend_errors() {
+        let tools = vec![Tool {
+            name: "crawl_url".into(),
+            description: "crawl".into(),
+            enabled: true,
+            backend: ToolBackendConfig::Internal,
+        }];
+        let executor = ToolExecutor::new(tools, test_fetcher());
+        let id = uuid::Uuid::new_v4();
+        let result = executor
+            .execute(
+                "crawl_url",
+                &serde_json::json!({"url":"https://example.com"}),
+                id,
+                std::path::Path::new("/tmp"),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_scrape_page_with_crawler_backend_errors() {
+        let tools = vec![Tool {
+            name: "scrape_page".into(),
+            description: "scrape".into(),
+            enabled: true,
+            backend: ToolBackendConfig::Crawler {
+                endpoint: "http://localhost:11235/crawl".into(),
+                auth_header: None,
+                timeout_secs: 5,
+                priority: 10,
+            },
+        }];
+        let executor = ToolExecutor::new(tools, test_fetcher());
+        let id = uuid::Uuid::new_v4();
+        let result = executor
+            .execute(
+                "scrape_page",
+                &serde_json::json!({"url":"https://example.com"}),
+                id,
+                std::path::Path::new("/tmp"),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_download_file_with_crawler_backend_errors() {
+        let tools = vec![Tool {
+            name: "download_file".into(),
+            description: "download".into(),
+            enabled: true,
+            backend: ToolBackendConfig::Crawler {
+                endpoint: "http://localhost:11235/crawl".into(),
+                auth_header: None,
+                timeout_secs: 5,
+                priority: 10,
+            },
+        }];
+        let executor = ToolExecutor::new(tools, test_fetcher());
+        let id = uuid::Uuid::new_v4();
+        let result = executor
+            .execute(
+                "download_file",
+                &serde_json::json!({"url":"https://example.com"}),
+                id,
+                std::path::Path::new("/tmp"),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
     async fn run_shell_tool_empty_argv_errors() {
         let result = run_shell_tool(&[], "http://x.com", "", 5).await;
         assert!(result.is_err());
@@ -814,6 +913,103 @@ mod tests {
             .unwrap();
         assert!(result.text().contains("Title: T"));
         assert!(result.text().contains("# md"));
+    }
+
+    #[tokio::test]
+    async fn run_crawler_tool_uses_html_when_markdown_missing() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "success": true,
+            "results": [{
+                "metadata": {"title": "T"},
+                "markdown": {"raw_markdown": ""},
+                "cleaned_html": "<p>html only</p>"
+            }]
+        });
+        Mock::given(method("POST"))
+            .and(path("/crawl"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(body),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let cfg = CrawlToolCfg {
+            endpoint: &format!("{}/crawl", server.uri()),
+            auth_header: None,
+            timeout_secs: 5,
+            priority: 10,
+        };
+        let result = run_crawler_tool(&client, cfg, "http://x.com")
+            .await
+            .unwrap();
+        assert!(result.text().contains("HTML fallback:"));
+        assert!(result.text().contains("html only"));
+    }
+
+    #[tokio::test]
+    async fn run_crawler_tool_errors_when_results_missing() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "success": true,
+            "results": []
+        });
+        Mock::given(method("POST"))
+            .and(path("/crawl"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(body),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let cfg = CrawlToolCfg {
+            endpoint: &format!("{}/crawl", server.uri()),
+            auth_header: None,
+            timeout_secs: 5,
+            priority: 10,
+        };
+        let result = run_crawler_tool(&client, cfg, "http://x.com").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_crawler_tool_handles_empty_content() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "success": true,
+            "results": [{
+                "metadata": {"title": ""},
+                "markdown": {"raw_markdown": ""},
+                "cleaned_html": ""
+            }]
+        });
+        Mock::given(method("POST"))
+            .and(path("/crawl"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(body),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let cfg = CrawlToolCfg {
+            endpoint: &format!("{}/crawl", server.uri()),
+            auth_header: None,
+            timeout_secs: 5,
+            priority: 10,
+        };
+        let result = run_crawler_tool(&client, cfg, "http://x.com")
+            .await
+            .expect("crawler result");
+        assert!(result.text().contains("no markdown/html"));
     }
 
     #[test]

@@ -207,3 +207,48 @@ fn parse_email_raw(raw: &[u8]) -> Option<IncomingMessage> {
         },
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_email_raw;
+    use crate::message::SourceMetadata;
+
+    #[test]
+    fn parse_email_with_body_prefers_body_text() {
+        let raw = b"Subject: Hi\nFrom: a@example.com\nMessage-ID: <m1>\n\nHello\nWorld";
+        let msg = parse_email_raw(raw).expect("message parsed");
+        assert_eq!(msg.text, "Hello\nWorld");
+        match msg.metadata {
+            SourceMetadata::Email {
+                subject,
+                from,
+                message_id,
+            } => {
+                assert_eq!(subject, "Hi");
+                assert_eq!(from, "a@example.com");
+                assert_eq!(message_id.as_deref(), Some("<m1>"));
+            }
+            _ => panic!("expected email metadata"),
+        }
+    }
+
+    #[test]
+    fn parse_email_without_body_falls_back_to_subject() {
+        let raw = b"Subject: SubjectOnly\nFrom: b@example.com\n\n";
+        let msg = parse_email_raw(raw).expect("message parsed");
+        assert_eq!(msg.text, "SubjectOnly");
+    }
+
+    #[test]
+    fn parse_email_empty_returns_none() {
+        let raw = b"\n\n";
+        assert!(parse_email_raw(raw).is_none());
+    }
+
+    #[test]
+    fn parse_email_without_headers_uses_body() {
+        let raw = b"\njust body";
+        let msg = parse_email_raw(raw).expect("message parsed");
+        assert_eq!(msg.text, "just body");
+    }
+}

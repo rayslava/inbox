@@ -77,3 +77,25 @@ fn normalize_relative_path(path: &str) -> Option<PathBuf> {
 
     Some(normalized)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_relative_path;
+    use std::path::Path;
+
+    #[test]
+    fn normalize_relative_path_accepts_safe_relative() {
+        let p = normalize_relative_path("aa/bb/file.png").expect("normalized");
+        assert_eq!(p, Path::new("aa/bb/file.png"));
+    }
+
+    #[test]
+    fn normalize_relative_path_rejects_parent_dir() {
+        assert!(normalize_relative_path("../etc/passwd").is_none());
+    }
+
+    #[test]
+    fn normalize_relative_path_rejects_absolute() {
+        assert!(normalize_relative_path("/tmp/file").is_none());
+    }
+}

@@ -505,4 +505,29 @@ mod tests {
         let result = interpolate_env("x = \"${DEFINITELY_NOT_SET_VAR_INBOX}\"");
         assert!(result.contains("${DEFINITELY_NOT_SET_VAR_INBOX}"));
     }
+
+    #[test]
+    fn tooling_prompt_block_collects_enabled_nonempty_prompts() {
+        let mut tooling = ToolingConfig::default();
+        tooling.scrape_page.prompt = "prompt one".into();
+        tooling.download_file.prompt = "prompt two".into();
+        tooling.crawl_url.enabled = true;
+        tooling.crawl_url.prompt = "prompt three".into();
+        let block = tooling.prompt_block();
+        assert!(block.contains("Tool scrape_page: prompt one"));
+        assert!(block.contains("Tool download_file: prompt two"));
+        assert!(block.contains("Tool crawl_url: prompt three"));
+    }
+
+    #[test]
+    fn tooling_prompt_block_ignores_disabled_or_empty_prompts() {
+        let mut tooling = ToolingConfig::default();
+        tooling.scrape_page.prompt = String::new();
+        tooling.download_file.enabled = false;
+        tooling.download_file.prompt = "ignored".into();
+        tooling.crawl_url.enabled = false;
+        tooling.crawl_url.prompt = "ignored".into();
+        let block = tooling.prompt_block();
+        assert!(block.is_empty());
+    }
 }
