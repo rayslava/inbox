@@ -26,7 +26,7 @@ fn minimal_config(attachments_dir: std::path::PathBuf, output_file: std::path::P
             ..Default::default()
         },
         syncthing: Default::default(),
-        tools: vec![],
+        tooling: Default::default(),
     }
 }
 

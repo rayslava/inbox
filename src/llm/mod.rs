@@ -30,6 +30,7 @@ impl LlmRequest {
         enriched: &EnrichedMessage,
         cfg: &LlmConfig,
         attachments_dir: &Path,
+        tool_prompt_block: &str,
     ) -> Self {
         let mut user_content = enriched.original.text.clone();
 
@@ -42,12 +43,18 @@ impl LlmRequest {
             );
         }
 
+        let mut system_prompt = if cfg.system_prompt.is_empty() {
+            default_system_prompt()
+        } else {
+            cfg.system_prompt.clone()
+        };
+        if !tool_prompt_block.trim().is_empty() {
+            system_prompt.push_str("\n\nTool-specific guidance:\n");
+            system_prompt.push_str(tool_prompt_block.trim());
+        }
+
         Self {
-            system_prompt: if cfg.system_prompt.is_empty() {
-                default_system_prompt()
-            } else {
-                cfg.system_prompt.clone()
-            },
+            system_prompt,
             user_content,
             msg_id: enriched.original.id,
             attachments_dir: attachments_dir.to_path_buf(),
@@ -256,17 +263,10 @@ use crate::config::{LlmBackendConfig, LlmBackendType};
 pub fn build_chain(cfg: &Config) -> LlmChain {
     let backends: Vec<Box<dyn LlmClient>> = cfg.llm.backends.iter().map(build_backend).collect();
 
-    let tool_executor = if cfg.tools.is_empty() {
-        Some(tools::default_tools(UrlFetcher::new(&cfg.url_fetch)))
-    } else {
-        match tools::from_config(&cfg.tools, UrlFetcher::new(&cfg.url_fetch)) {
-            Ok(exec) => Some(exec),
-            Err(e) => {
-                warn!(?e, "Invalid tool config; disabling tool execution");
-                None
-            }
-        }
-    };
+    let tool_executor = Some(tools::from_tooling(
+        &cfg.tooling,
+        UrlFetcher::new(&cfg.url_fetch),
+    ));
 
     LlmChain::new(
         backends,
@@ -310,7 +310,7 @@ mod tests {
     fn llm_request_default_system_prompt() {
         let cfg = crate::test_helpers::no_llm_config();
         let enriched = make_enriched("hello");
-        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"));
+        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "");
         assert!(!req.system_prompt.is_empty());
         assert_eq!(req.user_content, "hello");
     }
@@ -320,7 +320,7 @@ mod tests {
         let mut cfg = crate::test_helpers::no_llm_config();
         cfg.system_prompt = "custom prompt".into();
         let enriched = make_enriched("text");
-        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"));
+        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "");
         assert_eq!(req.system_prompt, "custom prompt");
     }
 
@@ -333,9 +333,23 @@ mod tests {
             text: "page content".into(),
             page_title: None,
         });
-        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"));
+        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "");
         assert!(req.user_content.contains("page content"));
         assert!(req.user_content.contains("http://example.com"));
+    }
+
+    #[test]
+    fn llm_request_appends_tool_prompt_block() {
+        let cfg = crate::test_helpers::no_llm_config();
+        let enriched = make_enriched("base text");
+        let req = LlmRequest::from_enriched(
+            &enriched,
+            &cfg,
+            std::path::Path::new("/tmp"),
+            "Tool crawl_url: prefer markdown first",
+        );
+        assert!(req.system_prompt.contains("Tool-specific guidance:"));
+        assert!(req.system_prompt.contains("prefer markdown first"));
     }
 
     #[tokio::test]
@@ -344,7 +358,7 @@ mod tests {
         let chain = crate::test_helpers::mock_llm_chain(resp.clone());
         let enriched = make_enriched("test");
         let cfg = crate::test_helpers::no_llm_config();
-        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"));
+        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "");
         let outcome = chain.complete(req).await;
         assert!(matches!(outcome, LlmOutcome::Success(_)));
     }

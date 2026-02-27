@@ -121,24 +121,25 @@ org_folder_id        = "org-folder"
 attachments_folder_id = "org-folder"
 rescan_on_write      = true
 
-# ── Tool backends (optional overrides) ────────────────────────────────────────
-# By default the built-in Rust implementation is used for scrape_page and
-# download_file. Uncomment to override with a shell command or HTTP service.
+# ── Tooling (dedicated sections + per-tool prompt) ───────────────────────────
 
-# [[tools]]
-# name    = "scrape_page"
-# enabled = true
-# [tools.backend]
-# type         = "shell"
-# argv         = ["lynx", "-dump", "{url}"]
-# timeout_secs = 15
+[tooling.scrape_page]
+enabled = true
+description = "Fetch and extract readable text from a web page URL"
+prompt = "Use this for normal article pages."
+backend = "internal"
 
-# [[tools]]
-# name    = "download_file"
-# enabled = true
-# [tools.backend]
-# type          = "http"
-# endpoint      = "http://localhost:9099/download?url={url}"
-# method        = "GET"
-# response_path = "text"
-# timeout_secs  = 30
+[tooling.download_file]
+enabled = true
+description = "Download a file from a URL and save it as an attachment"
+prompt = "Use this when the URL points to a downloadable file."
+backend = "internal"
+
+[tooling.crawl_url]
+enabled = true
+description = "Crawl a URL and return markdown/html extracted by crawler service"
+prompt = "Prefer this for dynamic pages; prefer markdown in tool output and fallback to HTML when markdown is empty."
+endpoint = "http://localhost:11235/crawl"
+priority = 10
+timeout_secs = 30
+# auth_header = "Authorization: Bearer ${CRAWLER_TOKEN}"

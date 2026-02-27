@@ -208,6 +208,7 @@ impl Pipeline {
             &enriched,
             &self.config.llm,
             &self.config.general.attachments_dir,
+            &self.config.tooling.prompt_block(),
         );
         match self.llm.complete(req).await {
             LlmOutcome::Success(resp) => {

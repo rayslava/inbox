@@ -1,12 +1,13 @@
 use std::path::Path;
 use std::time::Duration;
 
+use anodized::contract;
 use tokio::process::Command;
 use tracing::{instrument, warn};
 use url::Url;
 use uuid::Uuid;
 
-use crate::config::ToolBackendConfig;
+use crate::config::{ToolBackendConfig, ToolingConfig};
 use crate::error::InboxError;
 use crate::message::Attachment;
 use crate::pipeline::url_fetcher::UrlFetcher;
@@ -46,6 +47,13 @@ fn tool_parameters(name: &str) -> serde_json::Value {
             "type": "object",
             "properties": {
                 "url": { "type": "string", "description": "The URL of the file to download" }
+            },
+            "required": ["url"]
+        }),
+        "crawl_url" => serde_json::json!({
+            "type": "object",
+            "properties": {
+                "url": { "type": "string", "description": "The URL to crawl" }
             },
             "required": ["url"]
         }),
@@ -120,6 +128,12 @@ impl ToolExecutor {
                 self.run_download(&tool.backend, &url, msg_id, attachments_dir)
                     .await
             }
+            "crawl_url" => {
+                let url_str = args["url"]
+                    .as_str()
+                    .ok_or_else(|| InboxError::LlmTool("crawl_url missing 'url'".into()))?;
+                self.run_crawl(&tool.backend, url_str).await
+            }
             _ => Err(InboxError::LlmTool(format!("No handler for tool: {name}"))),
         }
     }
@@ -158,6 +172,9 @@ impl ToolExecutor {
                 };
                 run_http_tool(&self.http_client, cfg, url.as_str(), "").await
             }
+            ToolBackendConfig::Crawler { .. } => Err(InboxError::LlmTool(
+                "scrape_page does not support crawler backend".into(),
+            )),
         }
     }
 
@@ -214,6 +231,36 @@ impl ToolExecutor {
                 };
                 run_http_tool(&self.http_client, cfg, url.as_str(), "").await
             }
+            ToolBackendConfig::Crawler { .. } => Err(InboxError::LlmTool(
+                "download_file does not support crawler backend".into(),
+            )),
+        }
+    }
+
+    #[instrument(skip(self, backend), fields(url = %url))]
+    async fn run_crawl(
+        &self,
+        backend: &ToolBackendConfig,
+        url: &str,
+    ) -> Result<ToolResult, InboxError> {
+        match backend {
+            ToolBackendConfig::Crawler {
+                endpoint,
+                auth_header,
+                timeout_secs,
+                priority,
+            } => {
+                let cfg = CrawlToolCfg {
+                    endpoint,
+                    auth_header: auth_header.as_deref(),
+                    timeout_secs: *timeout_secs,
+                    priority: *priority,
+                };
+                run_crawler_tool(&self.http_client, cfg, url).await
+            }
+            _ => Err(InboxError::LlmTool(
+                "crawl_url requires crawler backend".into(),
+            )),
         }
     }
 }
@@ -286,6 +333,13 @@ struct HttpToolCfg<'a> {
     timeout_secs: u32,
 }
 
+struct CrawlToolCfg<'a> {
+    endpoint: &'a str,
+    auth_header: Option<&'a str>,
+    timeout_secs: u32,
+    priority: i32,
+}
+
 /// Execute an HTTP tool backend.
 async fn run_http_tool(
     client: &reqwest::Client,
@@ -347,6 +401,76 @@ async fn run_http_tool(
     Ok(ToolResult::Text(text))
 }
 
+#[contract(requires: !url.is_empty())]
+async fn run_crawler_tool(
+    client: &reqwest::Client,
+    cfg: CrawlToolCfg<'_>,
+    url: &str,
+) -> Result<ToolResult, InboxError> {
+    let mut req = client.post(cfg.endpoint);
+    if let Some(auth) = cfg.auth_header {
+        let resolved = resolve_env_vars(auth);
+        if let Some((name, value)) = resolved.split_once(':') {
+            req = req.header(name.trim(), value.trim());
+        }
+    }
+
+    let payload = serde_json::json!({
+        "urls": [url],
+        "priority": cfg.priority,
+    });
+    let timeout = Duration::from_secs(u64::from(cfg.timeout_secs));
+    let resp = tokio::time::timeout(timeout, req.json(&payload).send())
+        .await
+        .map_err(|_| InboxError::LlmTool(format!("Crawler timed out after {}s", cfg.timeout_secs)))?
+        .map_err(|e| InboxError::LlmTool(format!("Crawler request error: {e}")))?;
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| InboxError::LlmTool(format!("Crawler parse error: {e}")))?;
+
+    let Some(result) = json
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|arr| arr.first())
+    else {
+        return Err(InboxError::LlmTool("Crawler returned no results".into()));
+    };
+
+    let title = result
+        .pointer("/metadata/title")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let markdown = result
+        .pointer("/markdown/raw_markdown")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let html = result
+        .get("cleaned_html")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+
+    let mut out = String::new();
+    if !title.is_empty() {
+        out.push_str("Title: ");
+        out.push_str(title);
+        out.push_str("\n\n");
+    }
+
+    if !markdown.is_empty() {
+        out.push_str("Markdown:\n");
+        out.push_str(markdown);
+    } else if !html.is_empty() {
+        out.push_str("HTML fallback:\n");
+        out.push_str(html);
+    } else {
+        out.push_str("Crawler returned no markdown/html content");
+    }
+
+    Ok(ToolResult::Text(out))
+}
+
 /// Expand `${VAR}` patterns in a string using environment variables.
 fn resolve_env_vars(s: &str) -> String {
     let re = regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
@@ -356,7 +480,7 @@ fn resolve_env_vars(s: &str) -> String {
     .into_owned()
 }
 
-/// Build the default tool list (both Internal) used when no `[[tools]]` config is present.
+/// Build the default tool list used when tooling config is not customized.
 #[must_use]
 pub fn default_tools(fetcher: UrlFetcher) -> ToolExecutor {
     let tools = vec![
@@ -372,35 +496,65 @@ pub fn default_tools(fetcher: UrlFetcher) -> ToolExecutor {
             enabled: true,
             backend: ToolBackendConfig::Internal,
         },
+        Tool {
+            name: "crawl_url".into(),
+            description: "Crawl a URL and return markdown/html from crawler service".into(),
+            enabled: false,
+            backend: ToolBackendConfig::Crawler {
+                endpoint: "http://localhost:11235/crawl".into(),
+                auth_header: None,
+                timeout_secs: 30,
+                priority: 10,
+            },
+        },
     ];
     ToolExecutor::new(tools, fetcher)
 }
 
-/// Build tools from config, validating no duplicate names.
-///
-/// # Errors
-/// Returns an error if two tools share the same name.
-pub fn from_config(
-    tool_configs: &[crate::config::ToolConfig],
-    fetcher: UrlFetcher,
-) -> Result<ToolExecutor, InboxError> {
-    let mut seen = std::collections::HashSet::new();
-    let mut tools = Vec::new();
-    for tc in tool_configs {
-        if !seen.insert(tc.name.clone()) {
-            return Err(InboxError::Config(format!(
-                "Duplicate tool name in [[tools]]: '{}'",
-                tc.name
-            )));
-        }
-        tools.push(Tool {
-            name: tc.name.clone(),
-            description: tc.description.clone(),
-            enabled: tc.enabled,
-            backend: tc.backend.clone(),
-        });
-    }
-    Ok(ToolExecutor::new(tools, fetcher))
+#[must_use]
+pub fn from_tooling(tooling: &ToolingConfig, fetcher: UrlFetcher) -> ToolExecutor {
+    let scrape_desc = if tooling.scrape_page.description.trim().is_empty() {
+        "Fetch and extract readable text from a web page URL".to_owned()
+    } else {
+        tooling.scrape_page.description.clone()
+    };
+    let download_desc = if tooling.download_file.description.trim().is_empty() {
+        "Download a file from a URL and save it as an attachment".to_owned()
+    } else {
+        tooling.download_file.description.clone()
+    };
+    let crawl_desc = if tooling.crawl_url.description.trim().is_empty() {
+        "Crawl a URL and return markdown/html from crawler service".to_owned()
+    } else {
+        tooling.crawl_url.description.clone()
+    };
+
+    let tools = vec![
+        Tool {
+            name: "scrape_page".into(),
+            description: scrape_desc,
+            enabled: tooling.scrape_page.enabled,
+            backend: tooling.scrape_page.backend.clone(),
+        },
+        Tool {
+            name: "download_file".into(),
+            description: download_desc,
+            enabled: tooling.download_file.enabled,
+            backend: tooling.download_file.backend.clone(),
+        },
+        Tool {
+            name: "crawl_url".into(),
+            description: crawl_desc,
+            enabled: tooling.crawl_url.enabled,
+            backend: ToolBackendConfig::Crawler {
+                endpoint: tooling.crawl_url.endpoint.clone(),
+                auth_header: tooling.crawl_url.auth_header.clone(),
+                timeout_secs: tooling.crawl_url.timeout_secs,
+                priority: tooling.crawl_url.priority,
+            },
+        },
+    ];
+    ToolExecutor::new(tools, fetcher)
 }
 
 #[cfg(test)]
@@ -620,37 +774,45 @@ mod tests {
         assert_eq!(result.text(), "ok");
     }
 
-    #[test]
-    fn from_config_duplicate_name_errors() {
-        use crate::config::ToolConfig;
-        let cfgs = vec![
-            ToolConfig {
-                name: "scrape_page".into(),
-                description: "d".into(),
-                enabled: true,
-                backend: ToolBackendConfig::Internal,
-            },
-            ToolConfig {
-                name: "scrape_page".into(),
-                description: "d2".into(),
-                enabled: true,
-                backend: ToolBackendConfig::Internal,
-            },
-        ];
-        let result = from_config(&cfgs, test_fetcher());
-        assert!(result.is_err());
+    #[tokio::test]
+    async fn run_crawler_tool_markdown_then_html_fallback() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "success": true,
+            "results": [{
+                "metadata": {"title": "T"},
+                "markdown": {"raw_markdown": "# md"},
+                "cleaned_html": "<p>html</p>"
+            }]
+        });
+        Mock::given(method("POST"))
+            .and(path("/crawl"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(body),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let cfg = CrawlToolCfg {
+            endpoint: &format!("{}/crawl", server.uri()),
+            auth_header: None,
+            timeout_secs: 5,
+            priority: 10,
+        };
+        let result = run_crawler_tool(&client, cfg, "http://x.com")
+            .await
+            .unwrap();
+        assert!(result.text().contains("Title: T"));
+        assert!(result.text().contains("# md"));
     }
 
     #[test]
-    fn from_config_valid_builds_executor() {
-        use crate::config::ToolConfig;
-        let cfgs = vec![ToolConfig {
-            name: "scrape_page".into(),
-            description: "d".into(),
-            enabled: true,
-            backend: ToolBackendConfig::Internal,
-        }];
-        let result = from_config(&cfgs, test_fetcher());
-        assert!(result.is_ok());
+    fn from_tooling_builds_executor() {
+        let cfg = crate::config::ToolingConfig::default();
+        let executor = from_tooling(&cfg, test_fetcher());
+        assert!(!executor.active_tool_definitions().is_empty());
     }
 }

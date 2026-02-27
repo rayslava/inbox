@@ -218,7 +218,7 @@ mod tests {
             adapters: Default::default(),
             url_fetch: Default::default(),
             syncthing: Default::default(),
-            tools: vec![],
+            tooling: Default::default(),
         });
         let readiness = ReadinessState::new(ready);
         let sessions = auth::new_session_store();
