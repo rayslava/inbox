@@ -1,0 +1,144 @@
+# inbox — example configuration
+# Copy to config.toml and fill in your secrets via environment variables.
+# All ${VAR} references are substituted at startup from the environment.
+
+# ── General ───────────────────────────────────────────────────────────────────
+
+[general]
+# Org-mode file that captured items are appended to.
+output_file = "/home/user/org/inbox.org"
+
+# Base directory for downloaded attachments (org-attach-id-dir layout).
+attachments_dir = "/home/user/org/attachments"
+
+# Log level: trace | debug | info | warn | error
+log_level = "info"
+
+# Log format: pretty (human) | json (K8s / structured)
+log_format = "pretty"
+
+# ── Admin server (port 9090) ──────────────────────────────────────────────────
+
+[admin]
+# Address for the admin server (health, metrics, UI).
+bind_addr = "0.0.0.0:9090"
+
+# Username for the web UI login.
+username = "admin"
+
+# Argon2id hash of the admin password.
+# Generate with: cargo run -- hash-password
+password_hash = "${INBOX_ADMIN_PASSWORD_HASH}"
+
+# Session cookie lifetime in days.
+session_ttl_days = 30
+
+# Seconds between SIGTERM and actual shutdown (for load-balancer drain).
+shutdown_drain_secs = 5
+
+# ── Web UI ────────────────────────────────────────────────────────────────────
+
+[web_ui]
+enabled = true
+
+# ── LLM ──────────────────────────────────────────────────────────────────────
+
+[llm]
+# What to do when all LLM backends fail:
+#   raw     — write the raw text as-is (default)
+#   discard — drop the message
+fallback = "raw"
+
+# Maximum characters of fetched page content to include in the LLM prompt.
+url_content_max_chars = 4000
+
+# Maximum tool-call turns per message.
+max_tool_turns = 5
+
+# Optional custom system prompt (leave empty for the built-in default).
+system_prompt = ""
+
+# Primary backend: OpenRouter
+[[llm.backends]]
+type    = "openrouter"
+model   = "openai/gpt-4o-mini"
+api_key = "${OPENROUTER_API_KEY}"
+retries = 3
+timeout_secs = 30
+
+# Fallback backend: local Ollama (comment out if not available)
+# [[llm.backends]]
+# type         = "ollama"
+# model        = "llama3.2"
+# base_url     = "http://localhost:11434"
+# timeout_secs = 60
+
+# ── Adapters ──────────────────────────────────────────────────────────────────
+
+[adapters.telegram]
+enabled = true
+# Bot token from @BotFather.
+token = "${TELEGRAM_BOT_TOKEN}"
+# Restrict to specific Telegram user IDs (empty = allow all).
+allowed_users = []
+
+[adapters.http]
+enabled = true
+# Address for the inbox HTTP API.
+bind_addr = "0.0.0.0:8080"
+# Bearer token for POST /inbox and POST /inbox/upload (empty = no auth).
+auth_token = "${INBOX_HTTP_TOKEN}"
+
+[adapters.email]
+enabled = false
+host     = "imap.example.com"
+port     = 993
+username = "${EMAIL_USERNAME}"
+password = "${EMAIL_PASSWORD}"
+mailbox  = "INBOX"
+mark_as_seen = true
+
+# ── URL fetching ──────────────────────────────────────────────────────────────
+
+[url_fetch]
+enabled         = true
+timeout_secs    = 10
+max_redirects   = 5
+max_body_bytes  = 5242880   # 5 MiB
+user_agent      = "inbox/1.0 (personal capture daemon)"
+# Domains to skip when auto-fetching URLs (e.g. large media sites).
+skip_domains    = ["youtube.com", "twitter.com", "x.com"]
+
+# ── Syncthing ─────────────────────────────────────────────────────────────────
+
+[syncthing]
+enabled              = false
+api_url              = "http://localhost:8384"
+api_key              = "${SYNCTHING_API_KEY}"
+# Syncthing folder ID that contains the org file.
+org_folder_id        = "org-folder"
+# Syncthing folder ID for attachments (may be the same as org_folder_id).
+attachments_folder_id = "org-folder"
+rescan_on_write      = true
+
+# ── Tool backends (optional overrides) ────────────────────────────────────────
+# By default the built-in Rust implementation is used for scrape_page and
+# download_file. Uncomment to override with a shell command or HTTP service.
+
+# [[tools]]
+# name    = "scrape_page"
+# enabled = true
+# [tools.backend]
+# type         = "shell"
+# argv         = ["lynx", "-dump", "{url}"]
+# timeout_secs = 15
+
+# [[tools]]
+# name    = "download_file"
+# enabled = true
+# [tools.backend]
+# type          = "http"
+# endpoint      = "http://localhost:9099/download?url={url}"
+# method        = "GET"
+# response_path = "text"
+# timeout_secs  = 30

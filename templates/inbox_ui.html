@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="30">
+  <title>📥 Inbox</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: #f9fafb; margin: 0; padding: 1rem; }
+    header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
+    header h1 { margin: 0; font-size: 1.4rem; flex: 1; }
+    #search { padding: 0.4rem 0.7rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.95rem; width: 260px; }
+    a.logout { font-size: 0.85rem; color: #6b7280; text-decoration: none; }
+    a.logout:hover { text-decoration: underline; }
+    .capture { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; }
+    .capture textarea { width: 100%; border: 1px solid #d1d5db; border-radius: 6px; padding: 0.5rem 0.7rem; font-size: 0.95rem; font-family: inherit; resize: vertical; }
+    .capture textarea:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 2px #e0e7ff; }
+    .cap-controls { display: flex; align-items: center; gap: 0.7rem; margin-top: 0.5rem; flex-wrap: wrap; }
+    .cap-controls input[type=file] { font-size: 0.85rem; color: #6b7280; }
+    .cap-controls button { padding: 0.4rem 1rem; background: #6366f1; color: white; border: none; border-radius: 6px; font-size: 0.9rem; cursor: pointer; }
+    .cap-controls button:hover { background: #4f46e5; }
+    .cap-controls button:disabled { background: #a5b4fc; cursor: not-allowed; }
+    #cap-status { font-size: 0.85rem; color: #6b7280; }
+    #cap-status.ok { color: #16a34a; }
+    #cap-status.err { color: #dc2626; }
+    .node { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.2rem; margin-bottom: 1rem; }
+    .node h2 { margin: 0 0 0.4rem; font-size: 1.05rem; }
+    .node .meta { font-size: 0.78rem; color: #6b7280; margin-bottom: 0.6rem; display: flex; gap: 0.8rem; flex-wrap: wrap; }
+    .node .tags span { background: #dbeafe; color: #1d4ed8; border-radius: 12px; padding: 0.15rem 0.5rem; font-size: 0.75rem; margin-right: 0.3rem; }
+    .node .summary { font-size: 0.9rem; color: #374151; }
+    .node blockquote { border-left: 3px solid #d1d5db; margin: 0.6rem 0; padding: 0.3rem 0.8rem; color: #6b7280; font-style: italic; font-size: 0.88rem; }
+    .node .attachments { margin-top: 0.6rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .node .attachments img { max-width: 200px; max-height: 150px; border-radius: 4px; object-fit: cover; }
+    .node .attachments audio, .node .attachments video { max-width: 100%; }
+    .node .attachments .doc-link { font-size: 0.85rem; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>📥 Inbox</h1>
+  <input id="search" type="search" placeholder="Filter…" oninput="filter(this.value)" />
+  <a class="logout" href="/logout">Sign out</a>
+</header>
+
+{% if !inbox_url.is_empty() %}
+<section class="capture"
+  data-inbox-url="{{ inbox_url }}"
+  data-auth-token="{{ auth_token }}">
+  <textarea id="cap-text" placeholder="Quick capture — type a message…" rows="3"></textarea>
+  <div class="cap-controls">
+    <input type="file" id="cap-file" />
+    <button id="cap-btn" onclick="submitCapture()">Send</button>
+    <span id="cap-status"></span>
+  </div>
+</section>
+{% endif %}
+
+<div id="nodes">
+{% for node in nodes %}
+<article class="node" data-text="{{ node.search_text }}">
+  <h2>{{ node.title }}</h2>
+  <div class="meta">
+    <span>{{ node.created }}</span>
+    <span>{{ node.source }}</span>
+    {% if !node.tags.is_empty() %}<span class="tags">{% for tag in node.tags %}<span>{{ tag }}</span>{% endfor %}</span>{% endif %}
+  </div>
+  <div class="summary">{{ node.summary }}</div>
+  {% if let Some(exc) = node.excerpt %}<blockquote>{{ exc }}</blockquote>{% endif %}
+  {% if !node.attachments.is_empty() %}
+  <div class="attachments">
+    {% for att in node.attachments %}{{ att.html|safe }}{% endfor %}
+  </div>
+  {% endif %}
+</article>
+{% endfor %}
+{% if nodes.is_empty() %}<p style="color:#9ca3af;text-align:center;margin-top:3rem">No items yet.</p>{% endif %}
+</div>
+
+<script>
+function filter(q) {
+  q = q.toLowerCase();
+  document.querySelectorAll('#nodes .node').forEach(el => {
+    const match = !q || el.dataset.text.toLowerCase().includes(q);
+    el.classList.toggle('hidden', !match);
+  });
+}
+
+async function submitCapture() {
+  const section = document.querySelector('.capture');
+  const inboxUrl = section.dataset.inboxUrl;
+  const authToken = section.dataset.authToken;
+  const text = document.getElementById('cap-text').value.trim();
+  const fileInput = document.getElementById('cap-file');
+  const file = fileInput.files[0];
+  const status = document.getElementById('cap-status');
+  const btn = document.getElementById('cap-btn');
+
+  if (!text && !file) {
+    status.className = 'err';
+    status.textContent = 'Nothing to send';
+    return;
+  }
+
+  btn.disabled = true;
+  status.className = '';
+  status.textContent = 'Sending…';
+
+  const headers = {};
+  if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+
+  try {
+    let resp;
+    if (file) {
+      const fd = new FormData();
+      if (text) fd.append('text', text);
+      fd.append(file.name, file, file.name);
+      resp = await fetch(inboxUrl + '/upload', { method: 'POST', headers, body: fd });
+    } else {
+      headers['Content-Type'] = 'text/plain';
+      resp = await fetch(inboxUrl, { method: 'POST', headers, body: text });
+    }
+
+    if (resp.ok) {
+      status.className = 'ok';
+      status.textContent = '✓ Sent';
+      document.getElementById('cap-text').value = '';
+      fileInput.value = '';
+      setTimeout(() => { status.textContent = ''; }, 3000);
+    } else {
+      status.className = 'err';
+      status.textContent = '✗ Error ' + resp.status;
+    }
+  } catch (e) {
+    status.className = 'err';
+    status.textContent = '✗ ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
