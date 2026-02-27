@@ -12,6 +12,7 @@ use super::AdminState;
 /// Serve a file from the attachments directory.
 ///
 /// Path components that would escape the base dir are rejected with 403.
+#[contract(requires: !path.is_empty())]
 pub(crate) async fn serve_attachment(
     State(state): State<AdminState>,
     Path(path): Path<String>,

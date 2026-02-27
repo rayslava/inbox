@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anodized::contract;
 use axum::http::{HeaderMap, header};
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
@@ -26,6 +27,7 @@ pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
 
 /// Return true if the session cookie is valid and not expired.
 #[must_use]
+#[contract(requires: ttl_days > 0)]
 pub fn is_authenticated(headers: &HeaderMap, store: &SessionStore, ttl_days: u64) -> bool {
     let Some(token) = extract_session_token(headers) else {
         return false;

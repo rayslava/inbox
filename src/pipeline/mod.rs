@@ -90,6 +90,7 @@ impl Pipeline {
     ///
     /// # Errors
     /// Returns an error if enrichment, LLM completion, or output writing fails.
+    #[contract(requires: !msg.id.is_nil())]
     #[instrument(skip(self, msg), fields(id = %msg.id, source = %msg.source))]
     pub async fn process(&self, msg: IncomingMessage) -> Result<(), InboxError> {
         let enriched = self.enrich(msg).await?;

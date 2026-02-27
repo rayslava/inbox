@@ -99,6 +99,7 @@ impl ToolExecutor {
     ///
     /// # Errors
     /// Returns an error if the tool is unknown, arguments are invalid, or the backend fails.
+    #[contract(requires: !name.is_empty())]
     pub async fn execute(
         &self,
         name: &str,
@@ -347,6 +348,12 @@ async fn run_http_tool(
     url: &str,
     filename: &str,
 ) -> Result<ToolResult, InboxError> {
+    #[contract(requires: !cfg.endpoint.is_empty() && cfg.timeout_secs > 0)]
+    fn validate_http_cfg(cfg: &HttpToolCfg<'_>) {
+        let _ = cfg;
+    }
+    validate_http_cfg(&cfg);
+
     let endpoint_resolved = cfg
         .endpoint
         .replace("{url}", url)

@@ -26,6 +26,7 @@ pub struct LlmRequest {
 
 impl LlmRequest {
     #[must_use]
+    #[contract(requires: cfg.url_content_max_chars > 0)]
     pub fn from_enriched(
         enriched: &EnrichedMessage,
         cfg: &LlmConfig,
@@ -139,6 +140,7 @@ impl LlmChain {
     }
 
     /// Try each backend in order with retries. On exhaustion, apply fallback policy.
+    #[contract(requires: self.max_tool_turns > 0)]
     pub async fn complete(&self, req: LlmRequest) -> LlmOutcome {
         let tool_defs = self
             .tool_executor

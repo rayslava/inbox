@@ -223,6 +223,12 @@ async fn download_telegram_file(
     attachments_dir: &std::path::Path,
     media_kind: crate::message::MediaKind,
 ) -> Result<crate::message::Attachment, InboxError> {
+    #[contract(requires: !file_id.is_empty() && !filename.is_empty())]
+    fn validate_input(file_id: &str, filename: &str) {
+        let _ = (file_id, filename);
+    }
+    validate_input(file_id, filename);
+
     use teloxide::net::Download;
     use teloxide::prelude::*;
 
