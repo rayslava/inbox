@@ -208,11 +208,12 @@ mod tests {
             },
             admin: crate::config::AdminConfig::default(),
             web_ui: Default::default(),
+            pipeline: Default::default(),
             llm: LlmConfig {
                 fallback: Default::default(),
                 url_content_max_chars: 4000,
                 max_tool_turns: 5,
-                system_prompt: String::new(),
+                prompts: Default::default(),
                 backends: vec![],
             },
             adapters: Default::default(),

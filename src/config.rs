@@ -15,6 +15,8 @@ pub struct Config {
     pub admin: AdminConfig,
     #[serde(default)]
     pub web_ui: WebUiConfig,
+    #[serde(default)]
+    pub pipeline: PipelineConfig,
     pub llm: LlmConfig,
     #[serde(default)]
     pub adapters: AdaptersConfig,
@@ -116,7 +118,7 @@ pub struct LlmConfig {
     #[serde(default = "default_max_tool_turns")]
     pub max_tool_turns: usize,
     #[serde(default)]
-    pub system_prompt: String,
+    pub prompts: LlmPromptsConfig,
     #[serde(default)]
     pub backends: Vec<LlmBackendConfig>,
 }
@@ -126,6 +128,45 @@ fn default_url_content_max_chars() -> usize {
 }
 fn default_max_tool_turns() -> usize {
     5
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmPromptsConfig {
+    #[serde(default = "default_base_system_prompt")]
+    pub base_system: String,
+    #[serde(default = "default_tool_guidance_header")]
+    pub tool_guidance_header: String,
+    #[serde(default = "default_js_shell_tool_hint")]
+    pub js_shell_tool_hint: String,
+}
+
+impl Default for LlmPromptsConfig {
+    fn default() -> Self {
+        Self {
+            base_system: default_base_system_prompt(),
+            tool_guidance_header: default_tool_guidance_header(),
+            js_shell_tool_hint: default_js_shell_tool_hint(),
+        }
+    }
+}
+
+fn default_base_system_prompt() -> String {
+    r#"You are a personal inbox assistant. Given a captured note or web content, respond with a JSON object containing:
+- "title": a short descriptive title (max 80 chars)
+- "tags": array of relevant tag strings (max 5, lowercase, no spaces — use underscores)
+- "summary": a 1-3 sentence summary of the content
+- "excerpt": (optional) a single key quote or sentence worth preserving verbatim, or null
+
+Respond ONLY with the JSON object, no markdown fences."#
+        .into()
+}
+
+fn default_tool_guidance_header() -> String {
+    "Tool-specific guidance:".into()
+}
+
+fn default_js_shell_tool_hint() -> String {
+    "If URL content appears to be a JavaScript shell, call crawl_url for that URL and prefer markdown output.".into()
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -165,6 +206,48 @@ fn default_timeout_secs() -> u64 {
 pub enum LlmBackendType {
     Openrouter,
     Ollama,
+}
+
+// ── Pipeline ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PipelineConfig {
+    #[serde(default)]
+    pub web_content: WebContentConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebContentConfig {
+    #[serde(default)]
+    pub js_shell_policy: JsShellPolicy,
+    #[serde(default = "default_js_shell_patterns")]
+    pub js_shell_patterns: Vec<String>,
+}
+
+impl Default for WebContentConfig {
+    fn default() -> Self {
+        Self {
+            js_shell_policy: JsShellPolicy::default(),
+            js_shell_patterns: default_js_shell_patterns(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JsShellPolicy {
+    #[default]
+    Allow,
+    ToolOnly,
+    Drop,
+}
+
+fn default_js_shell_patterns() -> Vec<String> {
+    vec![
+        "doesn't work properly without javascript enabled".into(),
+        "please enable it to continue".into(),
+        "requires javascript".into(),
+    ]
 }
 
 // ── Adapters ──────────────────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ impl LlmRequest {
         enriched: &EnrichedMessage,
         cfg: &LlmConfig,
         attachments_dir: &Path,
-        tool_prompt_block: &str,
+        guidance_block: &str,
     ) -> Self {
         let mut user_content = enriched.original.text.clone();
 
@@ -44,14 +44,12 @@ impl LlmRequest {
             );
         }
 
-        let mut system_prompt = if cfg.system_prompt.is_empty() {
-            default_system_prompt()
-        } else {
-            cfg.system_prompt.clone()
-        };
-        if !tool_prompt_block.trim().is_empty() {
-            system_prompt.push_str("\n\nTool-specific guidance:\n");
-            system_prompt.push_str(tool_prompt_block.trim());
+        let mut system_prompt = cfg.prompts.base_system.clone();
+        if !guidance_block.trim().is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(cfg.prompts.tool_guidance_header.trim());
+            system_prompt.push('\n');
+            system_prompt.push_str(guidance_block.trim());
         }
 
         Self {
@@ -73,17 +71,6 @@ impl LlmRequest {
             tool_definitions: Vec::new(),
         }
     }
-}
-
-fn default_system_prompt() -> String {
-    r#"You are a personal inbox assistant. Given a captured note or web content, respond with a JSON object containing:
-- "title": a short descriptive title (max 80 chars)
-- "tags": array of relevant tag strings (max 5, lowercase, no spaces — use underscores)
-- "summary": a 1-3 sentence summary of the content
-- "excerpt": (optional) a single key quote or sentence worth preserving verbatim, or null
-
-Respond ONLY with the JSON object, no markdown fences."#
-        .into()
 }
 
 #[derive(Debug, Clone)]
@@ -321,7 +308,7 @@ mod tests {
     #[test]
     fn llm_request_custom_system_prompt() {
         let mut cfg = crate::test_helpers::no_llm_config();
-        cfg.system_prompt = "custom prompt".into();
+        cfg.prompts.base_system = "custom prompt".into();
         let enriched = make_enriched("text");
         let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "");
         assert_eq!(req.system_prompt, "custom prompt");
@@ -351,7 +338,10 @@ mod tests {
             std::path::Path::new("/tmp"),
             "Tool crawl_url: prefer markdown first",
         );
-        assert!(req.system_prompt.contains("Tool-specific guidance:"));
+        assert!(
+            req.system_prompt
+                .contains(&cfg.prompts.tool_guidance_header)
+        );
         assert!(req.system_prompt.contains("prefer markdown first"));
     }
 

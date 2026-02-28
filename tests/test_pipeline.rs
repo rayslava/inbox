@@ -19,6 +19,7 @@ fn minimal_config(attachments_dir: std::path::PathBuf, output_file: std::path::P
         },
         admin: Default::default(),
         web_ui: Default::default(),
+        pipeline: Default::default(),
         llm: helpers::no_llm_config(),
         adapters: Default::default(),
         url_fetch: UrlFetchConfig {

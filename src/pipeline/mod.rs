@@ -132,6 +132,14 @@ impl Pipeline {
             match classify_url(url, &self.fetcher).await {
                 UrlKind::Page => {
                     if let Some(content) = self.fetcher.fetch_page(url).await {
+                        if matches_js_shell_policy(&self.config, &content.text) {
+                            debug!(
+                                %url,
+                                policy = ?self.config.pipeline.web_content.js_shell_policy,
+                                "Page content matched JavaScript-shell policy; skipping direct content"
+                            );
+                            continue;
+                        }
                         debug!(
                             %url,
                             text_len = content.text.len(),
@@ -164,6 +172,14 @@ impl Pipeline {
                 UrlKind::Unknown => {
                     debug!(%url, "Unknown URL kind, attempting page fetch as fallback");
                     if let Some(content) = self.fetcher.fetch_page(url).await {
+                        if matches_js_shell_policy(&self.config, &content.text) {
+                            debug!(
+                                %url,
+                                policy = ?self.config.pipeline.web_content.js_shell_policy,
+                                "Page content matched JavaScript-shell policy; skipping direct content"
+                            );
+                            continue;
+                        }
                         let truncated =
                             truncate_chars(&content.text, self.config.llm.url_content_max_chars);
                         url_contents.push(crate::url_content::UrlContent {
@@ -209,7 +225,7 @@ impl Pipeline {
             &enriched,
             &self.config.llm,
             &self.config.general.attachments_dir,
-            &self.config.tooling.prompt_block(),
+            &self.build_llm_guidance(&enriched),
         );
         match self.llm.complete(req).await {
             LlmOutcome::Success(resp) => {
@@ -242,6 +258,61 @@ impl Pipeline {
     }
 }
 
+impl Pipeline {
+    fn build_llm_guidance(&self, enriched: &EnrichedMessage) -> String {
+        let mut lines = Vec::new();
+
+        let tool_lines = self.config.tooling.prompt_block();
+        if !tool_lines.trim().is_empty() {
+            lines.push(tool_lines);
+        }
+
+        if !self.config.llm.prompts.js_shell_tool_hint.trim().is_empty()
+            && self.config.pipeline.web_content.js_shell_policy
+                == crate::config::JsShellPolicy::ToolOnly
+            && !enriched.urls.is_empty()
+            && enriched.url_contents.is_empty()
+        {
+            let urls = enriched
+                .urls
+                .iter()
+                .map(url::Url::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let hint = self
+                .config
+                .llm
+                .prompts
+                .js_shell_tool_hint
+                .replace("{urls}", &urls);
+            lines.push(hint);
+        }
+
+        lines.join("\n")
+    }
+}
+
+fn matches_js_shell_policy(config: &Config, text: &str) -> bool {
+    use crate::config::JsShellPolicy;
+
+    if !matches!(
+        config.pipeline.web_content.js_shell_policy,
+        JsShellPolicy::ToolOnly | JsShellPolicy::Drop
+    ) {
+        return false;
+    }
+
+    let haystack = text.to_ascii_lowercase();
+    config
+        .pipeline
+        .web_content
+        .js_shell_patterns
+        .iter()
+        .map(|p| p.trim().to_ascii_lowercase())
+        .filter(|p| !p.is_empty())
+        .any(|p| haystack.contains(&p))
+}
+
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_owned()
@@ -253,6 +324,33 @@ fn truncate_chars(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_config(policy: crate::config::JsShellPolicy) -> crate::config::Config {
+        crate::config::Config {
+            general: crate::config::GeneralConfig {
+                output_file: std::path::PathBuf::from("/tmp/inbox-test.org"),
+                attachments_dir: std::path::PathBuf::from("/tmp/inbox-test-att"),
+                log_level: "info".into(),
+                log_format: "pretty".into(),
+            },
+            admin: Default::default(),
+            web_ui: Default::default(),
+            pipeline: crate::config::PipelineConfig {
+                web_content: crate::config::WebContentConfig {
+                    js_shell_policy: policy,
+                    js_shell_patterns: vec![
+                        "doesn't work properly without javascript enabled".into(),
+                        "please enable it to continue".into(),
+                    ],
+                },
+            },
+            llm: crate::test_helpers::no_llm_config(),
+            adapters: Default::default(),
+            url_fetch: Default::default(),
+            syncthing: Default::default(),
+            tooling: Default::default(),
+        }
+    }
 
     #[test]
     fn truncate_chars_within_limit() {
@@ -274,5 +372,23 @@ mod tests {
         // "héllo" — 5 chars, each may be multi-byte
         let s = "héllo";
         assert_eq!(truncate_chars(s, 3), "hél");
+    }
+
+    #[test]
+    fn js_shell_match_respects_policy() {
+        let cfg = test_config(crate::config::JsShellPolicy::ToolOnly);
+        assert!(matches_js_shell_policy(
+            &cfg,
+            "This page doesn't work properly without JavaScript enabled"
+        ));
+    }
+
+    #[test]
+    fn js_shell_match_disabled_when_policy_not_tool_only() {
+        let cfg = test_config(crate::config::JsShellPolicy::Allow);
+        assert!(!matches_js_shell_policy(
+            &cfg,
+            "This page doesn't work properly without JavaScript enabled"
+        ));
     }
 }
