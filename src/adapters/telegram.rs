@@ -2,6 +2,8 @@ use std::fmt::Write;
 use std::path::PathBuf;
 
 use anodized::contract;
+use teloxide::net::Download;
+use teloxide::prelude::Requester;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -228,9 +230,6 @@ async fn download_telegram_file(
         let _ = (file_id, filename);
     }
     validate_input(file_id, filename);
-
-    use teloxide::net::Download;
-    use teloxide::prelude::*;
 
     let file = bot
         .get_file(teloxide::types::FileId(file_id.to_owned()))

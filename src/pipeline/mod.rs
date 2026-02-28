@@ -226,6 +226,7 @@ impl Pipeline {
             &self.config.llm,
             &self.config.general.attachments_dir,
             &self.build_llm_guidance(&enriched),
+            self.config.llm.prompts.require_tool_for_urls && !enriched.urls.is_empty(),
         );
         match self.llm.complete(req).await {
             LlmOutcome::Success(resp) => {
@@ -265,6 +266,25 @@ impl Pipeline {
         let tool_lines = self.config.tooling.prompt_block();
         if !tool_lines.trim().is_empty() {
             lines.push(tool_lines);
+        }
+
+        if self.config.llm.prompts.require_tool_for_urls
+            && !self.config.llm.prompts.url_tool_decision.trim().is_empty()
+            && !enriched.urls.is_empty()
+        {
+            let urls = enriched
+                .urls
+                .iter()
+                .map(url::Url::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let decision = self
+                .config
+                .llm
+                .prompts
+                .url_tool_decision
+                .replace("{urls}", &urls);
+            lines.push(decision);
         }
 
         if !self.config.llm.prompts.js_shell_tool_hint.trim().is_empty()
@@ -324,18 +344,22 @@ fn truncate_chars(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        AdaptersConfig, AdminConfig, Config, GeneralConfig, PipelineConfig, SyncthingConfig,
+        ToolingConfig, UrlFetchConfig, WebUiConfig,
+    };
 
-    fn test_config(policy: crate::config::JsShellPolicy) -> crate::config::Config {
-        crate::config::Config {
-            general: crate::config::GeneralConfig {
+    fn test_config(policy: crate::config::JsShellPolicy) -> Config {
+        Config {
+            general: GeneralConfig {
                 output_file: std::path::PathBuf::from("/tmp/inbox-test.org"),
                 attachments_dir: std::path::PathBuf::from("/tmp/inbox-test-att"),
                 log_level: "info".into(),
                 log_format: "pretty".into(),
             },
-            admin: Default::default(),
-            web_ui: Default::default(),
-            pipeline: crate::config::PipelineConfig {
+            admin: AdminConfig::default(),
+            web_ui: WebUiConfig::default(),
+            pipeline: PipelineConfig {
                 web_content: crate::config::WebContentConfig {
                     js_shell_policy: policy,
                     js_shell_patterns: vec![
@@ -345,10 +369,10 @@ mod tests {
                 },
             },
             llm: crate::test_helpers::no_llm_config(),
-            adapters: Default::default(),
-            url_fetch: Default::default(),
-            syncthing: Default::default(),
-            tooling: Default::default(),
+            adapters: AdaptersConfig::default(),
+            url_fetch: UrlFetchConfig::default(),
+            syncthing: SyncthingConfig::default(),
+            tooling: ToolingConfig::default(),
         }
     }
 

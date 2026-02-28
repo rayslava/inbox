@@ -86,8 +86,8 @@ mod tests {
 
     #[test]
     fn extracts_paragraphs() {
-        let html = r#"<html><head><title>Test</title></head>
-        <body><p>Hello world.</p><p>Second paragraph.</p></body></html>"#;
+        let html = r"<html><head><title>Test</title></head>
+        <body><p>Hello world.</p><p>Second paragraph.</p></body></html>";
         let page = extract_text(html);
         assert_eq!(page.title.as_deref(), Some("Test"));
         assert!(page.text.contains("Hello world."));

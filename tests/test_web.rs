@@ -54,7 +54,7 @@ fn is_authenticated_returns_true_for_fresh_session() {
 
 // ── Org parser ────────────────────────────────────────────────────────────────
 
-const SAMPLE_ORG: &str = r#"* My capture title :tag1:tag2:
+const SAMPLE_ORG: &str = r"* My capture title :tag1:tag2:
 
 :PROPERTIES:
 :ID:       a1b2c3d4-0000-0000-0000-000000000001
@@ -79,7 +79,7 @@ Key excerpt here.
 :END:
 
 Second summary.
-"#;
+";
 
 #[test]
 fn parse_org_nodes_extracts_two_nodes() {

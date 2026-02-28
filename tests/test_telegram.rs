@@ -1,4 +1,4 @@
-/// Integration tests for the Telegram adapter using teloxide_tests.
+/// Integration tests for the Telegram adapter using `teloxide_tests`.
 ///
 /// These tests dispatch mock Telegram updates through the real handler logic
 /// without touching the Telegram API.
@@ -11,8 +11,8 @@ use teloxide_tests::{
 };
 use tokio::sync::mpsc;
 
-/// Default MockUser ID used by teloxide_tests.
-const DEFAULT_USER_ID: i64 = 12345678;
+/// Default `MockUser` ID used by `teloxide_tests`.
+const DEFAULT_USER_ID: i64 = 12_345_678;
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 

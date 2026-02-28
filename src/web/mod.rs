@@ -190,7 +190,10 @@ fn html_response(body: String) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{GeneralConfig, LlmConfig};
+    use crate::config::{
+        AdaptersConfig, FallbackMode, GeneralConfig, LlmConfig, LlmPromptsConfig, PipelineConfig,
+        SyncthingConfig, ToolingConfig, UrlFetchConfig, WebUiConfig,
+    };
     use crate::health::ReadinessState;
     use axum::body::Body;
     use axum::http::Request;
@@ -207,19 +210,19 @@ mod tests {
                 log_format: "pretty".into(),
             },
             admin: crate::config::AdminConfig::default(),
-            web_ui: Default::default(),
-            pipeline: Default::default(),
+            web_ui: WebUiConfig::default(),
+            pipeline: PipelineConfig::default(),
             llm: LlmConfig {
-                fallback: Default::default(),
+                fallback: FallbackMode::default(),
                 url_content_max_chars: 4000,
                 max_tool_turns: 5,
-                prompts: Default::default(),
+                prompts: LlmPromptsConfig::default(),
                 backends: vec![],
             },
-            adapters: Default::default(),
-            url_fetch: Default::default(),
-            syncthing: Default::default(),
-            tooling: Default::default(),
+            adapters: AdaptersConfig::default(),
+            url_fetch: UrlFetchConfig::default(),
+            syncthing: SyncthingConfig::default(),
+            tooling: ToolingConfig::default(),
         });
         let readiness = ReadinessState::new(ready);
         let sessions = auth::new_session_store();

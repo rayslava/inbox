@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use crate::config::LlmBackendConfig;
 use crate::error::InboxError;
@@ -112,6 +112,7 @@ impl LlmClient for OpenRouterClient {
             system_prompt,
             user_content,
             tool_definitions,
+            require_initial_tool_call,
             ..
         } = req;
 
@@ -134,7 +135,11 @@ impl LlmClient for OpenRouterClient {
             model: &self.model,
             messages,
             tools: tool_definitions,
-            tool_choice: None,
+            tool_choice: if require_initial_tool_call {
+                Some("required")
+            } else {
+                None
+            },
         };
 
         let resp = self
@@ -167,6 +172,14 @@ impl LlmClient for OpenRouterClient {
 
         // Tool calls?
         if let Some(tool_calls) = choice.message.tool_calls {
+            debug!(
+                tool_count = tool_calls.len(),
+                tool_names = ?tool_calls
+                    .iter()
+                    .map(|tc| tc.function.name.clone())
+                    .collect::<Vec<_>>(),
+                "OpenRouter returned tool calls"
+            );
             let calls = tool_calls
                 .into_iter()
                 .map(|tc| ToolCall {
@@ -181,8 +194,23 @@ impl LlmClient for OpenRouterClient {
 
         // Text response — parse JSON
         let text = choice.message.content.unwrap_or_default();
+        debug!(
+            response_len = text.len(),
+            response_preview = %truncate_for_log(&text, 1200),
+            "OpenRouter returned assistant text"
+        );
 
         parse_llm_json_response(&text, "openrouter").map(LlmCompletion::Message)
+    }
+}
+
+fn truncate_for_log(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_owned()
+    } else {
+        let mut out: String = s.chars().take(max_chars).collect();
+        out.push_str("…<truncated>");
+        out
     }
 }
 
@@ -270,7 +298,7 @@ mod tests {
 
     #[test]
     fn parse_json_missing_fields_defaults() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let r = parse_llm_json_response(json, "x").unwrap();
         assert_eq!(r.title, "(no title)");
         assert!(r.tags.is_empty());

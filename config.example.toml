@@ -67,6 +67,8 @@ Respond ONLY with the JSON object, no markdown fences.
 """
 tool_guidance_header = "Tool-specific guidance:"
 js_shell_tool_hint = "If URL content appears to be a JavaScript shell, call crawl_url for these URLs: {urls}. Prefer markdown output; fallback to HTML if markdown is empty."
+require_tool_for_urls = true
+url_tool_decision = "When URLs are present, decide the best retrieval tool first and call it before producing final JSON. Use crawl_url for JS-heavy/app-shell pages, scrape_page for normal readable pages, and download_file for direct file links. URLs: {urls}"
 
 # Primary backend: OpenRouter
 [[llm.backends]]

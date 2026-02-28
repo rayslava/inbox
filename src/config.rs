@@ -138,6 +138,10 @@ pub struct LlmPromptsConfig {
     pub tool_guidance_header: String,
     #[serde(default = "default_js_shell_tool_hint")]
     pub js_shell_tool_hint: String,
+    #[serde(default = "bool_true")]
+    pub require_tool_for_urls: bool,
+    #[serde(default = "default_url_tool_decision")]
+    pub url_tool_decision: String,
 }
 
 impl Default for LlmPromptsConfig {
@@ -146,6 +150,8 @@ impl Default for LlmPromptsConfig {
             base_system: default_base_system_prompt(),
             tool_guidance_header: default_tool_guidance_header(),
             js_shell_tool_hint: default_js_shell_tool_hint(),
+            require_tool_for_urls: true,
+            url_tool_decision: default_url_tool_decision(),
         }
     }
 }
@@ -167,6 +173,10 @@ fn default_tool_guidance_header() -> String {
 
 fn default_js_shell_tool_hint() -> String {
     "If URL content appears to be a JavaScript shell, call crawl_url for that URL and prefer markdown output.".into()
+}
+
+fn default_url_tool_decision() -> String {
+    "When URLs are present, decide the best retrieval tool first and call it before producing final JSON. Use crawl_url for JS-heavy/app-shell pages, scrape_page for normal readable pages, and download_file for direct file links. URLs: {urls}".into()
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]

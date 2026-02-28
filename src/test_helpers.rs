@@ -47,7 +47,7 @@ pub fn no_llm_config() -> LlmConfig {
         fallback: FallbackMode::Raw,
         url_content_max_chars: 4000,
         max_tool_turns: 3,
-        prompts: Default::default(),
+        prompts: crate::config::LlmPromptsConfig::default(),
         backends: vec![],
     }
 }

@@ -2,7 +2,10 @@
 use std::sync::Arc;
 
 use inbox::{
-    config::{Config, GeneralConfig, UrlFetchConfig},
+    config::{
+        AdaptersConfig, AdminConfig, Config, GeneralConfig, PipelineConfig, SyncthingConfig,
+        ToolingConfig, UrlFetchConfig, WebUiConfig,
+    },
     message::{IncomingMessage, MessageSource, SourceMetadata},
     output::{OutputWriter, org_file::OrgFileWriter},
     pipeline::Pipeline,
@@ -17,17 +20,17 @@ fn minimal_config(attachments_dir: std::path::PathBuf, output_file: std::path::P
             log_level: "debug".into(),
             log_format: "pretty".into(),
         },
-        admin: Default::default(),
-        web_ui: Default::default(),
-        pipeline: Default::default(),
+        admin: AdminConfig::default(),
+        web_ui: WebUiConfig::default(),
+        pipeline: PipelineConfig::default(),
         llm: helpers::no_llm_config(),
-        adapters: Default::default(),
+        adapters: AdaptersConfig::default(),
         url_fetch: UrlFetchConfig {
             enabled: false,
-            ..Default::default()
+            ..UrlFetchConfig::default()
         },
-        syncthing: Default::default(),
-        tooling: Default::default(),
+        syncthing: SyncthingConfig::default(),
+        tooling: ToolingConfig::default(),
     }
 }
 

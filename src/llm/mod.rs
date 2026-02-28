@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anodized::contract;
 use async_trait::async_trait;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::config::{Config, FallbackMode, LlmConfig};
 use crate::error::InboxError;
@@ -22,6 +22,7 @@ pub struct LlmRequest {
     pub msg_id: uuid::Uuid,
     pub attachments_dir: PathBuf,
     pub tool_definitions: Vec<serde_json::Value>,
+    pub require_initial_tool_call: bool,
 }
 
 impl LlmRequest {
@@ -32,6 +33,7 @@ impl LlmRequest {
         cfg: &LlmConfig,
         attachments_dir: &Path,
         guidance_block: &str,
+        require_initial_tool_call: bool,
     ) -> Self {
         let mut user_content = enriched.original.text.clone();
 
@@ -58,6 +60,7 @@ impl LlmRequest {
             msg_id: enriched.original.id,
             attachments_dir: attachments_dir.to_path_buf(),
             tool_definitions: Vec::new(),
+            require_initial_tool_call,
         }
     }
 
@@ -69,6 +72,7 @@ impl LlmRequest {
             msg_id: uuid::Uuid::nil(),
             attachments_dir: PathBuf::new(),
             tool_definitions: Vec::new(),
+            require_initial_tool_call: false,
         }
     }
 }
@@ -140,10 +144,33 @@ impl LlmChain {
                 let mut req_attempt = req.clone();
                 req_attempt.tool_definitions = tool_defs.clone();
                 let mut turns = 0usize;
+                let mut required_tool_prompts = 0usize;
 
                 loop {
                     match backend.complete(req_attempt.clone()).await {
                         Ok(LlmCompletion::Message(resp)) => {
+                            if req_attempt.require_initial_tool_call
+                                && turns == 0
+                                && !tool_defs.is_empty()
+                            {
+                                if required_tool_prompts < 3 {
+                                    debug!(
+                                        backend = backend.name(),
+                                        prompt_attempt = required_tool_prompts + 1,
+                                        "Re-prompting model to make required initial tool call"
+                                    );
+                                    req_attempt.user_content.push_str(
+                                        "\n\nA tool call is required before final JSON because URLs are present. First analyze and call exactly one best retrieval tool, then continue.",
+                                    );
+                                    required_tool_prompts += 1;
+                                    continue;
+                                }
+                                warn!(
+                                    backend = backend.name(),
+                                    "Required initial tool call was not produced"
+                                );
+                                break;
+                            }
                             metrics::counter!(
                                 crate::telemetry::LLM_REQUESTS,
                                 "backend" => backend.name().to_owned(),
@@ -186,6 +213,7 @@ impl LlmChain {
                                 .user_content
                                 .push_str("\n\n--- Tool execution results ---\n");
                             req_attempt.user_content.push_str(&output);
+                            req_attempt.require_initial_tool_call = false;
                             turns += 1;
                         }
                         Err(e) => {
@@ -223,6 +251,7 @@ async fn execute_tool_calls(
 ) -> String {
     let mut outputs = Vec::with_capacity(calls.len());
     for call in calls {
+        debug!(tool = %call.name, tool_call_id = %call.id, "Executing LLM tool call");
         match executor
             .execute(
                 &call.name,
@@ -300,7 +329,8 @@ mod tests {
     fn llm_request_default_system_prompt() {
         let cfg = crate::test_helpers::no_llm_config();
         let enriched = make_enriched("hello");
-        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "");
+        let req =
+            LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "", false);
         assert!(!req.system_prompt.is_empty());
         assert_eq!(req.user_content, "hello");
     }
@@ -310,7 +340,8 @@ mod tests {
         let mut cfg = crate::test_helpers::no_llm_config();
         cfg.prompts.base_system = "custom prompt".into();
         let enriched = make_enriched("text");
-        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "");
+        let req =
+            LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "", false);
         assert_eq!(req.system_prompt, "custom prompt");
     }
 
@@ -323,7 +354,8 @@ mod tests {
             text: "page content".into(),
             page_title: None,
         });
-        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "");
+        let req =
+            LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "", false);
         assert!(req.user_content.contains("page content"));
         assert!(req.user_content.contains("http://example.com"));
     }
@@ -337,6 +369,7 @@ mod tests {
             &cfg,
             std::path::Path::new("/tmp"),
             "Tool crawl_url: prefer markdown first",
+            false,
         );
         assert!(
             req.system_prompt
@@ -351,7 +384,8 @@ mod tests {
         let chain = crate::test_helpers::mock_llm_chain(resp.clone());
         let enriched = make_enriched("test");
         let cfg = crate::test_helpers::no_llm_config();
-        let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "");
+        let req =
+            LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "", false);
         let outcome = chain.complete(req).await;
         assert!(matches!(outcome, LlmOutcome::Success(_)));
     }
@@ -381,7 +415,7 @@ mod tests {
     struct ToolCallsLlm;
     #[async_trait]
     impl LlmClient for ToolCallsLlm {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "toolcalls"
         }
         fn retries(&self) -> u32 {
@@ -399,7 +433,7 @@ mod tests {
     struct EmptyToolCallsLlm;
     #[async_trait]
     impl LlmClient for EmptyToolCallsLlm {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "empty_toolcalls"
         }
         fn retries(&self) -> u32 {

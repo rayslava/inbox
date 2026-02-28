@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use crate::config::LlmBackendConfig;
 use crate::error::InboxError;
@@ -144,6 +144,14 @@ impl LlmClient for OllamaClient {
 
         // Tool calls?
         if let Some(tool_calls) = chat.message.tool_calls {
+            debug!(
+                tool_count = tool_calls.len(),
+                tool_names = ?tool_calls
+                    .iter()
+                    .map(|tc| tc.function.name.clone())
+                    .collect::<Vec<_>>(),
+                "Ollama returned tool calls"
+            );
             let calls = tool_calls
                 .into_iter()
                 .map(|tc| ToolCall {
@@ -155,7 +163,23 @@ impl LlmClient for OllamaClient {
             return Ok(LlmCompletion::ToolCalls(calls));
         }
 
+        debug!(
+            response_len = chat.message.content.len(),
+            response_preview = %truncate_for_log(&chat.message.content, 1200),
+            "Ollama returned assistant text"
+        );
+
         parse_llm_json_response(&chat.message.content, "ollama").map(LlmCompletion::Message)
+    }
+}
+
+fn truncate_for_log(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_owned()
+    } else {
+        let mut out: String = s.chars().take(max_chars).collect();
+        out.push_str("…<truncated>");
+        out
     }
 }
 
