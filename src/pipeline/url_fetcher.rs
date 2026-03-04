@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anodized::contract;
+use anodized::spec;
 use reqwest::Client;
 use tracing::{debug, info, instrument, warn};
 use url::Url;
@@ -114,7 +114,7 @@ impl UrlFetcher {
     /// Download a file URL as an attachment.
     /// Saves to `{attachments_dir}/{id[0..2]}/{id[2..]}/{filename}`.
     #[instrument(skip(self, attachments_dir), fields(url = %url, id = %msg_id))]
-    #[contract(requires: !msg_id.is_nil())]
+    #[spec(requires: !msg_id.is_nil())]
     pub async fn download_file(
         &self,
         url: &Url,
@@ -213,7 +213,7 @@ fn sanitize_filename(s: &str) -> String {
 
 /// org-attach-id-dir layout: `{base}/{id[0..2]}/{id[2..]}/{filename}`
 #[must_use]
-#[contract(requires: !filename.is_empty())]
+#[spec(requires: !filename.is_empty())]
 pub fn attachment_save_path(base: &Path, id: Uuid, filename: &str) -> PathBuf {
     let id_str = id.to_string().replace('-', "");
     let dir1 = &id_str[..2];

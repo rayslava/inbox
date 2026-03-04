@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anodized::contract;
+use anodized::spec;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -44,7 +44,7 @@ impl Pipeline {
         }
     }
 
-    #[contract(requires: true)]
+    #[spec(requires: true)]
     pub async fn run(self: Arc<Self>, mut rx: mpsc::Receiver<IncomingMessage>) {
         info!("Pipeline started, waiting for messages");
         while let Some(msg) = rx.recv().await {
@@ -90,7 +90,7 @@ impl Pipeline {
     ///
     /// # Errors
     /// Returns an error if enrichment, LLM completion, or output writing fails.
-    #[contract(requires: !msg.id.is_nil())]
+    #[spec(requires: !msg.id.is_nil())]
     #[instrument(skip(self, msg), fields(id = %msg.id, source = %msg.source))]
     pub async fn process(&self, msg: IncomingMessage) -> Result<(), InboxError> {
         let enriched = self.enrich(msg).await?;

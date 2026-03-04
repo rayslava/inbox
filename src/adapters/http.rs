@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anodized::contract;
+use anodized::spec;
 use axum::{
     Router,
     body::Bytes,
@@ -217,7 +217,7 @@ async fn save_bytes(
     mime: &str,
     data: &[u8],
 ) -> Result<Attachment, InboxError> {
-    #[contract(requires: !filename.is_empty() && !data.is_empty())]
+    #[spec(requires: !filename.is_empty() && !data.is_empty())]
     fn validate_input(filename: &str, data: &[u8]) {
         let _ = (filename, data);
     }

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use anodized::contract;
+use anodized::spec;
 use serde::Deserialize;
 
 use crate::error::InboxError;
@@ -563,7 +563,7 @@ fn default_crawl_description() -> String {
 ///
 /// # Errors
 /// Returns an error if the file cannot be read or the TOML is invalid.
-#[contract(requires: path.exists())]
+#[spec(requires: path.exists())]
 pub fn load(path: &std::path::Path) -> Result<Config, InboxError> {
     let raw = std::fs::read_to_string(path).map_err(InboxError::Io)?;
     let interpolated = interpolate_env(&raw);

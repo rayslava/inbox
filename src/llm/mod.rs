@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anodized::contract;
+use anodized::spec;
 use async_trait::async_trait;
 use tracing::{debug, warn};
 
@@ -27,7 +27,7 @@ pub struct LlmRequest {
 
 impl LlmRequest {
     #[must_use]
-    #[contract(requires: cfg.url_content_max_chars > 0)]
+    #[spec(requires: cfg.url_content_max_chars > 0)]
     pub fn from_enriched(
         enriched: &EnrichedMessage,
         cfg: &LlmConfig,
@@ -131,7 +131,7 @@ impl LlmChain {
     }
 
     /// Try each backend in order with retries. On exhaustion, apply fallback policy.
-    #[contract(requires: self.max_tool_turns > 0)]
+    #[spec(requires: self.max_tool_turns > 0)]
     pub async fn complete(&self, req: LlmRequest) -> LlmOutcome {
         let tool_defs = self
             .tool_executor
@@ -243,7 +243,7 @@ impl LlmChain {
     }
 }
 
-#[contract(requires: !calls.is_empty())]
+#[spec(requires: !calls.is_empty())]
 async fn execute_tool_calls(
     executor: &tools::ToolExecutor,
     calls: &[ToolCall],

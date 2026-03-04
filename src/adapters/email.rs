@@ -57,23 +57,33 @@ async fn imap_idle_loop(
     attachments_dir: &std::path::Path,
     tx: &mpsc::Sender<IncomingMessage>,
 ) -> Result<(), InboxError> {
+    use std::sync::Arc;
+
     use async_imap::extensions::idle::IdleResponse;
+    use rustls_pki_types::ServerName;
+    use tokio_rustls::TlsConnector;
     use tokio_util::compat::TokioAsyncReadCompatExt;
 
-    // async-native-tls requires futures::AsyncRead/Write; wrap tcp with compat first.
-    let tls = async_native_tls::TlsConnector::new();
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let tls_config = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    let connector = TlsConnector::from(Arc::new(tls_config));
+
     let tcp = tokio::net::TcpStream::connect((cfg.host.as_str(), cfg.port))
         .await
         .map_err(|e| InboxError::Adapter(format!("IMAP TCP connect failed: {e}")))?;
-    let compat_tcp = tcp.compat();
 
-    let tls_stream = tls
-        .connect(&cfg.host, compat_tcp)
+    let server_name = ServerName::try_from(cfg.host.clone())
+        .map_err(|e| InboxError::Adapter(format!("Invalid IMAP hostname: {e}")))?;
+    let tls_stream = connector
+        .connect(server_name, tcp)
         .await
         .map_err(|e| InboxError::Adapter(format!("IMAP TLS handshake failed: {e}")))?;
 
-    // TlsStream<Compat<TcpStream>> implements futures::AsyncRead + AsyncWrite directly.
-    let client = async_imap::Client::new(tls_stream);
+    // tokio-rustls returns a tokio stream; wrap with compat for async-imap (futures I/O).
+    let client = async_imap::Client::new(tls_stream.compat());
 
     let mut session = client
         .login(&cfg.username, &cfg.password)

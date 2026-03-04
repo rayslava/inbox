@@ -1,7 +1,7 @@
 use std::fmt::Write;
 use std::path::PathBuf;
 
-use anodized::contract;
+use anodized::spec;
 use teloxide::net::Download;
 use teloxide::prelude::Requester;
 use tokio::sync::mpsc;
@@ -225,7 +225,7 @@ async fn download_telegram_file(
     attachments_dir: &std::path::Path,
     media_kind: crate::message::MediaKind,
 ) -> Result<crate::message::Attachment, InboxError> {
-    #[contract(requires: !file_id.is_empty() && !filename.is_empty())]
+    #[spec(requires: !file_id.is_empty() && !filename.is_empty())]
     fn validate_input(file_id: &str, filename: &str) {
         let _ = (file_id, filename);
     }
@@ -267,7 +267,7 @@ async fn download_telegram_file(
 }
 
 #[must_use]
-#[contract(requires: !name.is_empty())]
+#[spec(requires: !name.is_empty())]
 fn sanitize_filename(name: &str) -> String {
     let basename = std::path::Path::new(name)
         .file_name()
