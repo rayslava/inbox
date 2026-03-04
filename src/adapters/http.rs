@@ -11,6 +11,7 @@ use axum::{
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
 use crate::config::HttpAdapterConfig;
@@ -67,9 +68,22 @@ struct AppState {
 fn build_router(adapter: Arc<HttpAdapter>, tx: mpsc::Sender<IncomingMessage>) -> Router {
     let state = AppState { tx, adapter };
 
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([
+            axum::http::Method::POST,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
+        .max_age(std::time::Duration::from_secs(3600));
+
     Router::new()
         .route("/inbox", post(inbox_handler))
         .route("/inbox/upload", post(upload_handler))
+        .layer(cors)
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50 MB
         .with_state(state)
 }

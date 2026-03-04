@@ -16,7 +16,7 @@ tokio               = { version = "1", features = ["full"] }
 tokio-util          = { version = "0.7", features = ["compat"] }
 futures             = "0"
 axum                = { version = "0.8", features = ["multipart"] }
-tower-http          = { version = "0.6", features = ["auth", "trace"] }
+tower-http          = { version = "0.6", features = ["auth", "trace", "cors"] }
 teloxide            = { version = "0.17", default-features = false, features = ["macros", "rustls", "ctrlc_handler"] }
 async-imap          = "0"
 tokio-rustls        = "0"
