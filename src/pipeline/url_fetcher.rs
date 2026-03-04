@@ -1,3 +1,4 @@
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -14,7 +15,10 @@ use super::content_extractor::{self, ExtractedPage};
 use crate::url_content::UrlContent;
 
 pub struct UrlFetcher {
+    /// Dual-stack client (tries IPv6 then IPv4 as resolved by DNS).
     client: Client,
+    /// IPv4-only fallback client.
+    client_v4: Client,
     cfg: UrlFetchConfig,
 }
 
@@ -37,52 +41,80 @@ impl UrlFetcher {
             "en-US,en;q=0.5".parse().expect("static header value"),
         );
 
-        let client = crate::tls::client_builder()
-            .user_agent(&cfg.user_agent)
-            .timeout(Duration::from_secs(cfg.timeout_secs))
-            .redirect(reqwest::redirect::Policy::limited(
-                cfg.max_redirects as usize,
-            ))
-            .default_headers(headers)
+        let base = || {
+            crate::tls::client_builder()
+                .user_agent(&cfg.user_agent)
+                .timeout(Duration::from_secs(cfg.timeout_secs))
+                .redirect(reqwest::redirect::Policy::limited(
+                    cfg.max_redirects as usize,
+                ))
+                .default_headers(headers.clone())
+        };
+
+        let client = base()
             .build()
             .expect("Failed to build HTTP client");
 
+        let client_v4 = base()
+            .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+            .build()
+            .expect("Failed to build IPv4 HTTP client");
+
         Self {
             client,
+            client_v4,
             cfg: cfg.clone(),
         }
     }
 
+    /// Send a GET and return the response if successful, trying the IPv4-only
+    /// client as a fallback if the dual-stack attempt fails at the connection level.
+    async fn get_with_fallback(&self, url: &Url) -> Option<reqwest::Response> {
+        match self.client.get(url.as_str()).send().await {
+            Ok(resp) => Some(resp),
+            Err(e) => {
+                debug!(%url, err = %e, "Dual-stack GET failed, retrying via IPv4");
+                match self.client_v4.get(url.as_str()).send().await {
+                    Ok(resp) => Some(resp),
+                    Err(e2) => {
+                        warn!(%url, err = %e2, "Page fetch failed on both dual-stack and IPv4");
+                        metrics::counter!(
+                            crate::telemetry::URL_FETCHES,
+                            "status" => "failure"
+                        )
+                        .increment(1);
+                        None
+                    }
+                }
+            }
+        }
+    }
+
     /// Issue a HEAD request and return the Content-Type header value, if any.
+    /// Falls back to the IPv4-only client if the dual-stack attempt fails.
     pub async fn head(&self, url: &Url) -> Option<String> {
-        self.client
+        let extract_ct = |r: reqwest::Response| {
+            r.headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(std::borrow::ToOwned::to_owned)
+        };
+
+        if let Ok(resp) = self.client.head(url.as_str()).send().await {
+            return extract_ct(resp);
+        }
+        self.client_v4
             .head(url.as_str())
             .send()
             .await
             .ok()
-            .and_then(|r| {
-                r.headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .map(std::borrow::ToOwned::to_owned)
-            })
+            .and_then(extract_ct)
     }
 
     /// Fetch a page and extract readable text.
     #[instrument(skip(self), fields(url = %url))]
     pub async fn fetch_page(&self, url: &Url) -> Option<UrlContent> {
-        let resp = self
-            .client
-            .get(url.as_str())
-            .send()
-            .await
-            .map_err(|e| {
-                warn!(?e, %url, "Page fetch failed");
-                metrics::counter!(crate::telemetry::URL_FETCHES, "status" => "failure")
-                    .increment(1);
-                e
-            })
-            .ok()?;
+        let resp = self.get_with_fallback(url).await?;
 
         if !resp.status().is_success() {
             warn!(status = %resp.status(), %url, "Page fetch non-200");
@@ -134,16 +166,7 @@ impl UrlFetcher {
         msg_id: Uuid,
         attachments_dir: &Path,
     ) -> Option<Attachment> {
-        let resp = self
-            .client
-            .get(url.as_str())
-            .send()
-            .await
-            .map_err(|e| {
-                warn!(?e, %url, "File download failed");
-                e
-            })
-            .ok()?;
+        let resp = self.get_with_fallback(url).await?;
 
         if !resp.status().is_success() {
             warn!(status = %resp.status(), %url, "File download non-200");
