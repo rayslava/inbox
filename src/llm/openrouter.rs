@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
 use crate::config::LlmBackendConfig;
 use crate::error::InboxError;
@@ -102,6 +102,9 @@ impl LlmClient for OpenRouterClient {
     fn name(&self) -> &'static str {
         "openrouter"
     }
+    fn model(&self) -> &str {
+        &self.model
+    }
     fn retries(&self) -> u32 {
         self.retries
     }
@@ -142,9 +145,11 @@ impl LlmClient for OpenRouterClient {
             },
         };
 
+        let url = format!("{}/chat/completions", self.base_url);
+        debug!(url = %url, model = %self.model, "Sending OpenRouter request");
         let resp = self
             .client
-            .post(format!("{}/chat/completions", self.base_url))
+            .post(&url)
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()
@@ -172,7 +177,7 @@ impl LlmClient for OpenRouterClient {
 
         // Tool calls?
         if let Some(tool_calls) = choice.message.tool_calls {
-            debug!(
+            info!(
                 tool_count = tool_calls.len(),
                 tool_names = ?tool_calls
                     .iter()

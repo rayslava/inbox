@@ -215,9 +215,11 @@ impl Pipeline {
     async fn run_llm(&self, enriched: EnrichedMessage) -> Result<ProcessedMessage, InboxError> {
         use crate::llm::{LlmOutcome, LlmRequest};
 
-        debug!(
+        let text_preview: String = enriched.original.text.chars().take(120).collect();
+        info!(
             id = %enriched.original.id,
             attachment_count = enriched.original.attachments.len(),
+            text_preview = %text_preview,
             "Starting LLM processing"
         );
 
@@ -243,7 +245,12 @@ impl Pipeline {
                 })
             }
             LlmOutcome::RawFallback => {
-                info!(id = %enriched.original.id, "LLM unavailable, using raw fallback");
+                let text_preview: String = enriched.original.text.chars().take(120).collect();
+                info!(
+                    id = %enriched.original.id,
+                    text_preview = %text_preview,
+                    "LLM unavailable, using raw fallback"
+                );
                 Ok(ProcessedMessage {
                     enriched,
                     llm_response: None,

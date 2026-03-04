@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anodized::spec;
 use async_trait::async_trait;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::{Config, FallbackMode, LlmConfig};
 use crate::error::InboxError;
@@ -101,6 +101,7 @@ pub enum LlmOutcome {
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     fn name(&self) -> &str;
+    fn model(&self) -> &str;
     fn retries(&self) -> u32;
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError>;
 }
@@ -147,6 +148,27 @@ impl LlmChain {
                 let mut required_tool_prompts = 0usize;
 
                 loop {
+                    let tool_names: Vec<&str> = req_attempt
+                        .tool_definitions
+                        .iter()
+                        .filter_map(|d| d["function"]["name"].as_str())
+                        .collect();
+                    let system_preview: String =
+                        req_attempt.system_prompt.chars().take(300).collect();
+                    let content_preview: String =
+                        req_attempt.user_content.chars().take(600).collect();
+                    debug!(
+                        backend = backend.name(),
+                        model = backend.model(),
+                        turn = turns + 1,
+                        tools = ?tool_names,
+                        system_len = req_attempt.system_prompt.len(),
+                        content_len = req_attempt.user_content.len(),
+                        system_preview = %system_preview,
+                        content_preview = %content_preview,
+                        "LLM request"
+                    );
+
                     match backend.complete(req_attempt.clone()).await {
                         Ok(LlmCompletion::Message(resp)) => {
                             if req_attempt.require_initial_tool_call
@@ -217,7 +239,16 @@ impl LlmChain {
                             turns += 1;
                         }
                         Err(e) => {
-                            warn!(?e, backend = backend.name(), attempt, "LLM attempt failed");
+                            let elapsed_ms = start.elapsed().as_millis();
+                            warn!(
+                                ?e,
+                                backend = backend.name(),
+                                model = backend.model(),
+                                attempt = attempt + 1,
+                                total_attempts = backend.retries(),
+                                elapsed_ms,
+                                "LLM attempt failed"
+                            );
                             break;
                         }
                     }
@@ -229,8 +260,18 @@ impl LlmChain {
                 )
                 .increment(1);
             }
+            warn!(
+                backend = backend.name(),
+                model = backend.model(),
+                retries = backend.retries(),
+                "LLM backend exhausted all retries"
+            );
         }
 
+        warn!(
+            backend_count = self.backends.len(),
+            "All LLM backends failed, applying fallback"
+        );
         match self.fallback {
             FallbackMode::Raw => LlmOutcome::RawFallback,
             FallbackMode::Discard => LlmOutcome::Discard,
@@ -251,7 +292,7 @@ async fn execute_tool_calls(
 ) -> String {
     let mut outputs = Vec::with_capacity(calls.len());
     for call in calls {
-        debug!(tool = %call.name, tool_call_id = %call.id, "Executing LLM tool call");
+        info!(tool = %call.name, "Executing LLM tool call");
         match executor
             .execute(
                 &call.name,
@@ -262,9 +303,17 @@ async fn execute_tool_calls(
             .await
         {
             Ok(tools::ToolResult::Text(text) | tools::ToolResult::Attachment { text, .. }) => {
+                let result_preview: String = text.chars().take(120).collect();
+                info!(
+                    tool = %call.name,
+                    result_len = text.len(),
+                    result_preview = %result_preview,
+                    "Tool call result"
+                );
                 outputs.push(format!("tool `{}`: {text}", call.name));
             }
             Err(e) => {
+                warn!(tool = %call.name, ?e, "Tool call failed");
                 outputs.push(format!("tool `{}` error: {e}", call.name));
             }
         }
@@ -418,6 +467,9 @@ mod tests {
         fn name(&self) -> &'static str {
             "toolcalls"
         }
+        fn model(&self) -> &'static str {
+            "test-model"
+        }
         fn retries(&self) -> u32 {
             1
         }
@@ -435,6 +487,9 @@ mod tests {
     impl LlmClient for EmptyToolCallsLlm {
         fn name(&self) -> &'static str {
             "empty_toolcalls"
+        }
+        fn model(&self) -> &'static str {
+            "test-model"
         }
         fn retries(&self) -> u32 {
             1
@@ -496,6 +551,9 @@ pub mod mock {
     impl LlmClient for MockLlm {
         fn name(&self) -> &str {
             &self.name
+        }
+        fn model(&self) -> &'static str {
+            "mock"
         }
         fn retries(&self) -> u32 {
             1

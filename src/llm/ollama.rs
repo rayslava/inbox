@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
 use crate::config::LlmBackendConfig;
 use crate::error::InboxError;
@@ -88,6 +88,9 @@ impl LlmClient for OllamaClient {
     fn name(&self) -> &'static str {
         "ollama"
     }
+    fn model(&self) -> &str {
+        &self.model
+    }
     fn retries(&self) -> u32 {
         self.retries
     }
@@ -121,9 +124,11 @@ impl LlmClient for OllamaClient {
             tools: tool_definitions,
         };
 
+        let url = format!("{}/api/chat", self.base_url);
+        debug!(url = %url, model = %self.model, "Sending Ollama request");
         let resp = self
             .client
-            .post(format!("{}/api/chat", self.base_url))
+            .post(&url)
             .json(&body)
             .send()
             .await
@@ -144,7 +149,7 @@ impl LlmClient for OllamaClient {
 
         // Tool calls?
         if let Some(tool_calls) = chat.message.tool_calls {
-            debug!(
+            info!(
                 tool_count = tool_calls.len(),
                 tool_names = ?tool_calls
                     .iter()
