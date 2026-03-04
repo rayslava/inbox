@@ -24,7 +24,7 @@ impl OllamaClient {
     /// Panics if the TLS backend cannot be initialised (extremely unlikely in practice).
     #[must_use]
     pub fn from_config(cfg: &LlmBackendConfig) -> Self {
-        let client = reqwest::Client::builder()
+        let client = crate::tls::client_builder()
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .build()
             .expect("Failed to build Ollama HTTP client");

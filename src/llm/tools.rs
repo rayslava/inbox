@@ -75,7 +75,7 @@ impl ToolExecutor {
     /// Panics if the TLS backend cannot be initialised (extremely unlikely in practice).
     #[must_use]
     pub fn new(tools: Vec<Tool>, fetcher: UrlFetcher) -> Self {
-        let http_client = reqwest::Client::builder()
+        let http_client = crate::tls::client_builder()
             .timeout(Duration::from_secs(30))
             .build()
             .expect("Failed to build tool HTTP client");

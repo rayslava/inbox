@@ -37,7 +37,7 @@ impl UrlFetcher {
             "en-US,en;q=0.5".parse().expect("static header value"),
         );
 
-        let client = Client::builder()
+        let client = crate::tls::client_builder()
             .user_agent(&cfg.user_agent)
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .redirect(reqwest::redirect::Policy::limited(

@@ -11,5 +11,6 @@ pub mod output;
 pub mod pipeline;
 pub mod render;
 pub mod telemetry;
+pub mod tls;
 pub mod url_content;
 pub mod web;
