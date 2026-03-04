@@ -12,6 +12,7 @@ use inbox::{
     config,
     health::ReadinessState,
     llm,
+    log_capture,
     output::{OutputWriter, org_file::OrgFileWriter},
     pipeline::Pipeline,
     telemetry as inbox_telemetry, web,
@@ -50,7 +51,8 @@ async fn main() -> Result<()> {
         .with_context(|| format!("Failed to load config from {}", cli.config.display()))?;
 
     // Logging
-    init_logging(&cfg.general.log_format, &cfg.general.log_level);
+    let log_store = log_capture::LogStore::new(log_capture::CAPACITY);
+    init_logging(&cfg.general.log_format, &cfg.general.log_level, Arc::clone(&log_store));
 
     info!(version = env!("CARGO_PKG_VERSION"), "inbox starting");
 
@@ -88,6 +90,7 @@ async fn main() -> Result<()> {
             readiness.clone(),
             session_store,
             prometheus_handle,
+            Arc::clone(&log_store),
         );
         tokio::spawn(async move {
             let listener = tokio::net::TcpListener::bind(admin_addr)
@@ -126,14 +129,15 @@ async fn main() -> Result<()> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn init_logging(format: &str, level: &str) {
+fn init_logging(format: &str, level: &str, log_store: std::sync::Arc<log_capture::LogStore>) {
     use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
     let filter = EnvFilter::try_from_env("RUST_LOG")
         .or_else(|_| EnvFilter::try_new(format!("inbox={level}")))
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let registry = tracing_subscriber::registry().with(filter);
+    let capture = log_capture::LogCaptureLayer::new(log_store);
+    let registry = tracing_subscriber::registry().with(filter).with(capture);
 
     let log_format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| format.to_owned());
 

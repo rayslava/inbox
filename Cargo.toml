@@ -14,16 +14,16 @@ path = "src/lib.rs"
 [dependencies]
 tokio               = { version = "1", features = ["full"] }
 tokio-util          = { version = "0.7", features = ["compat"] }
-futures             = "0.3"
+futures             = "0"
 axum                = { version = "0.8", features = ["multipart"] }
 tower-http          = { version = "0.6", features = ["auth", "trace"] }
 teloxide            = { version = "0.17", default-features = false, features = ["macros", "rustls", "ctrlc_handler"] }
-async-imap          = "0.11"
-tokio-rustls        = "0.26"
-rustls              = { version = "0.23", default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
+async-imap          = "0"
+tokio-rustls        = "0"
+rustls              = { version = "0", default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
 rustls-pki-types    = "1"
 webpki-roots        = "1"
-reqwest             = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "gzip", "brotli", "deflate"] }
+reqwest             = { version = "0", default-features = false, features = ["json", "stream", "rustls", "gzip", "brotli", "deflate"] }
 serde               = { version = "1", features = ["derive"] }
 serde_json          = "1"
 toml                = "1"
@@ -46,7 +46,7 @@ metrics-exporter-prometheus = { version = "0", features = ["http-listener"] }
 axum-prometheus     = "0"
 mime_guess          = "2"
 argon2              = { version = "0.6.0-rc.7", features = ["getrandom"] }
-rand                = { version = "0.10.0", features = ["std"] }
+rand                = { version = "0.10", features = ["std"] }
 dashmap             = "6"
 bytes               = "1"
 mime                = "0"
@@ -58,14 +58,14 @@ urlencoding         = "2"
 test-helpers = []
 
 [dev-dependencies]
-wiremock       = "0.6"
+wiremock       = "0"
 flate2         = "1"
-tokio-test     = "0.4"
+tokio-test     = "0"
 tempfile       = "3"
-tower          = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
+tower          = { version = "0", features = ["util"] }
+http-body-util = "0"
 inbox          = { path = ".", features = ["test-helpers"] }
-teloxide_tests = "0.4.0"
+teloxide_tests = "0"
 
 [lints.clippy]
 pedantic = "warn"

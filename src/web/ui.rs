@@ -12,6 +12,12 @@ pub struct LoginTemplate {
 }
 
 #[derive(Template)]
+#[template(path = "logs.html")]
+pub struct LogsTemplate {
+    pub entries: Vec<crate::log_capture::LogEntry>,
+}
+
+#[derive(Template)]
 #[template(path = "inbox_ui.html")]
 pub struct InboxUiTemplate {
     pub nodes: Vec<UiNode>,
@@ -206,7 +212,7 @@ fn try_parse_org_link(line: &str, attachments_dir: &Path) -> Option<UiAttachment
     let mime_str = mime.essence_str();
 
     let html = if mime_str.starts_with("image/") {
-        format!(r#"<img src="{url}" alt="{name}" loading="lazy" />"#)
+        format!(r#"<a href="{url}" target="_blank"><img src="{url}" alt="{name}" loading="lazy" /></a>"#)
     } else if mime_str.starts_with("audio/") {
         format!(r#"<audio controls src="{url}"></audio>"#)
     } else if mime_str.starts_with("video/") {

@@ -13,6 +13,7 @@ use tracing::warn;
 
 use crate::config::Config;
 use crate::health::ReadinessState;
+use crate::log_capture::LogStore;
 
 pub mod attachments;
 pub mod auth;
@@ -26,6 +27,7 @@ pub(crate) struct AdminState {
     pub readiness: ReadinessState,
     pub sessions: Arc<auth::SessionStore>,
     pub metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
+    pub log_store: Arc<LogStore>,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -35,6 +37,7 @@ pub fn admin_router(
     readiness: ReadinessState,
     session_store: Arc<auth::SessionStore>,
     metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
+    log_store: Arc<LogStore>,
 ) -> Router {
     let web_ui_enabled = cfg.web_ui.enabled;
     let state = AdminState {
@@ -42,6 +45,7 @@ pub fn admin_router(
         readiness,
         sessions: session_store,
         metrics_handle,
+        log_store,
     };
 
     let mut router = Router::new()
@@ -54,6 +58,7 @@ pub fn admin_router(
             .route("/login", get(login_get).post(login_post))
             .route("/logout", get(logout_handler))
             .route("/ui", get(ui_handler))
+            .route("/logs", get(logs_handler))
             .route("/attachments/{*path}", get(attachments::serve_attachment));
     }
 
@@ -176,6 +181,21 @@ async fn ui_handler(State(state): State<AdminState>, headers: HeaderMap) -> Resp
     )
 }
 
+// ── Logs handler ─────────────────────────────────────────────────────────────
+
+async fn logs_handler(State(state): State<AdminState>, headers: HeaderMap) -> Response {
+    let admin = &state.cfg.admin;
+    if !auth::is_authenticated(&headers, &state.sessions, admin.session_ttl_days) {
+        return Redirect::to("/login").into_response();
+    }
+    let entries = state.log_store.recent();
+    html_response(
+        ui::LogsTemplate { entries }
+            .render()
+            .unwrap_or_default(),
+    )
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn html_response(body: String) -> Response {
@@ -234,6 +254,7 @@ mod tests {
             readiness,
             sessions,
             metrics_handle: handle,
+            log_store: LogStore::new(100),
         }
     }
 
@@ -244,6 +265,7 @@ mod tests {
             state.readiness,
             state.sessions,
             state.metrics_handle,
+            state.log_store,
         )
     }
 
