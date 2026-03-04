@@ -1,5 +1,6 @@
 use std::fmt::Write;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anodized::spec;
 use teloxide::net::Download;
@@ -7,6 +8,13 @@ use teloxide::prelude::Requester;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+
+/// Initial backoff before first reconnect attempt.
+const RECONNECT_BACKOFF_INIT: Duration = Duration::from_secs(1);
+/// Maximum backoff between reconnect attempts.
+const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(60);
+/// If a session lasted at least this long, reset the backoff on disconnect.
+const STABLE_THRESHOLD: Duration = Duration::from_secs(30);
 
 use crate::config::TelegramConfig;
 use crate::error::InboxError;
@@ -36,25 +44,59 @@ impl InputAdapter for TelegramAdapter {
             return Err(InboxError::Adapter("Telegram bot_token is empty".into()));
         }
 
-        let bot = Bot::new(&self.cfg.bot_token);
         info!("Telegram adapter starting");
 
-        let handler = build_handler(
-            self.cfg.allowed_user_ids.clone(),
-            self.attachments_dir.clone(),
-        );
+        let mut backoff = RECONNECT_BACKOFF_INIT;
 
-        let mut dispatcher = Dispatcher::builder(bot, handler)
-            .dependencies(dptree::deps![tx])
-            .enable_ctrlc_handler()
-            .build();
+        loop {
+            let bot = Bot::new(&self.cfg.bot_token);
+            let handler = build_handler(
+                self.cfg.allowed_user_ids.clone(),
+                self.attachments_dir.clone(),
+            );
 
-        tokio::select! {
-            () = shutdown.cancelled() => { info!("Telegram adapter shutdown"); }
-            () = dispatcher.dispatch() => {}
+            // Note: no enable_ctrlc_handler() — shutdown is handled via CancellationToken.
+            let mut dispatcher = Dispatcher::builder(bot, handler)
+                .dependencies(dptree::deps![tx.clone()])
+                .build();
+
+            let started = Instant::now();
+
+            tokio::select! {
+                () = shutdown.cancelled() => {
+                    info!("Telegram adapter shutdown");
+                    return Ok(());
+                }
+                () = dispatcher.dispatch() => {}
+            }
+
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
+
+            // A long-lived session indicates a clean environment; reset backoff.
+            if started.elapsed() >= STABLE_THRESHOLD {
+                backoff = RECONNECT_BACKOFF_INIT;
+            }
+
+            metrics::counter!(
+                crate::telemetry::ADAPTER_RECONNECTS,
+                "adapter" => "telegram"
+            )
+            .increment(1);
+
+            warn!(
+                delay_secs = backoff.as_secs(),
+                "Telegram dispatcher exited unexpectedly, reconnecting"
+            );
+
+            tokio::select! {
+                () = shutdown.cancelled() => return Ok(()),
+                () = tokio::time::sleep(backoff) => {}
+            }
+
+            backoff = (backoff * 2).min(RECONNECT_BACKOFF_MAX);
         }
-
-        Ok(())
     }
 }
 

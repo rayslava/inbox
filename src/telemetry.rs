@@ -19,6 +19,9 @@ pub const URL_FETCHES: &str = "inbox_url_fetches_total";
 
 pub const WRITE_ERRORS: &str = "inbox_write_errors_total";
 
+/// Labels: adapter = "telegram" | "email"
+pub const ADAPTER_RECONNECTS: &str = "inbox_adapter_reconnects_total";
+
 // ── Histograms ────────────────────────────────────────────────────────────────
 
 /// Labels: source
@@ -52,6 +55,11 @@ pub fn describe_metrics() {
         Unit::Count,
         "Total errors writing to the org output file"
     );
+    describe_counter!(
+        ADAPTER_RECONNECTS,
+        Unit::Count,
+        "Total adapter reconnection attempts after unexpected disconnects"
+    );
     describe_histogram!(
         PROCESSING_DURATION,
         Unit::Seconds,
@@ -79,6 +87,7 @@ mod tests {
         assert!(!PROCESSING_DURATION.is_empty());
         assert!(!LLM_DURATION.is_empty());
         assert!(!QUEUE_DEPTH.is_empty());
+        assert!(!ADAPTER_RECONNECTS.is_empty());
     }
 
     #[test]
