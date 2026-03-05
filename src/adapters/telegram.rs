@@ -62,12 +62,22 @@ impl InputAdapter for TelegramAdapter {
 
             let started = Instant::now();
 
+            let mut dispatch_task = tokio::task::spawn(async move {
+                dispatcher.dispatch().await;
+            });
+
             tokio::select! {
                 () = shutdown.cancelled() => {
+                    dispatch_task.abort();
                     info!("Telegram adapter shutdown");
                     return Ok(());
                 }
-                () = dispatcher.dispatch() => {}
+                result = &mut dispatch_task => {
+                    if let Err(ref e) = result {
+                        warn!(panic = ?e, "Telegram dispatcher panicked, will reconnect");
+                    }
+                    // fall through to reconnect logic in either case
+                }
             }
 
             if shutdown.is_cancelled() {
