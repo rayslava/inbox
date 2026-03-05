@@ -5,6 +5,8 @@ use tracing::{debug, instrument};
 /// Extracts the page title separately and returns the body text.
 pub struct ExtractedPage {
     pub title: Option<String>,
+    /// h1 and h2 headings in document order.
+    pub headings: Vec<String>,
     pub text: String,
 }
 
@@ -14,15 +16,36 @@ pub fn extract_text(html: &str) -> ExtractedPage {
     let doc = Html::parse_document(html);
 
     let title = extract_title(&doc);
+    let headings = extract_headings(&doc);
     let text = extract_body_text(&doc);
 
     debug!(
         text_len = text.len(),
+        heading_count = headings.len(),
         has_title = title.is_some(),
         "HTML text extracted"
     );
 
-    ExtractedPage { title, text }
+    ExtractedPage {
+        title,
+        headings,
+        text,
+    }
+}
+
+fn extract_headings(doc: &Html) -> Vec<String> {
+    let sel = Selector::parse("h1, h2").unwrap();
+    doc.select(&sel)
+        .filter_map(|el| {
+            let t: String = el.text().collect();
+            let t = t.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_owned())
+            }
+        })
+        .collect()
 }
 
 fn extract_title(doc: &Html) -> Option<String> {
@@ -98,5 +121,31 @@ mod tests {
     fn handles_empty_html() {
         let page = extract_text("<html><body></body></html>");
         assert!(page.title.is_none());
+        assert!(page.headings.is_empty());
+    }
+
+    #[test]
+    fn extracts_h1_h2_headings() {
+        let html = r"<html><body>
+            <h1>Main Title</h1>
+            <h2>Section One</h2>
+            <p>Some text.</p>
+            <h2>Section Two</h2>
+        </body></html>";
+        let page = extract_text(html);
+        assert_eq!(
+            page.headings,
+            vec!["Main Title", "Section One", "Section Two"]
+        );
+    }
+
+    #[test]
+    fn skips_h3_in_headings() {
+        let html = r"<html><body>
+            <h1>Top</h1>
+            <h3>Sub</h3>
+        </body></html>";
+        let page = extract_text(html);
+        assert_eq!(page.headings, vec!["Top"]);
     }
 }

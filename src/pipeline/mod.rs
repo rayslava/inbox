@@ -117,79 +117,8 @@ impl Pipeline {
         let mut attachments = msg.attachments.clone();
 
         for url in &urls {
-            let host = url.host_str().unwrap_or("");
-            if self
-                .config
-                .url_fetch
-                .skip_domains
-                .iter()
-                .any(|d| host.ends_with(d.as_str()))
-            {
-                debug!(%url, "Skipping URL — domain is in skip list");
-                continue;
-            }
-
-            match classify_url(url, &self.fetcher).await {
-                UrlKind::Page => {
-                    if let Some(content) = self.fetcher.fetch_page(url).await {
-                        if matches_js_shell_policy(&self.config, &content.text) {
-                            debug!(
-                                %url,
-                                policy = ?self.config.pipeline.web_content.js_shell_policy,
-                                "Page content matched JavaScript-shell policy; skipping direct content"
-                            );
-                            continue;
-                        }
-                        debug!(
-                            %url,
-                            text_len = content.text.len(),
-                            title = ?content.page_title,
-                            "Page content fetched"
-                        );
-                        let truncated =
-                            truncate_chars(&content.text, self.config.llm.url_content_max_chars);
-                        url_contents.push(crate::url_content::UrlContent {
-                            url: url.to_string(),
-                            text: truncated,
-                            page_title: content.page_title,
-                        });
-                    } else {
-                        warn!(%url, "Failed to fetch page content");
-                    }
-                }
-                UrlKind::File { ref mime } => {
-                    if let Some(att) = self
-                        .fetcher
-                        .download_file(url, msg.id, &self.config.general.attachments_dir)
-                        .await
-                    {
-                        debug!(%url, %mime, filename = %att.original_name, "File attachment added");
-                        attachments.push(att);
-                    } else {
-                        warn!(%url, %mime, "Failed to download file attachment");
-                    }
-                }
-                UrlKind::Unknown => {
-                    debug!(%url, "Unknown URL kind, attempting page fetch as fallback");
-                    if let Some(content) = self.fetcher.fetch_page(url).await {
-                        if matches_js_shell_policy(&self.config, &content.text) {
-                            debug!(
-                                %url,
-                                policy = ?self.config.pipeline.web_content.js_shell_policy,
-                                "Page content matched JavaScript-shell policy; skipping direct content"
-                            );
-                            continue;
-                        }
-                        let truncated =
-                            truncate_chars(&content.text, self.config.llm.url_content_max_chars);
-                        url_contents.push(crate::url_content::UrlContent {
-                            url: url.to_string(),
-                            text: truncated,
-                            page_title: content.page_title,
-                        });
-                    }
-                }
-            }
+            self.process_url(url, msg.id, &mut url_contents, &mut attachments)
+                .await;
         }
 
         info!(
@@ -205,6 +134,84 @@ impl Pipeline {
             urls,
             url_contents,
         })
+    }
+
+    async fn process_url(
+        &self,
+        url: &url::Url,
+        msg_id: uuid::Uuid,
+        url_contents: &mut Vec<crate::url_content::UrlContent>,
+        attachments: &mut Vec<crate::message::Attachment>,
+    ) {
+        let host = url.host_str().unwrap_or("");
+        if self
+            .config
+            .url_fetch
+            .skip_domains
+            .iter()
+            .any(|d| host.ends_with(d.as_str()))
+        {
+            debug!(%url, "Skipping URL — domain is in skip list");
+            return;
+        }
+
+        match classify_url(url, &self.fetcher).await {
+            UrlKind::Page => {
+                if let Some(content) = self.fetcher.fetch_page(url).await {
+                    if matches_js_shell_policy(&self.config, &content.text) {
+                        debug!(
+                            %url,
+                            policy = ?self.config.pipeline.web_content.js_shell_policy,
+                            "Page content matched JavaScript-shell policy; skipping direct content"
+                        );
+                        return;
+                    }
+                    debug!(
+                        %url,
+                        text_len = content.text.len(),
+                        title = ?content.page_title,
+                        "Page content fetched"
+                    );
+                    url_contents.push(make_url_content(
+                        url,
+                        content,
+                        self.config.llm.url_content_max_chars,
+                    ));
+                } else {
+                    warn!(%url, "Failed to fetch page content");
+                }
+            }
+            UrlKind::File { ref mime } => {
+                if let Some(att) = self
+                    .fetcher
+                    .download_file(url, msg_id, &self.config.general.attachments_dir)
+                    .await
+                {
+                    debug!(%url, %mime, filename = %att.original_name, "File attachment added");
+                    attachments.push(att);
+                } else {
+                    warn!(%url, %mime, "Failed to download file attachment");
+                }
+            }
+            UrlKind::Unknown => {
+                debug!(%url, "Unknown URL kind, attempting page fetch as fallback");
+                if let Some(content) = self.fetcher.fetch_page(url).await {
+                    if matches_js_shell_policy(&self.config, &content.text) {
+                        debug!(
+                            %url,
+                            policy = ?self.config.pipeline.web_content.js_shell_policy,
+                            "Page content matched JavaScript-shell policy; skipping direct content"
+                        );
+                        return;
+                    }
+                    url_contents.push(make_url_content(
+                        url,
+                        content,
+                        self.config.llm.url_content_max_chars,
+                    ));
+                }
+            }
+        }
     }
 
     #[instrument(skip(self, enriched), fields(
@@ -316,6 +323,19 @@ impl Pipeline {
         }
 
         lines.join("\n")
+    }
+}
+
+fn make_url_content(
+    url: &url::Url,
+    content: crate::url_content::UrlContent,
+    max_chars: usize,
+) -> crate::url_content::UrlContent {
+    crate::url_content::UrlContent {
+        url: url.to_string(),
+        text: truncate_chars(&content.text, max_chars),
+        page_title: content.page_title,
+        headings: content.headings,
     }
 }
 

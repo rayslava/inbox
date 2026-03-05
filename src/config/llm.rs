@@ -1,0 +1,118 @@
+use serde::Deserialize;
+
+use super::infra::bool_true;
+
+// ── LLM ───────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmConfig {
+    #[serde(default)]
+    pub fallback: FallbackMode,
+    #[serde(default = "default_url_content_max_chars")]
+    pub url_content_max_chars: usize,
+    #[serde(default = "default_max_tool_turns")]
+    pub max_tool_turns: usize,
+    #[serde(default)]
+    pub prompts: LlmPromptsConfig,
+    #[serde(default)]
+    pub backends: Vec<LlmBackendConfig>,
+}
+
+fn default_url_content_max_chars() -> usize {
+    4000
+}
+fn default_max_tool_turns() -> usize {
+    5
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmPromptsConfig {
+    #[serde(default = "default_base_system_prompt")]
+    pub base_system: String,
+    #[serde(default = "default_tool_guidance_header")]
+    pub tool_guidance_header: String,
+    #[serde(default = "default_js_shell_tool_hint")]
+    pub js_shell_tool_hint: String,
+    #[serde(default = "bool_true")]
+    pub require_tool_for_urls: bool,
+    #[serde(default = "default_url_tool_decision")]
+    pub url_tool_decision: String,
+}
+
+impl Default for LlmPromptsConfig {
+    fn default() -> Self {
+        Self {
+            base_system: default_base_system_prompt(),
+            tool_guidance_header: default_tool_guidance_header(),
+            js_shell_tool_hint: default_js_shell_tool_hint(),
+            require_tool_for_urls: true,
+            url_tool_decision: default_url_tool_decision(),
+        }
+    }
+}
+
+fn default_base_system_prompt() -> String {
+    r#"You are a personal inbox assistant. Given a captured note or web content, respond with a JSON object containing:
+- "title": a short descriptive title (max 80 chars)
+- "tags": array of relevant tag strings (max 5, lowercase, no spaces — use underscores)
+- "summary": a 1-3 sentence summary of the content
+- "excerpt": (optional) a single key quote or sentence worth preserving verbatim, or null
+
+Respond ONLY with the JSON object, no markdown fences."#
+        .into()
+}
+
+fn default_tool_guidance_header() -> String {
+    "Tool-specific guidance:".into()
+}
+
+fn default_js_shell_tool_hint() -> String {
+    "If URL content appears to be a JavaScript shell, call crawl_url for that URL and prefer markdown output.".into()
+}
+
+fn default_url_tool_decision() -> String {
+    "When URLs are present, decide the best retrieval tool first and call it before producing final JSON. Use crawl_url for JS-heavy/app-shell pages, scrape_page for normal readable pages, and download_file for direct file links. URLs: {urls}".into()
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackMode {
+    #[default]
+    Raw,
+    Discard,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmBackendConfig {
+    #[serde(rename = "type")]
+    pub backend_type: LlmBackendType,
+    pub model: String,
+    pub api_key: Option<String>,
+    #[serde(default = "default_openrouter_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_retries")]
+    pub retries: u32,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Ollama only: explicitly enable (`true`) or disable (`false`) the model's
+    /// extended thinking/reasoning mode. `null` / omitted = model default.
+    #[serde(default)]
+    pub think: Option<bool>,
+}
+
+fn default_openrouter_base_url() -> String {
+    "https://openrouter.ai/api/v1".into()
+}
+fn default_retries() -> u32 {
+    3
+}
+fn default_timeout_secs() -> u64 {
+    30
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmBackendType {
+    Openrouter,
+    Ollama,
+}

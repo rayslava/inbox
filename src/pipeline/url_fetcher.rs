@@ -137,11 +137,16 @@ impl UrlFetcher {
         };
 
         let html = String::from_utf8_lossy(body).into_owned();
-        let ExtractedPage { title, text } = content_extractor::extract_text(&html);
+        let ExtractedPage {
+            title,
+            headings,
+            text,
+        } = content_extractor::extract_text(&html);
 
         debug!(
             %url,
             text_len = text.len(),
+            heading_count = headings.len(),
             has_title = title.is_some(),
             "Page content extracted"
         );
@@ -151,6 +156,7 @@ impl UrlFetcher {
             url: url.to_string(),
             text,
             page_title: title,
+            headings,
         })
     }
 
