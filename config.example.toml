@@ -30,8 +30,8 @@ username = "admin"
 # Generate with: cargo run -- hash-password
 password_hash = "${INBOX_ADMIN_PASSWORD_HASH}"
 
-# Session cookie lifetime in days.
-session_ttl_days = 30
+# Session cookie lifetime in days (default: 7).
+session_ttl_days = 7
 
 # Seconds between SIGTERM and actual shutdown (for load-balancer drain).
 shutdown_drain_secs = 5
@@ -72,10 +72,12 @@ url_tool_decision = "When URLs are present, decide the best retrieval tool first
 
 # Primary backend: OpenRouter
 [[llm.backends]]
-type    = "openrouter"
-model   = "openai/gpt-4o-mini"
-api_key = "${OPENROUTER_API_KEY}"
-retries = 3
+type         = "openrouter"
+model        = "openai/gpt-4o-mini"
+api_key      = "${OPENROUTER_API_KEY}"
+# base_url defaults to "https://openrouter.ai/api/v1"; override for compatible APIs.
+# base_url   = "https://openrouter.ai/api/v1"
+retries      = 3
 timeout_secs = 30
 
 # Fallback backend: local Ollama (comment out if not available)
@@ -84,15 +86,16 @@ timeout_secs = 30
 # model        = "llama3.2"
 # base_url     = "http://localhost:11434"
 # timeout_secs = 60
+# think        = true   # enable extended thinking/reasoning (Ollama only; omit = model default)
 
 # ── Adapters ──────────────────────────────────────────────────────────────────
 
 [adapters.telegram]
 enabled = true
 # Bot token from @BotFather.
-token = "${TELEGRAM_BOT_TOKEN}"
+bot_token = "${TELEGRAM_BOT_TOKEN}"
 # Restrict to specific Telegram user IDs (empty = allow all).
-allowed_users = []
+allowed_user_ids = []
 
 [adapters.http]
 enabled = true
@@ -109,6 +112,8 @@ username = "${EMAIL_USERNAME}"
 password = "${EMAIL_PASSWORD}"
 mailbox  = "INBOX"
 mark_as_seen = true
+# Move processed emails here instead of just marking as seen (optional).
+# processed_mailbox = "Processed"
 
 # ── URL fetching ──────────────────────────────────────────────────────────────
 
