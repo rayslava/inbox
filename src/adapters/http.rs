@@ -70,10 +70,7 @@ fn build_router(adapter: Arc<HttpAdapter>, tx: mpsc::Sender<IncomingMessage>) ->
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([
-            axum::http::Method::POST,
-            axum::http::Method::OPTIONS,
-        ])
+        .allow_methods([axum::http::Method::POST, axum::http::Method::OPTIONS])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,

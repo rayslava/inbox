@@ -2,11 +2,11 @@
 pub mod test_helpers;
 
 pub mod adapters;
-pub mod log_capture;
 pub mod config;
 pub mod error;
 pub mod health;
 pub mod llm;
+pub mod log_capture;
 pub mod message;
 pub mod output;
 pub mod pipeline;

@@ -66,7 +66,11 @@ impl LogCaptureLayer {
 }
 
 impl<S: tracing::Subscriber> Layer<S> for LogCaptureLayer {
-    fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
         let meta = event.metadata();
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);

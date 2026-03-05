@@ -189,11 +189,7 @@ async fn logs_handler(State(state): State<AdminState>, headers: HeaderMap) -> Re
         return Redirect::to("/login").into_response();
     }
     let entries = state.log_store.recent();
-    html_response(
-        ui::LogsTemplate { entries }
-            .render()
-            .unwrap_or_default(),
-    )
+    html_response(ui::LogsTemplate { entries }.render().unwrap_or_default())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

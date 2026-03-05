@@ -199,6 +199,10 @@ pub struct LlmBackendConfig {
     pub retries: u32,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+    /// Ollama only: explicitly enable (`true`) or disable (`false`) the model's
+    /// extended thinking/reasoning mode. `null` / omitted = model default.
+    #[serde(default)]
+    pub think: Option<bool>,
 }
 
 fn default_openrouter_base_url() -> String {

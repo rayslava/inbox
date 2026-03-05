@@ -11,8 +11,7 @@ use inbox::{
     adapters::{InputAdapter, email::EmailAdapter, http::HttpAdapter, telegram::TelegramAdapter},
     config,
     health::ReadinessState,
-    llm,
-    log_capture,
+    llm, log_capture,
     output::{OutputWriter, org_file::OrgFileWriter},
     pipeline::Pipeline,
     telemetry as inbox_telemetry, web,
@@ -52,7 +51,11 @@ async fn main() -> Result<()> {
 
     // Logging
     let log_store = log_capture::LogStore::new(log_capture::CAPACITY);
-    init_logging(&cfg.general.log_format, &cfg.general.log_level, Arc::clone(&log_store));
+    init_logging(
+        &cfg.general.log_format,
+        &cfg.general.log_level,
+        Arc::clone(&log_store),
+    );
 
     info!(version = env!("CARGO_PKG_VERSION"), "inbox starting");
 

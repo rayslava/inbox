@@ -14,6 +14,8 @@ pub struct OllamaClient {
     pub base_url: String,
     pub retries: u32,
     pub timeout: Duration,
+    /// `None` = omit from request (model decides); `Some(true/false)` = explicit.
+    pub think: Option<bool>,
     client: reqwest::Client,
 }
 
@@ -34,6 +36,7 @@ impl OllamaClient {
             base_url: cfg.base_url.clone(),
             retries: cfg.retries,
             timeout: Duration::from_secs(cfg.timeout_secs),
+            think: cfg.think,
             client,
         }
     }
@@ -48,6 +51,8 @@ struct OllamaChatRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -77,6 +82,8 @@ struct OllamaChatResponse {
 #[derive(Deserialize)]
 struct OllamaResponseMessage {
     content: String,
+    #[serde(default)]
+    thinking: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OllamaToolCall>>,
 }
@@ -122,10 +129,11 @@ impl LlmClient for OllamaClient {
             messages,
             stream: false,
             tools: tool_definitions,
+            think: self.think,
         };
 
         let url = format!("{}/api/chat", self.base_url);
-        debug!(url = %url, model = %self.model, "Sending Ollama request");
+        debug!(url = %url, model = %self.model, think = ?self.think, "Sending Ollama request");
         let resp = self
             .client
             .post(&url)
@@ -146,6 +154,12 @@ impl LlmClient for OllamaClient {
             .json()
             .await
             .map_err(|e| InboxError::Llm(format!("Ollama parse error: {e}")))?;
+
+        if let Some(thinking) = &chat.message.thinking
+            && !thinking.is_empty()
+        {
+            debug!(thinking = %truncate_for_log(thinking, 2000), "Ollama model thinking trace");
+        }
 
         // Tool calls?
         if let Some(tool_calls) = chat.message.tool_calls {
@@ -200,6 +214,7 @@ mod tests {
             base_url: base_url.to_owned(),
             retries: 1,
             timeout: std::time::Duration::from_secs(5),
+            think: None,
             client: reqwest::Client::new(),
         }
     }

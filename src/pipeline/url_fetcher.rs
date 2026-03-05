@@ -51,9 +51,7 @@ impl UrlFetcher {
                 .default_headers(headers.clone())
         };
 
-        let client = base()
-            .build()
-            .expect("Failed to build HTTP client");
+        let client = base().build().expect("Failed to build HTTP client");
 
         let client_v4 = base()
             .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))

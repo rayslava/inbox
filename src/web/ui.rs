@@ -212,7 +212,9 @@ fn try_parse_org_link(line: &str, attachments_dir: &Path) -> Option<UiAttachment
     let mime_str = mime.essence_str();
 
     let html = if mime_str.starts_with("image/") {
-        format!(r#"<a href="{url}" target="_blank"><img src="{url}" alt="{name}" loading="lazy" /></a>"#)
+        format!(
+            r#"<a href="{url}" target="_blank"><img src="{url}" alt="{name}" loading="lazy" /></a>"#
+        )
     } else if mime_str.starts_with("audio/") {
         format!(r#"<audio controls src="{url}"></audio>"#)
     } else if mime_str.starts_with("video/") {
