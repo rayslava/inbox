@@ -176,3 +176,14 @@ priority = 10
 timeout_secs = 30
 retries = 2   # crawl4ai may need an extra attempt on cold start
 # auth_header = "Authorization: Bearer ${CRAWLER_TOKEN}"
+
+[tooling.web_search]
+enabled = false
+description = "Search the web via Kagi Search API and return top results"
+prompt = "Use this for general web lookups when page URLs are not provided."
+endpoint = "https://kagi.com/api/v0/search"
+api_token = "${KAGI_API_TOKEN}"
+default_limit = 5
+max_snippet_chars = 320
+timeout_secs = 15
+retries = 1

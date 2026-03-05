@@ -65,6 +65,14 @@ pub(super) struct CrawlToolCfg<'a> {
     pub priority: i32,
 }
 
+pub(super) struct KagiSearchToolCfg<'a> {
+    pub endpoint: &'a str,
+    pub api_token: Option<&'a str>,
+    pub timeout_secs: u32,
+    pub default_limit: u32,
+    pub max_snippet_chars: usize,
+}
+
 /// Execute an HTTP tool backend.
 pub(super) async fn run_http_tool(
     client: &reqwest::Client,
@@ -215,6 +223,120 @@ pub(super) async fn run_crawler_tool(
     Ok(ToolResult::Text(parts.join("\n\n")))
 }
 
+pub(super) async fn run_kagi_search_tool(
+    client: &reqwest::Client,
+    cfg: KagiSearchToolCfg<'_>,
+    query: &str,
+    limit: Option<u32>,
+) -> Result<ToolResult, InboxError> {
+    let trimmed_query = query.trim();
+    if trimmed_query.is_empty() {
+        return Err(InboxError::LlmTool(
+            "web_search missing non-empty 'query'".into(),
+        ));
+    }
+
+    let result_limit = limit.unwrap_or(cfg.default_limit).clamp(1, 20);
+    let mut endpoint = url::Url::parse(cfg.endpoint)
+        .map_err(|e| InboxError::LlmTool(format!("Invalid Kagi endpoint URL: {e}")))?;
+    {
+        let mut qp = endpoint.query_pairs_mut();
+        qp.append_pair("q", trimmed_query);
+        qp.append_pair("limit", &result_limit.to_string());
+    }
+    let timeout = Duration::from_secs(u64::from(cfg.timeout_secs));
+    let mut req = client.get(endpoint);
+
+    if let Some(token) = cfg.api_token {
+        let resolved = resolve_env_vars(token);
+        let token_value = resolved.trim();
+        if token_value.is_empty() {
+            return Err(InboxError::LlmTool(
+                "Kagi API token is empty (web_search.api_token)".into(),
+            ));
+        }
+        req = req.header(reqwest::header::AUTHORIZATION, format!("Bot {token_value}"));
+    }
+
+    let resp = tokio::time::timeout(timeout, req.send())
+        .await
+        .map_err(|_| {
+            InboxError::LlmTool(format!(
+                "Kagi web_search timed out after {}s",
+                cfg.timeout_secs
+            ))
+        })?
+        .map_err(|e| InboxError::LlmTool(format!("Kagi web_search request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let preview: String = body.chars().take(200).collect();
+        return Err(InboxError::LlmTool(format!(
+            "Kagi web_search returned status {status}: {preview}"
+        )));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| InboxError::LlmTool(format!("Kagi web_search JSON parse failed: {e}")))?;
+
+    if let Some(error) = json.get("error").and_then(serde_json::Value::as_array)
+        && !error.is_empty()
+    {
+        return Err(InboxError::LlmTool(format!(
+            "Kagi web_search API error: {}",
+            error
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        )));
+    }
+
+    let results = json
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| InboxError::LlmTool("Kagi web_search returned no data array".into()))?;
+
+    if results.is_empty() {
+        return Ok(ToolResult::Text(format!(
+            "Kagi web_search results for \"{trimmed_query}\": no results."
+        )));
+    }
+
+    let mut lines = Vec::with_capacity(results.len());
+    for (idx, item) in results.iter().enumerate() {
+        let title = item
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("(untitled)");
+        let url = item
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let snippet = item
+            .get("snippet")
+            .and_then(serde_json::Value::as_str)
+            .map(|s| s.replace('\n', " "))
+            .unwrap_or_default();
+        let snippet = truncate_chars(&snippet, cfg.max_snippet_chars);
+        lines.push(format!(
+            "{}. {}\nURL: {}\nSnippet: {}",
+            idx + 1,
+            title.trim(),
+            url.trim(),
+            snippet.trim()
+        ));
+    }
+
+    Ok(ToolResult::Text(format!(
+        "Kagi web_search results for \"{trimmed_query}\":\n\n{}",
+        lines.join("\n\n")
+    )))
+}
+
 /// Expand `${VAR}` patterns in a string using environment variables.
 pub(super) fn resolve_env_vars(s: &str) -> String {
     let re = regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
@@ -222,4 +344,12 @@ pub(super) fn resolve_env_vars(s: &str) -> String {
         std::env::var(&caps[1]).unwrap_or_default()
     })
     .into_owned()
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else {
+        s.chars().take(max).collect()
+    }
 }

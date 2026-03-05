@@ -11,7 +11,10 @@ use crate::error::InboxError;
 use crate::message::Attachment;
 use crate::pipeline::url_fetcher::UrlFetcher;
 
-use runners::{CrawlToolCfg, HttpToolCfg, run_crawler_tool, run_http_tool, run_shell_tool};
+use runners::{
+    CrawlToolCfg, HttpToolCfg, KagiSearchToolCfg, run_crawler_tool, run_http_tool,
+    run_kagi_search_tool, run_shell_tool,
+};
 
 mod runners;
 
@@ -65,6 +68,14 @@ fn tool_parameters(name: &str) -> serde_json::Value {
                 "url": { "type": "string", "description": "The URL to crawl" }
             },
             "required": ["url"]
+        }),
+        "web_search" => serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "The web search query" },
+                "limit": { "type": "integer", "description": "Optional max number of results (1-20)" }
+            },
+            "required": ["query"]
         }),
         _ => serde_json::json!({ "type": "object", "properties": {} }),
     }
@@ -175,6 +186,13 @@ impl ToolExecutor {
                     .ok_or_else(|| InboxError::LlmTool("crawl_url missing 'url'".into()))?;
                 self.run_crawl(&tool.backend, url_str).await
             }
+            "web_search" => {
+                let query = args["query"]
+                    .as_str()
+                    .ok_or_else(|| InboxError::LlmTool("web_search missing 'query'".into()))?;
+                let limit = args["limit"].as_u64().and_then(|v| u32::try_from(v).ok());
+                self.run_web_search(&tool.backend, query, limit).await
+            }
             _ => Err(InboxError::LlmTool(format!("No handler for tool: {name}"))),
         }
     }
@@ -215,6 +233,9 @@ impl ToolExecutor {
             }
             ToolBackendConfig::Crawler { .. } => Err(InboxError::LlmTool(
                 "scrape_page does not support crawler backend".into(),
+            )),
+            ToolBackendConfig::KagiSearch { .. } => Err(InboxError::LlmTool(
+                "scrape_page does not support kagi_search backend".into(),
             )),
         }
     }
@@ -275,6 +296,9 @@ impl ToolExecutor {
             ToolBackendConfig::Crawler { .. } => Err(InboxError::LlmTool(
                 "download_file does not support crawler backend".into(),
             )),
+            ToolBackendConfig::KagiSearch { .. } => Err(InboxError::LlmTool(
+                "download_file does not support kagi_search backend".into(),
+            )),
         }
     }
 
@@ -301,6 +325,35 @@ impl ToolExecutor {
             }
             _ => Err(InboxError::LlmTool(
                 "crawl_url requires crawler backend".into(),
+            )),
+        }
+    }
+
+    async fn run_web_search(
+        &self,
+        backend: &ToolBackendConfig,
+        query: &str,
+        limit: Option<u32>,
+    ) -> Result<ToolResult, InboxError> {
+        match backend {
+            ToolBackendConfig::KagiSearch {
+                endpoint,
+                api_token,
+                timeout_secs,
+                default_limit,
+                max_snippet_chars,
+            } => {
+                let cfg = KagiSearchToolCfg {
+                    endpoint,
+                    api_token: api_token.as_deref(),
+                    timeout_secs: *timeout_secs,
+                    default_limit: *default_limit,
+                    max_snippet_chars: *max_snippet_chars,
+                };
+                run_kagi_search_tool(&self.http_client, cfg, query, limit).await
+            }
+            _ => Err(InboxError::LlmTool(
+                "web_search requires kagi_search backend".into(),
             )),
         }
     }
@@ -358,6 +411,19 @@ pub fn default_tools(fetcher: UrlFetcher) -> ToolExecutor {
                 priority: 10,
             },
         },
+        Tool {
+            name: "web_search".into(),
+            description: "Search the web and return top results".into(),
+            enabled: false,
+            retries: 1,
+            backend: ToolBackendConfig::KagiSearch {
+                endpoint: "https://kagi.com/api/v0/search".into(),
+                api_token: None,
+                timeout_secs: 15,
+                default_limit: 5,
+                max_snippet_chars: 320,
+            },
+        },
     ];
     ToolExecutor::new(tools, fetcher)
 }
@@ -378,6 +444,11 @@ pub fn from_tooling(tooling: &ToolingConfig, fetcher: UrlFetcher) -> ToolExecuto
         "Crawl a URL and return markdown/html from crawler service".to_owned()
     } else {
         tooling.crawl_url.description.clone()
+    };
+    let web_search_desc = if tooling.web_search.description.trim().is_empty() {
+        "Search the web and return top results".to_owned()
+    } else {
+        tooling.web_search.description.clone()
     };
 
     let tools = vec![
@@ -405,6 +476,19 @@ pub fn from_tooling(tooling: &ToolingConfig, fetcher: UrlFetcher) -> ToolExecuto
                 auth_header: tooling.crawl_url.auth_header.clone(),
                 timeout_secs: tooling.crawl_url.timeout_secs,
                 priority: tooling.crawl_url.priority,
+            },
+        },
+        Tool {
+            name: "web_search".into(),
+            description: web_search_desc,
+            enabled: tooling.web_search.enabled,
+            retries: tooling.web_search.retries,
+            backend: ToolBackendConfig::KagiSearch {
+                endpoint: tooling.web_search.endpoint.clone(),
+                api_token: tooling.web_search.api_token.clone(),
+                timeout_secs: tooling.web_search.timeout_secs,
+                default_limit: tooling.web_search.default_limit,
+                max_snippet_chars: tooling.web_search.max_snippet_chars,
             },
         },
     ];

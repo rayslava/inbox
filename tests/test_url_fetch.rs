@@ -195,7 +195,7 @@ async fn fetcher_decodes_gzip_body() {
     assert_eq!(page.page_title.as_deref(), Some("Compressed"));
 }
 
-/// Live network test — only runs when TEST_WITH_NETWORK=1 is set.
+/// Live network test — only runs when `TEST_WITH_NETWORK=1` is set.
 #[tokio::test]
 async fn fetcher_live_https_example_com() {
     if std::env::var("TEST_WITH_NETWORK").is_err() {

@@ -1,10 +1,11 @@
 use crate::config::{ToolBackendConfig, UrlFetchConfig};
 use crate::pipeline::url_fetcher::UrlFetcher;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::runners::{
-    CrawlToolCfg, HttpToolCfg, resolve_env_vars, run_crawler_tool, run_http_tool, run_shell_tool,
+    CrawlToolCfg, HttpToolCfg, KagiSearchToolCfg, resolve_env_vars, run_crawler_tool,
+    run_http_tool, run_kagi_search_tool, run_shell_tool,
 };
 use super::{Tool, ToolExecutor, ToolResult, default_tools, from_tooling};
 
@@ -159,6 +160,34 @@ async fn execute_crawl_url_missing_url_arg_errors() {
 }
 
 #[tokio::test]
+async fn execute_web_search_missing_query_arg_errors() {
+    let tools = vec![Tool {
+        name: "web_search".into(),
+        description: "search".into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::KagiSearch {
+            endpoint: "https://kagi.com/api/v0/search".into(),
+            api_token: Some("token".into()),
+            timeout_secs: 5,
+            default_limit: 3,
+            max_snippet_chars: 120,
+        },
+    }];
+    let executor = ToolExecutor::new(tools, test_fetcher());
+    let id = uuid::Uuid::new_v4();
+    let result = executor
+        .execute(
+            "web_search",
+            &serde_json::json!({}),
+            id,
+            std::path::Path::new("/tmp"),
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
 async fn execute_crawl_url_with_wrong_backend_errors() {
     let tools = vec![Tool {
         name: "crawl_url".into(),
@@ -173,6 +202,28 @@ async fn execute_crawl_url_with_wrong_backend_errors() {
         .execute(
             "crawl_url",
             &serde_json::json!({"url":"https://example.com"}),
+            id,
+            std::path::Path::new("/tmp"),
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn execute_web_search_with_wrong_backend_errors() {
+    let tools = vec![Tool {
+        name: "web_search".into(),
+        description: "search".into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Internal,
+    }];
+    let executor = ToolExecutor::new(tools, test_fetcher());
+    let id = uuid::Uuid::new_v4();
+    let result = executor
+        .execute(
+            "web_search",
+            &serde_json::json!({"query":"rust async"}),
             id,
             std::path::Path::new("/tmp"),
         )
@@ -453,6 +504,63 @@ async fn run_crawler_tool_handles_empty_content() {
         .await
         .expect("crawler result");
     assert!(result.text().contains("no markdown/html"));
+}
+
+#[tokio::test]
+async fn run_kagi_search_tool_formats_results() {
+    let server = MockServer::start().await;
+    let body = serde_json::json!({
+        "meta": {"id":"x","node":"test","ms":1},
+        "data": [{
+            "title": "Rust",
+            "url": "https://www.rust-lang.org/",
+            "snippet": "A language empowering everyone.",
+            "published": null
+        }]
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/api/v0/search"))
+        .and(query_param("q", "rust language"))
+        .and(query_param("limit", "3"))
+        .and(header("Authorization", "Bot kagi-token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(body),
+        )
+        .mount(&server)
+        .await;
+
+    let client = reqwest::Client::new();
+    let cfg = KagiSearchToolCfg {
+        endpoint: &format!("{}/api/v0/search", server.uri()),
+        api_token: Some("kagi-token"),
+        timeout_secs: 5,
+        default_limit: 5,
+        max_snippet_chars: 120,
+    };
+
+    let result = run_kagi_search_tool(&client, cfg, "rust language", Some(3))
+        .await
+        .unwrap();
+    assert!(result.text().contains("Kagi web_search results"));
+    assert!(result.text().contains("Rust"));
+    assert!(result.text().contains("https://www.rust-lang.org/"));
+}
+
+#[tokio::test]
+async fn run_kagi_search_tool_requires_non_empty_token_when_configured() {
+    let client = reqwest::Client::new();
+    let cfg = KagiSearchToolCfg {
+        endpoint: "https://kagi.com/api/v0/search",
+        api_token: Some(""),
+        timeout_secs: 5,
+        default_limit: 5,
+        max_snippet_chars: 120,
+    };
+    let result = run_kagi_search_tool(&client, cfg, "rust", None).await;
+    assert!(result.is_err());
 }
 
 #[test]
