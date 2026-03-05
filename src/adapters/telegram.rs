@@ -135,6 +135,7 @@ pub fn build_handler(
                 let username = msg.from.as_ref().and_then(|u| u.username.clone());
                 let chat_id = msg.chat.id.0;
                 let message_id = msg.id.0;
+                let forwarded_from = extract_forward_origin(&msg);
 
                 let (text, attachments) =
                     extract_message_content(&bot, &msg, &attachments_dir).await;
@@ -146,6 +147,7 @@ pub fn build_handler(
                         chat_id,
                         message_id,
                         username,
+                        forwarded_from,
                     },
                 );
                 incoming.attachments = attachments;
@@ -316,6 +318,31 @@ async fn download_telegram_file(
         mime_type: mime,
         media_kind,
     })
+}
+
+/// Extract a human-readable display name from a forwarded message's origin, if any.
+fn extract_forward_origin(msg: &teloxide::types::Message) -> Option<String> {
+    use teloxide::types::MessageOrigin;
+
+    match msg.forward_origin()? {
+        MessageOrigin::User { sender_user, .. } => Some(
+            sender_user
+                .username
+                .as_ref()
+                .map_or_else(|| sender_user.full_name(), |u| format!("@{u}")),
+        ),
+        MessageOrigin::HiddenUser {
+            sender_user_name, ..
+        } => Some(sender_user_name.clone()),
+        MessageOrigin::Chat { sender_chat, .. } => Some(sender_chat.username().map_or_else(
+            || sender_chat.title().unwrap_or("unknown").to_owned(),
+            |u| format!("@{u}"),
+        )),
+        MessageOrigin::Channel { chat, .. } => Some(chat.username().map_or_else(
+            || chat.title().unwrap_or("unknown").to_owned(),
+            |u| format!("@{u}"),
+        )),
+    }
 }
 
 #[must_use]

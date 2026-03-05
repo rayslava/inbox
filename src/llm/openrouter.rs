@@ -116,8 +116,22 @@ impl LlmClient for OpenRouterClient {
             user_content,
             tool_definitions,
             require_initial_tool_call,
+            images,
             ..
         } = req;
+
+        let user_message_content: serde_json::Value = if images.is_empty() {
+            serde_json::Value::String(user_content)
+        } else {
+            let mut parts = vec![serde_json::json!({"type": "text", "text": user_content})];
+            for (mime, b64) in &images {
+                parts.push(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": { "url": format!("data:{mime};base64,{b64}") }
+                }));
+            }
+            serde_json::Value::Array(parts)
+        };
 
         let messages = vec![
             ChatMessage {
@@ -128,7 +142,7 @@ impl LlmClient for OpenRouterClient {
             },
             ChatMessage {
                 role: "user".into(),
-                content: serde_json::Value::String(user_content),
+                content: user_message_content,
                 tool_calls: None,
                 tool_call_id: None,
             },
@@ -406,5 +420,37 @@ mod tests {
         let req = LlmRequest::simple("sys", "user");
         let result = client.complete(req).await.unwrap();
         assert!(matches!(result, LlmCompletion::ToolCalls(_)));
+    }
+
+    #[tokio::test]
+    async fn complete_with_images_sends_array_content() {
+        use wiremock::matchers::body_partial_json;
+
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "choices": [{ "message": { "content": r#"{"title":"T","tags":[],"summary":"S"}"# } }]
+        });
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            // The user message content must be an array when images are present.
+            .and(body_partial_json(serde_json::json!({
+                "messages": [
+                    { "role": "system" },
+                    { "role": "user", "content": [{ "type": "text" }] }
+                ]
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(body),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri());
+        let mut req = LlmRequest::simple("sys", "user text");
+        req.images = vec![("image/png".into(), "aGVsbG8=".into())];
+        let result = client.complete(req).await.unwrap();
+        assert!(matches!(result, LlmCompletion::Message(_)));
     }
 }

@@ -53,6 +53,7 @@ mime                = "0"
 anodized            = { version = "0", features = ["runtime-check-and-panic"] }
 tempfile            = "3"
 urlencoding         = "2"
+base64              = "0"
 
 [features]
 test-helpers = []

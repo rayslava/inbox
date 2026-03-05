@@ -55,6 +55,10 @@ url_content_max_chars = 4000
 # Maximum tool-call turns per message.
 max_tool_turns = 5
 
+# Maximum image file size (bytes) to send to the LLM for vision analysis.
+# Images larger than this are silently skipped. Default: 5 MB.
+# vision_max_bytes = 5242880
+
 [llm.prompts]
 base_system = """
 You are a personal inbox assistant. Given a captured note or web content, respond with a JSON object containing:

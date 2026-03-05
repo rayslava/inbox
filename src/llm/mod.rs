@@ -23,6 +23,9 @@ pub struct LlmRequest {
     pub attachments_dir: PathBuf,
     pub tool_definitions: Vec<serde_json::Value>,
     pub require_initial_tool_call: bool,
+    /// Base64-encoded image attachments to include in the vision prompt.
+    /// Each entry is `(mime_type, base64_data)`.
+    pub images: Vec<(String, String)>,
 }
 
 impl LlmRequest {
@@ -35,7 +38,18 @@ impl LlmRequest {
         guidance_block: &str,
         require_initial_tool_call: bool,
     ) -> Self {
-        let mut user_content = enriched.original.text.clone();
+        use crate::message::{MediaKind, SourceMetadata};
+
+        // Prepend forwarded attribution so the LLM has attribution context.
+        let mut user_content = if let SourceMetadata::Telegram {
+            forwarded_from: Some(ff),
+            ..
+        } = &enriched.original.metadata
+        {
+            format!("Forwarded from {ff}\n\n{}", enriched.original.text)
+        } else {
+            enriched.original.text.clone()
+        };
 
         for uc in &enriched.url_contents {
             use std::fmt::Write as _;
@@ -51,12 +65,43 @@ impl LlmRequest {
             }
         }
 
+        // Collect images for vision analysis.
+        let images: Vec<(String, String)> = enriched
+            .original
+            .attachments
+            .iter()
+            .filter(|a| a.media_kind == MediaKind::Image)
+            .filter_map(|a| {
+                let bytes = std::fs::read(&a.saved_path).ok()?;
+                if bytes.len() > cfg.vision_max_bytes {
+                    warn!(
+                        path = %a.saved_path.display(),
+                        size = bytes.len(),
+                        limit = cfg.vision_max_bytes,
+                        "Image too large for vision analysis, skipping"
+                    );
+                    return None;
+                }
+                let mime = a
+                    .mime_type
+                    .clone()
+                    .unwrap_or_else(|| "image/jpeg".to_owned());
+                let b64 =
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                Some((mime, b64))
+            })
+            .collect();
+
         let mut system_prompt = cfg.prompts.base_system.clone();
         if !guidance_block.trim().is_empty() {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(cfg.prompts.tool_guidance_header.trim());
             system_prompt.push('\n');
             system_prompt.push_str(guidance_block.trim());
+        }
+        if !images.is_empty() {
+            system_prompt.push('\n');
+            system_prompt.push_str(cfg.prompts.vision_prompt_note.trim());
         }
 
         Self {
@@ -66,6 +111,7 @@ impl LlmRequest {
             attachments_dir: attachments_dir.to_path_buf(),
             tool_definitions: Vec::new(),
             require_initial_tool_call,
+            images,
         }
     }
 
@@ -78,6 +124,7 @@ impl LlmRequest {
             attachments_dir: PathBuf::new(),
             tool_definitions: Vec::new(),
             require_initial_tool_call: false,
+            images: Vec::new(),
         }
     }
 }

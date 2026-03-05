@@ -12,6 +12,10 @@ pub struct LlmConfig {
     pub url_content_max_chars: usize,
     #[serde(default = "default_max_tool_turns")]
     pub max_tool_turns: usize,
+    /// Maximum image file size (bytes) to send to the LLM for vision analysis.
+    /// Images larger than this are silently skipped.
+    #[serde(default = "default_vision_max_bytes")]
+    pub vision_max_bytes: usize,
     #[serde(default)]
     pub prompts: LlmPromptsConfig,
     #[serde(default)]
@@ -23,6 +27,9 @@ fn default_url_content_max_chars() -> usize {
 }
 fn default_max_tool_turns() -> usize {
     5
+}
+fn default_vision_max_bytes() -> usize {
+    5 * 1024 * 1024
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -37,6 +44,9 @@ pub struct LlmPromptsConfig {
     pub require_tool_for_urls: bool,
     #[serde(default = "default_url_tool_decision")]
     pub url_tool_decision: String,
+    /// Appended to the system prompt when image attachments are present.
+    #[serde(default = "default_vision_prompt_note")]
+    pub vision_prompt_note: String,
 }
 
 impl Default for LlmPromptsConfig {
@@ -47,6 +57,7 @@ impl Default for LlmPromptsConfig {
             js_shell_tool_hint: default_js_shell_tool_hint(),
             require_tool_for_urls: true,
             url_tool_decision: default_url_tool_decision(),
+            vision_prompt_note: default_vision_prompt_note(),
         }
     }
 }
@@ -68,6 +79,10 @@ fn default_tool_guidance_header() -> String {
 
 fn default_js_shell_tool_hint() -> String {
     "If URL content appears to be a JavaScript shell, call crawl_url for that URL and prefer markdown output.".into()
+}
+
+fn default_vision_prompt_note() -> String {
+    "Images are attached. Include a description of each image's content in your summary.".into()
 }
 
 fn default_url_tool_decision() -> String {

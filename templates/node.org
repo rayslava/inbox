@@ -4,7 +4,9 @@
 :ID:       {{ id }}
 :CREATED:  {{ created }}
 :SOURCE:   {{ source }}
-{% if !urls.is_empty() %}:URLS:     {% for u in urls %}{{ u }} {% endfor %}
+{% if let Some(ff) = forwarded_from %}:FORWARDED_FROM: {{ ff }}
+{% endif %}{% if !media_kinds.is_empty() %}:MEDIA_KIND: {{ self.media_kinds_str() }}
+{% endif %}{% if !urls.is_empty() %}:URLS:     {% for u in urls %}{{ u }} {% endfor %}
 {% endif %}{% if !attachments.is_empty() %}:ATTACHMENTS: {{ self.attachment_names() }}
 {% endif %}:ENRICHED_BY: {{ llm_backend }}
 :END:

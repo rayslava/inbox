@@ -232,6 +232,7 @@ mod tests {
                 fallback: FallbackMode::default(),
                 url_content_max_chars: 4000,
                 max_tool_turns: 5,
+                vision_max_bytes: 5 * 1024 * 1024,
                 prompts: LlmPromptsConfig::default(),
                 backends: vec![],
             },

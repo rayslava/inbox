@@ -122,6 +122,7 @@ Configured via `[[tools]]` in config.toml. See `ToolBackend` in `src/llm/tools.r
 - Try to keep the files smaller that 500 lines, the modules should be atomic
 - Move the tests into separate files and modules
 - Split integration tests into smaller meaningful files
+- When you add new dependencies to `Cargo.toml` only add the major version
 - Markup the functions with the `anodized` https://docs.rs/anodized/latest/anodized/ crate
 - Always check the `cargo clippy`
 - Run the following set after changes:
@@ -130,3 +131,4 @@ Configured via `[[tools]]` in config.toml. See `ToolBackend` in `src/llm/tools.r
   - `cargo fmt --all`
 - Always run tests after all the issues reported are fixed
 - No `#[allow]` tags must be used, fix issues, not mask them
+- After the change is prepared, update the config.example.toml correspondingly

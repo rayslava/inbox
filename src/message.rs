@@ -65,6 +65,8 @@ pub enum SourceMetadata {
         chat_id: i64,
         message_id: i32,
         username: Option<String>,
+        /// Display name of the original sender when the message was forwarded.
+        forwarded_from: Option<String>,
     },
     Http {
         remote_addr: Option<IpAddr>,

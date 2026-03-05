@@ -23,6 +23,10 @@ pub struct OrgNodeTemplate<'a> {
     pub summary: &'a str,
     pub excerpt: Option<&'a str>,
     pub raw_text: &'a str,
+    /// Original sender of a forwarded message, if any.
+    pub forwarded_from: Option<&'a str>,
+    /// Media kinds of non-document attachments (audio/video/voice).
+    pub media_kinds: &'a [&'static str],
 }
 
 impl OrgNodeTemplate<'_> {
@@ -34,6 +38,11 @@ impl OrgNodeTemplate<'_> {
             .collect::<Vec<_>>()
             .join(" ")
     }
+
+    #[must_use]
+    pub fn media_kinds_str(&self) -> String {
+        self.media_kinds.join(" ")
+    }
 }
 
 /// Render a `ProcessedMessage` to an org-mode node string.
@@ -44,6 +53,8 @@ pub fn render_org_node(
     msg: &ProcessedMessage,
     attachments_dir: &std::path::Path,
 ) -> Result<String, InboxError> {
+    use crate::message::{MediaKind, SourceMetadata};
+
     let enriched = &msg.enriched;
     let original = &enriched.original;
 
@@ -70,6 +81,22 @@ pub fn render_org_node(
                 path: path_str.into_owned(),
                 path_rel: rel,
             }
+        })
+        .collect();
+
+    let forwarded_from = match &original.metadata {
+        SourceMetadata::Telegram { forwarded_from, .. } => forwarded_from.as_deref(),
+        _ => None,
+    };
+
+    let media_kinds: Vec<&'static str> = original
+        .attachments
+        .iter()
+        .filter_map(|a| match a.media_kind {
+            MediaKind::Audio => Some("audio"),
+            MediaKind::Video => Some("video"),
+            MediaKind::VoiceMessage => Some("voice_message"),
+            _ => None,
         })
         .collect();
 
@@ -102,6 +129,8 @@ pub fn render_org_node(
         summary,
         excerpt,
         raw_text: &original.text,
+        forwarded_from,
+        media_kinds: &media_kinds,
     };
 
     tmpl.render().map_err(InboxError::Template)
@@ -200,6 +229,8 @@ mod tests {
             summary: "s",
             excerpt: None,
             raw_text: "",
+            forwarded_from: None,
+            media_kinds: &[],
         };
         assert_eq!(tmpl.attachment_names(), "a.pdf b.jpg");
     }
@@ -225,5 +256,118 @@ mod tests {
         };
         let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
         assert!(result.contains("https://example.com/page"));
+    }
+
+    #[test]
+    fn render_forwarded_from_appears_in_drawer() {
+        use crate::message::Attachment;
+
+        let msg = IncomingMessage::new(
+            MessageSource::Telegram,
+            "forwarded content".into(),
+            SourceMetadata::Telegram {
+                chat_id: 1,
+                message_id: 1,
+                username: None,
+                forwarded_from: Some("@bob".into()),
+            },
+        );
+        let processed = ProcessedMessage {
+            enriched: EnrichedMessage {
+                original: msg,
+                urls: vec![],
+                url_contents: vec![],
+            },
+            llm_response: None,
+        };
+        let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
+        assert!(
+            result.contains(":FORWARDED_FROM: @bob"),
+            "drawer should contain FORWARDED_FROM: {result}"
+        );
+    }
+
+    #[test]
+    fn render_no_forwarded_property_when_absent() {
+        let msg = make_processed("plain", None);
+        let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+        assert!(
+            !result.contains("FORWARDED_FROM"),
+            "FORWARDED_FROM should not appear when absent: {result}"
+        );
+    }
+
+    #[test]
+    fn render_voice_message_media_kind_in_drawer() {
+        use crate::message::Attachment;
+
+        let mut msg = IncomingMessage::new(
+            MessageSource::Telegram,
+            "voice note".into(),
+            SourceMetadata::Telegram {
+                chat_id: 1,
+                message_id: 2,
+                username: None,
+                forwarded_from: None,
+            },
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("voice.ogg");
+        std::fs::write(&path, b"ogg").unwrap();
+        msg.attachments.push(Attachment {
+            original_name: "voice.ogg".into(),
+            saved_path: path,
+            mime_type: Some("audio/ogg".into()),
+            media_kind: crate::message::MediaKind::VoiceMessage,
+        });
+        let processed = ProcessedMessage {
+            enriched: EnrichedMessage {
+                original: msg,
+                urls: vec![],
+                url_contents: vec![],
+            },
+            llm_response: None,
+        };
+        let result = render_org_node(&processed, tmp.path()).unwrap();
+        assert!(
+            result.contains(":MEDIA_KIND: voice_message"),
+            "drawer should contain MEDIA_KIND: {result}"
+        );
+    }
+
+    #[test]
+    fn render_no_media_kind_for_documents() {
+        use crate::message::Attachment;
+
+        let mut msg = IncomingMessage::new(
+            MessageSource::Http,
+            "doc".into(),
+            SourceMetadata::Http {
+                remote_addr: None,
+                user_agent: None,
+            },
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("file.pdf");
+        std::fs::write(&path, b"pdf").unwrap();
+        msg.attachments.push(Attachment {
+            original_name: "file.pdf".into(),
+            saved_path: path,
+            mime_type: Some("application/pdf".into()),
+            media_kind: crate::message::MediaKind::Document,
+        });
+        let processed = ProcessedMessage {
+            enriched: EnrichedMessage {
+                original: msg,
+                urls: vec![],
+                url_contents: vec![],
+            },
+            llm_response: None,
+        };
+        let result = render_org_node(&processed, tmp.path()).unwrap();
+        assert!(
+            !result.contains("MEDIA_KIND"),
+            "MEDIA_KIND should not appear for document attachments: {result}"
+        );
     }
 }

@@ -61,6 +61,9 @@ struct OllamaMessage {
     content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OllamaToolCall>>,
+    /// Base64-encoded images for vision-capable models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    images: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -108,19 +111,28 @@ impl LlmClient for OllamaClient {
             system_prompt,
             user_content,
             tool_definitions,
+            images,
             ..
         } = req;
+
+        let image_b64s: Option<Vec<String>> = if images.is_empty() {
+            None
+        } else {
+            Some(images.into_iter().map(|(_, b64)| b64).collect())
+        };
 
         let messages = vec![
             OllamaMessage {
                 role: "system".into(),
                 content: system_prompt,
                 tool_calls: None,
+                images: None,
             },
             OllamaMessage {
                 role: "user".into(),
                 content: user_content,
                 tool_calls: None,
+                images: image_b64s,
             },
         ];
 
@@ -284,5 +296,36 @@ mod tests {
         let req = LlmRequest::simple("sys", "user");
         let result = client.complete(req).await.unwrap();
         assert!(matches!(result, LlmCompletion::ToolCalls(_)));
+    }
+
+    #[tokio::test]
+    async fn complete_with_images_sends_images_field() {
+        use wiremock::matchers::body_partial_json;
+
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "message": { "role": "assistant", "content": r#"{"title":"T","tags":[],"summary":"S"}"# }
+        });
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_partial_json(serde_json::json!({
+                "messages": [
+                    { "role": "system" },
+                    { "role": "user", "images": ["aGVsbG8="] }
+                ]
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(body),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri());
+        let mut req = LlmRequest::simple("sys", "user");
+        req.images = vec![("image/png".into(), "aGVsbG8=".into())];
+        let result = client.complete(req).await.unwrap();
+        assert!(matches!(result, LlmCompletion::Message(_)));
     }
 }

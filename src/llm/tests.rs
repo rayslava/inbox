@@ -1,5 +1,7 @@
 use crate::config::FallbackMode;
-use crate::message::{EnrichedMessage, IncomingMessage, MessageSource, SourceMetadata};
+use crate::message::{
+    Attachment, EnrichedMessage, IncomingMessage, MediaKind, MessageSource, SourceMetadata,
+};
 use crate::url_content::UrlContent;
 use async_trait::async_trait;
 
@@ -15,6 +17,25 @@ fn make_enriched(text: &str) -> EnrichedMessage {
             user_agent: None,
         },
     );
+    EnrichedMessage {
+        original: msg,
+        urls: vec![],
+        url_contents: vec![],
+    }
+}
+
+fn make_enriched_telegram(text: &str, forwarded_from: Option<String>) -> EnrichedMessage {
+    let mut msg = IncomingMessage::new(
+        MessageSource::Telegram,
+        text.into(),
+        SourceMetadata::Telegram {
+            chat_id: 1,
+            message_id: 1,
+            username: None,
+            forwarded_from,
+        },
+    );
+    msg.attachments = vec![];
     EnrichedMessage {
         original: msg,
         urls: vec![],
@@ -184,4 +205,107 @@ async fn chain_empty_tool_calls_falls_back() {
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
     assert!(matches!(outcome, LlmOutcome::RawFallback));
+}
+
+#[test]
+fn llm_request_prepends_forwarded_from_to_content() {
+    let cfg = crate::test_helpers::no_llm_config();
+    let enriched = make_enriched_telegram("original text", Some("@alice".into()));
+    let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "", false);
+    assert!(
+        req.user_content.starts_with("Forwarded from @alice"),
+        "user_content should start with forwarded attribution: {:?}",
+        req.user_content
+    );
+    assert!(
+        req.user_content.contains("original text"),
+        "user_content should still contain original text"
+    );
+}
+
+#[test]
+fn llm_request_no_forwarded_prefix_for_non_forwarded() {
+    let cfg = crate::test_helpers::no_llm_config();
+    let enriched = make_enriched_telegram("plain text", None);
+    let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "", false);
+    assert_eq!(req.user_content, "plain text");
+}
+
+#[test]
+fn llm_request_collects_images_within_size_limit() {
+    use std::io::Write as _;
+
+    let mut cfg = crate::test_helpers::no_llm_config();
+    cfg.vision_max_bytes = 1024 * 1024;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let img_path = tmp.path().join("photo.jpg");
+    // Write a minimal non-empty file to simulate an image.
+    let mut f = std::fs::File::create(&img_path).unwrap();
+    f.write_all(b"fake-jpeg-bytes").unwrap();
+
+    let mut enriched = make_enriched("test");
+    enriched.original.attachments.push(Attachment {
+        original_name: "photo.jpg".into(),
+        saved_path: img_path,
+        mime_type: Some("image/jpeg".into()),
+        media_kind: MediaKind::Image,
+    });
+
+    let req = LlmRequest::from_enriched(&enriched, &cfg, tmp.path(), "", false);
+    assert_eq!(req.images.len(), 1, "one image should be collected");
+    assert_eq!(req.images[0].0, "image/jpeg");
+    assert!(req.system_prompt.contains("Images are attached"));
+}
+
+#[test]
+fn llm_request_skips_images_exceeding_size_limit() {
+    use std::io::Write as _;
+
+    let mut cfg = crate::test_helpers::no_llm_config();
+    cfg.vision_max_bytes = 5; // tiny limit
+
+    let tmp = tempfile::tempdir().unwrap();
+    let img_path = tmp.path().join("big.jpg");
+    let mut f = std::fs::File::create(&img_path).unwrap();
+    f.write_all(b"this-is-more-than-5-bytes").unwrap();
+
+    let mut enriched = make_enriched("test");
+    enriched.original.attachments.push(Attachment {
+        original_name: "big.jpg".into(),
+        saved_path: img_path,
+        mime_type: Some("image/jpeg".into()),
+        media_kind: MediaKind::Image,
+    });
+
+    let req = LlmRequest::from_enriched(&enriched, &cfg, tmp.path(), "", false);
+    assert!(req.images.is_empty(), "oversized image should be skipped");
+    assert!(
+        !req.system_prompt.contains("Images are attached"),
+        "vision note should not be added when no images collected"
+    );
+}
+
+#[test]
+fn llm_request_ignores_non_image_attachments_for_vision() {
+    use std::io::Write as _;
+
+    let cfg = crate::test_helpers::no_llm_config();
+    let tmp = tempfile::tempdir().unwrap();
+    let audio_path = tmp.path().join("voice.ogg");
+    std::fs::File::create(&audio_path)
+        .unwrap()
+        .write_all(b"ogg-data")
+        .unwrap();
+
+    let mut enriched = make_enriched("test");
+    enriched.original.attachments.push(Attachment {
+        original_name: "voice.ogg".into(),
+        saved_path: audio_path,
+        mime_type: Some("audio/ogg".into()),
+        media_kind: MediaKind::VoiceMessage,
+    });
+
+    let req = LlmRequest::from_enriched(&enriched, &cfg, tmp.path(), "", false);
+    assert!(req.images.is_empty(), "audio attachment should not produce vision images");
 }
