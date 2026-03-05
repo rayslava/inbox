@@ -14,6 +14,7 @@ use tracing::warn;
 use crate::config::Config;
 use crate::health::ReadinessState;
 use crate::log_capture::LogStore;
+use crate::processing_status::ProcessingTracker;
 
 pub mod attachments;
 pub mod auth;
@@ -28,6 +29,7 @@ pub(crate) struct AdminState {
     pub sessions: Arc<auth::SessionStore>,
     pub metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
     pub log_store: Arc<LogStore>,
+    pub tracker: Arc<ProcessingTracker>,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -38,6 +40,7 @@ pub fn admin_router(
     session_store: Arc<auth::SessionStore>,
     metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
     log_store: Arc<LogStore>,
+    tracker: Arc<ProcessingTracker>,
 ) -> Router {
     let web_ui_enabled = cfg.web_ui.enabled;
     let state = AdminState {
@@ -46,6 +49,7 @@ pub fn admin_router(
         sessions: session_store,
         metrics_handle,
         log_store,
+        tracker,
     };
 
     let mut router = Router::new()
@@ -59,6 +63,7 @@ pub fn admin_router(
             .route("/logout", get(logout_handler))
             .route("/ui", get(ui_handler))
             .route("/logs", get(logs_handler))
+            .route("/status", get(status_handler))
             .route("/attachments/{*path}", get(attachments::serve_attachment));
     }
 
@@ -181,6 +186,16 @@ async fn ui_handler(State(state): State<AdminState>, headers: HeaderMap) -> Resp
     )
 }
 
+// ── Status handler ───────────────────────────────────────────────────────────
+
+async fn status_handler(State(state): State<AdminState>, headers: HeaderMap) -> Response {
+    let admin = &state.cfg.admin;
+    if !auth::is_authenticated(&headers, &state.sessions, admin.session_ttl_days) {
+        return Redirect::to("/login").into_response();
+    }
+    axum::Json(state.tracker.snapshot()).into_response()
+}
+
 // ── Logs handler ─────────────────────────────────────────────────────────────
 
 async fn logs_handler(State(state): State<AdminState>, headers: HeaderMap) -> Response {
@@ -211,6 +226,7 @@ mod tests {
         SyncthingConfig, ToolingConfig, UrlFetchConfig, WebUiConfig,
     };
     use crate::health::ReadinessState;
+    use crate::processing_status::ProcessingTracker;
     use axum::body::Body;
     use axum::http::Request;
     use std::sync::Arc;
@@ -252,6 +268,7 @@ mod tests {
             sessions,
             metrics_handle: handle,
             log_store: LogStore::new(100),
+            tracker: Arc::new(ProcessingTracker::new()),
         }
     }
 
@@ -263,6 +280,7 @@ mod tests {
             state.sessions,
             state.metrics_handle,
             state.log_store,
+            state.tracker,
         )
     }
 
@@ -384,5 +402,51 @@ mod tests {
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn status_without_session_redirects_to_login() {
+        let router = make_router(true);
+        let req = Request::builder()
+            .uri("/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let loc = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert_eq!(loc, "/login");
+    }
+
+    #[tokio::test]
+    async fn status_with_valid_session_returns_json() {
+        use axum::http::header;
+        use chrono::Utc;
+
+        let state = test_state(true);
+        let token = auth::generate_session_token();
+        state.sessions.insert(token.clone(), Utc::now());
+
+        let router = admin_router(
+            state.cfg,
+            state.readiness,
+            state.sessions,
+            state.metrics_handle,
+            state.log_store,
+            state.tracker,
+        );
+        let req = Request::builder()
+            .uri("/status")
+            .header(header::COOKIE, format!("session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("application/json"));
     }
 }

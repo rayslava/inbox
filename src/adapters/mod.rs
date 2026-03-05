@@ -8,6 +8,7 @@ use crate::message::IncomingMessage;
 pub mod email;
 pub mod http;
 pub mod telegram;
+pub mod telegram_notifier;
 
 #[async_trait]
 pub trait InputAdapter: Send + Sync + 'static {

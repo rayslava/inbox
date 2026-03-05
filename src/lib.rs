@@ -10,6 +10,7 @@ pub mod log_capture;
 pub mod message;
 pub mod output;
 pub mod pipeline;
+pub mod processing_status;
 pub mod render;
 pub mod telemetry;
 pub mod tls;

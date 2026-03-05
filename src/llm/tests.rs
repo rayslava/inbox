@@ -307,5 +307,8 @@ fn llm_request_ignores_non_image_attachments_for_vision() {
     });
 
     let req = LlmRequest::from_enriched(&enriched, &cfg, tmp.path(), "", false);
-    assert!(req.images.is_empty(), "audio attachment should not produce vision images");
+    assert!(
+        req.images.is_empty(),
+        "audio attachment should not produce vision images"
+    );
 }

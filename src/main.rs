@@ -14,6 +14,7 @@ use inbox::{
     llm, log_capture,
     output::{OutputWriter, org_file::OrgFileWriter},
     pipeline::Pipeline,
+    processing_status::ProcessingTracker,
     telemetry as inbox_telemetry, web,
 };
 
@@ -74,7 +75,13 @@ async fn main() -> Result<()> {
     // Build pipeline
     let llm_chain = Arc::new(llm::build_chain(&cfg));
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
-    let pipeline = Arc::new(Pipeline::new(Arc::clone(&cfg), llm_chain, writer));
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Arc::new(Pipeline::new(
+        Arc::clone(&cfg),
+        llm_chain,
+        writer,
+        Arc::clone(&tracker),
+    ));
 
     let (tx, rx) = mpsc::channel::<inbox::message::IncomingMessage>(256);
 
@@ -94,6 +101,7 @@ async fn main() -> Result<()> {
             session_store,
             prometheus_handle,
             Arc::clone(&log_store),
+            Arc::clone(&tracker),
         );
         tokio::spawn(async move {
             let listener = tokio::net::TcpListener::bind(admin_addr)

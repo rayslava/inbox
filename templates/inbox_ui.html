@@ -35,6 +35,14 @@
     .node .attachments audio, .node .attachments video { max-width: 100%; }
     .node .attachments .doc-link { font-size: 0.85rem; }
     .hidden { display: none; }
+    .status-panel { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; }
+    .status-panel h3 { margin: 0 0 0.6rem; font-size: 0.95rem; color: #92400e; }
+    #status-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+    .status-item { display: flex; align-items: center; gap: 0.5rem; font-size: 0.88rem; }
+    .status-icon { font-size: 1rem; }
+    .status-source { color: #6b7280; }
+    .status-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status-label { color: #6b7280; font-size: 0.78rem; }
   </style>
 </head>
 <body>
@@ -44,6 +52,11 @@
   <a class="logout" href="/logs">Logs</a>
   <a class="logout" href="/logout">Sign out</a>
 </header>
+
+<div id="status-panel" style="display:none" class="status-panel">
+  <h3>In progress</h3>
+  <ul id="status-list"></ul>
+</div>
 
 {% if !inbox_url.is_empty() %}
 <section class="capture"
@@ -80,6 +93,50 @@
 </div>
 
 <script>
+const STAGE_ICONS = {
+  received: '⏳', enriching: '🔍', running_llm: '🤖',
+  writing: '✍️', done: '✅', failed: '❌'
+};
+const STAGE_LABELS = {
+  received: 'Received', enriching: 'Fetching content',
+  running_llm: 'Analysing', writing: 'Saving',
+  done: 'Done', failed: 'Failed'
+};
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function pollStatus() {
+  try {
+    const resp = await fetch('/status');
+    if (!resp.ok) return;
+    const items = await resp.json();
+    const panel = document.getElementById('status-panel');
+    const list  = document.getElementById('status-list');
+    if (!items || items.length === 0) {
+      panel.style.display = 'none';
+      return;
+    }
+    panel.style.display = '';
+    list.innerHTML = items.map(item => {
+      const stageKey = item.stage;
+      const icon = STAGE_ICONS[stageKey] ?? '…';
+      const label = STAGE_LABELS[stageKey] ?? stageKey;
+      const title = stageKey === 'done' ? (item.title ?? '') : item.text_preview;
+      return `<li class="status-item status-${escHtml(stageKey)}">
+        <span class="status-icon">${icon}</span>
+        <span class="status-source">[${escHtml(item.source)}]</span>
+        <span class="status-text">${escHtml(title)}</span>
+        <span class="status-label">${escHtml(label)}</span>
+      </li>`;
+    }).join('');
+  } catch (_) {}
+}
+
+setInterval(pollStatus, 3000);
+pollStatus();
+
 function filter(q) {
   q = q.toLowerCase();
   document.querySelectorAll('#nodes .node').forEach(el => {

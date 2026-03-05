@@ -8,6 +8,7 @@ use crate::config::Config;
 use crate::error::InboxError;
 use crate::message::{EnrichedMessage, IncomingMessage, ProcessedMessage};
 use crate::output::OutputWriter;
+use crate::processing_status::{ProcessingStage, ProcessingTracker};
 
 pub mod content_extractor;
 pub mod url_classifier;
@@ -23,6 +24,7 @@ pub struct Pipeline {
     pub llm: Arc<crate::llm::LlmChain>,
     pub writer: Arc<dyn OutputWriter>,
     pub fetcher: UrlFetcher,
+    pub tracker: Arc<ProcessingTracker>,
     in_flight: Arc<tokio::sync::Semaphore>,
 }
 
@@ -31,6 +33,7 @@ impl Pipeline {
         config: Arc<Config>,
         llm: Arc<crate::llm::LlmChain>,
         writer: Arc<dyn OutputWriter>,
+        tracker: Arc<ProcessingTracker>,
     ) -> Self {
         let fetcher = UrlFetcher::new(&config.url_fetch);
         let in_flight_limit =
@@ -40,6 +43,7 @@ impl Pipeline {
             llm,
             writer,
             fetcher,
+            tracker,
             in_flight: Arc::new(tokio::sync::Semaphore::new(in_flight_limit)),
         }
     }
@@ -92,10 +96,89 @@ impl Pipeline {
     /// Returns an error if enrichment, LLM completion, or output writing fails.
     #[spec(requires: !msg.id.is_nil())]
     #[instrument(skip(self, msg), fields(id = %msg.id, source = %msg.source))]
-    pub async fn process(&self, msg: IncomingMessage) -> Result<(), InboxError> {
-        let enriched = self.enrich(msg).await?;
-        let processed = self.run_llm(enriched).await?;
-        self.writer.write(&processed, &self.config).await?;
+    pub async fn process(&self, mut msg: IncomingMessage) -> Result<(), InboxError> {
+        let id = msg.id;
+        let mut notifier = msg.status_notifier.take();
+
+        self.tracker.insert(
+            id,
+            msg.source.as_str().to_owned(),
+            msg.text.chars().take(80).collect(),
+        );
+
+        // Enriching
+        self.tracker.advance(id, ProcessingStage::Enriching);
+        if let Some(n) = &mut notifier {
+            n.advance(ProcessingStage::Enriching).await;
+        }
+        let enriched = match self.enrich(msg).await {
+            Ok(e) => e,
+            Err(e) => {
+                let stage = ProcessingStage::Failed {
+                    reason: e.to_string(),
+                };
+                self.tracker.advance(id, stage.clone());
+                if let Some(n) = &mut notifier {
+                    n.advance(stage).await;
+                }
+                return Err(e);
+            }
+        };
+
+        // RunningLlm
+        self.tracker.advance(id, ProcessingStage::RunningLlm);
+        if let Some(n) = &mut notifier {
+            n.advance(ProcessingStage::RunningLlm).await;
+        }
+        let processed = match self.run_llm(enriched).await {
+            Ok(p) => p,
+            Err(e) => {
+                let stage = ProcessingStage::Failed {
+                    reason: e.to_string(),
+                };
+                self.tracker.advance(id, stage.clone());
+                if let Some(n) = &mut notifier {
+                    n.advance(stage).await;
+                }
+                return Err(e);
+            }
+        };
+
+        // Writing
+        self.tracker.advance(id, ProcessingStage::Writing);
+        if let Some(n) = &mut notifier {
+            n.advance(ProcessingStage::Writing).await;
+        }
+        if let Err(e) = self.writer.write(&processed, &self.config).await {
+            let stage = ProcessingStage::Failed {
+                reason: e.to_string(),
+            };
+            self.tracker.advance(id, stage.clone());
+            if let Some(n) = &mut notifier {
+                n.advance(stage).await;
+            }
+            return Err(e);
+        }
+
+        let title = processed.llm_response.as_ref().map_or_else(
+            || {
+                processed
+                    .enriched
+                    .original
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_owned()
+            },
+            |r| r.title.clone(),
+        );
+        let done = ProcessingStage::Done { title };
+        self.tracker.advance(id, done.clone());
+        if let Some(n) = &mut notifier {
+            n.advance(done).await;
+        }
+
         Ok(())
     }
 
@@ -374,77 +457,4 @@ fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::{
-        AdaptersConfig, AdminConfig, Config, GeneralConfig, PipelineConfig, SyncthingConfig,
-        ToolingConfig, UrlFetchConfig, WebUiConfig,
-    };
-
-    fn test_config(policy: crate::config::JsShellPolicy) -> Config {
-        Config {
-            general: GeneralConfig {
-                output_file: std::path::PathBuf::from("/tmp/inbox-test.org"),
-                attachments_dir: std::path::PathBuf::from("/tmp/inbox-test-att"),
-                log_level: "info".into(),
-                log_format: "pretty".into(),
-            },
-            admin: AdminConfig::default(),
-            web_ui: WebUiConfig::default(),
-            pipeline: PipelineConfig {
-                web_content: crate::config::WebContentConfig {
-                    js_shell_policy: policy,
-                    js_shell_patterns: vec![
-                        "doesn't work properly without javascript enabled".into(),
-                        "please enable it to continue".into(),
-                    ],
-                },
-            },
-            llm: crate::test_helpers::no_llm_config(),
-            adapters: AdaptersConfig::default(),
-            url_fetch: UrlFetchConfig::default(),
-            syncthing: SyncthingConfig::default(),
-            tooling: ToolingConfig::default(),
-        }
-    }
-
-    #[test]
-    fn truncate_chars_within_limit() {
-        assert_eq!(truncate_chars("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_chars_at_limit() {
-        assert_eq!(truncate_chars("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_chars_exceeds_limit() {
-        assert_eq!(truncate_chars("hello world", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_chars_unicode() {
-        // "héllo" — 5 chars, each may be multi-byte
-        let s = "héllo";
-        assert_eq!(truncate_chars(s, 3), "hél");
-    }
-
-    #[test]
-    fn js_shell_match_respects_policy() {
-        let cfg = test_config(crate::config::JsShellPolicy::ToolOnly);
-        assert!(matches_js_shell_policy(
-            &cfg,
-            "This page doesn't work properly without JavaScript enabled"
-        ));
-    }
-
-    #[test]
-    fn js_shell_match_disabled_when_policy_not_tool_only() {
-        let cfg = test_config(crate::config::JsShellPolicy::Allow);
-        assert!(!matches_js_shell_policy(
-            &cfg,
-            "This page doesn't work properly without JavaScript enabled"
-        ));
-    }
-}
+mod tests;

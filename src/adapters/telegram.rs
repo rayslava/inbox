@@ -16,9 +16,11 @@ const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// If a session lasted at least this long, reset the backoff on disconnect.
 const STABLE_THRESHOLD: Duration = Duration::from_secs(30);
 
+use crate::adapters::telegram_notifier::build_telegram_notifier;
 use crate::config::TelegramConfig;
 use crate::error::InboxError;
 use crate::message::{IncomingMessage, MessageSource, SourceMetadata};
+use crate::processing_status::StatusNotifier;
 
 use super::InputAdapter;
 
@@ -151,6 +153,9 @@ pub fn build_handler(
                     },
                 );
                 incoming.attachments = attachments;
+
+                let notifier = build_telegram_notifier(&bot, msg.chat.id, msg.id).await;
+                incoming.status_notifier = notifier.map(|n| Box::new(n) as Box<dyn StatusNotifier>);
 
                 metrics::counter!(
                     crate::telemetry::MESSAGES_RECEIVED,

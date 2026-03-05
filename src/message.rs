@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::processing_status::StatusNotifier;
 use crate::url_content::UrlContent;
 
-#[derive(Debug, Clone)]
 pub struct IncomingMessage {
     pub id: Uuid,
     pub source: MessageSource,
@@ -14,6 +14,21 @@ pub struct IncomingMessage {
     pub text: String,
     pub metadata: SourceMetadata,
     pub attachments: Vec<Attachment>,
+    /// Per-message status notifier. Adapters set this; pipeline extracts and drives it.
+    pub status_notifier: Option<Box<dyn StatusNotifier>>,
+}
+
+impl std::fmt::Debug for IncomingMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IncomingMessage")
+            .field("id", &self.id)
+            .field("source", &self.source)
+            .field("received_at", &self.received_at)
+            .field("text", &self.text)
+            .field("metadata", &self.metadata)
+            .field("attachments", &self.attachments)
+            .finish_non_exhaustive()
+    }
 }
 
 impl IncomingMessage {
@@ -26,6 +41,7 @@ impl IncomingMessage {
             text,
             metadata,
             attachments: Vec::new(),
+            status_notifier: None,
         }
     }
 
@@ -182,14 +198,14 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EnrichedMessage {
     pub original: IncomingMessage,
     pub urls: Vec<url::Url>,
     pub url_contents: Vec<UrlContent>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ProcessedMessage {
     pub enriched: EnrichedMessage,
     /// None means raw fallback (LLM unavailable or all backends failed).

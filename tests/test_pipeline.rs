@@ -9,6 +9,7 @@ use inbox::{
     message::{IncomingMessage, MessageSource, SourceMetadata},
     output::{OutputWriter, org_file::OrgFileWriter},
     pipeline::Pipeline,
+    processing_status::ProcessingTracker,
     test_helpers as helpers,
 };
 
@@ -42,7 +43,8 @@ async fn pipeline_writes_org_node_for_plain_text_message() {
 
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
-    let pipeline = Arc::new(Pipeline::new(Arc::clone(&cfg), llm, writer));
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Arc::new(Pipeline::new(Arc::clone(&cfg), llm, writer, tracker));
 
     let msg = IncomingMessage::new(
         MessageSource::Http,
@@ -75,7 +77,8 @@ async fn pipeline_handles_empty_text_gracefully() {
 
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
-    let pipeline = Arc::new(Pipeline::new(Arc::clone(&cfg), llm, writer));
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Arc::new(Pipeline::new(Arc::clone(&cfg), llm, writer, tracker));
 
     let msg = IncomingMessage::new(
         MessageSource::Http,
@@ -101,7 +104,8 @@ async fn pipeline_appends_multiple_messages() {
 
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
-    let pipeline = Arc::new(Pipeline::new(Arc::clone(&cfg), llm, writer));
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Arc::new(Pipeline::new(Arc::clone(&cfg), llm, writer, tracker));
 
     for i in 0..3_u8 {
         let msg = IncomingMessage::new(
