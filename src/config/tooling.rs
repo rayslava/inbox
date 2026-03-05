@@ -12,6 +12,9 @@ pub struct NamedToolConfig {
     pub enabled: bool,
     #[serde(default)]
     pub prompt: String,
+    /// Number of additional attempts after the first failure (0 = no retry).
+    #[serde(default = "default_tool_retries")]
+    pub retries: u32,
     #[serde(flatten)]
     pub backend: ToolBackendConfig,
 }
@@ -22,6 +25,7 @@ impl Default for NamedToolConfig {
             description: String::new(),
             enabled: true,
             prompt: String::new(),
+            retries: default_tool_retries(),
             backend: ToolBackendConfig::Internal,
         }
     }
@@ -43,6 +47,9 @@ pub struct CrawlToolConfig {
     pub timeout_secs: u32,
     #[serde(default = "default_crawl_priority")]
     pub priority: i32,
+    /// Number of additional attempts after the first failure (0 = no retry).
+    #[serde(default = "default_tool_retries")]
+    pub retries: u32,
 }
 
 impl Default for CrawlToolConfig {
@@ -55,6 +62,7 @@ impl Default for CrawlToolConfig {
             auth_header: None,
             timeout_secs: default_tool_timeout(),
             priority: default_crawl_priority(),
+            retries: default_tool_retries(),
         }
     }
 }
@@ -129,6 +137,9 @@ pub enum ToolBackendConfig {
 
 fn default_tool_timeout() -> u32 {
     15
+}
+fn default_tool_retries() -> u32 {
+    1
 }
 fn default_http_method() -> String {
     "GET".into()

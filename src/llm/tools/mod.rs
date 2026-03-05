@@ -25,6 +25,7 @@ pub struct Tool {
     pub name: String,
     pub description: String,
     pub enabled: bool,
+    pub retries: u32,
     pub backend: ToolBackendConfig,
 }
 
@@ -105,10 +106,10 @@ impl ToolExecutor {
             .collect()
     }
 
-    /// Execute a named tool call.
+    /// Execute a named tool call, retrying up to `tool.retries` additional times on failure.
     ///
     /// # Errors
-    /// Returns an error if the tool is unknown, arguments are invalid, or the backend fails.
+    /// Returns an error if the tool is unknown, arguments are invalid, or all attempts fail.
     #[spec(requires: !name.is_empty())]
     pub async fn execute(
         &self,
@@ -123,6 +124,35 @@ impl ToolExecutor {
             .find(|t| t.name == name && t.enabled)
             .ok_or_else(|| InboxError::LlmTool(format!("Unknown tool: {name}")))?;
 
+        let attempts = tool.retries + 1;
+        let mut last_err = InboxError::LlmTool(format!("tool {name} never attempted"));
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                tracing::warn!(tool = %name, attempt, "Retrying tool call after failure");
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+            match self
+                .dispatch_once(tool, name, args, msg_id, attachments_dir)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    tracing::warn!(tool = %name, attempt = attempt + 1, ?e, "Tool attempt failed");
+                    last_err = e;
+                }
+            }
+        }
+        Err(last_err)
+    }
+
+    async fn dispatch_once(
+        &self,
+        tool: &Tool,
+        name: &str,
+        args: &serde_json::Value,
+        msg_id: Uuid,
+        attachments_dir: &Path,
+    ) -> Result<ToolResult, InboxError> {
         match name {
             "scrape_page" => {
                 let url_str = args["url"]
@@ -306,18 +336,21 @@ pub fn default_tools(fetcher: UrlFetcher) -> ToolExecutor {
             name: "scrape_page".into(),
             description: "Fetch and extract readable text from a web page URL".into(),
             enabled: true,
+            retries: 1,
             backend: ToolBackendConfig::Internal,
         },
         Tool {
             name: "download_file".into(),
             description: "Download a file from a URL and save it as an attachment".into(),
             enabled: true,
+            retries: 1,
             backend: ToolBackendConfig::Internal,
         },
         Tool {
             name: "crawl_url".into(),
             description: "Crawl a URL and return markdown/html from crawler service".into(),
             enabled: false,
+            retries: 1,
             backend: ToolBackendConfig::Crawler {
                 endpoint: "http://localhost:11235/crawl".into(),
                 auth_header: None,
@@ -352,18 +385,21 @@ pub fn from_tooling(tooling: &ToolingConfig, fetcher: UrlFetcher) -> ToolExecuto
             name: "scrape_page".into(),
             description: scrape_desc,
             enabled: tooling.scrape_page.enabled,
+            retries: tooling.scrape_page.retries,
             backend: tooling.scrape_page.backend.clone(),
         },
         Tool {
             name: "download_file".into(),
             description: download_desc,
             enabled: tooling.download_file.enabled,
+            retries: tooling.download_file.retries,
             backend: tooling.download_file.backend.clone(),
         },
         Tool {
             name: "crawl_url".into(),
             description: crawl_desc,
             enabled: tooling.crawl_url.enabled,
+            retries: tooling.crawl_url.retries,
             backend: ToolBackendConfig::Crawler {
                 endpoint: tooling.crawl_url.endpoint.clone(),
                 auth_header: tooling.crawl_url.auth_header.clone(),

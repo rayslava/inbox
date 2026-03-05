@@ -158,12 +158,14 @@ enabled = true
 description = "Fetch and extract readable text from a web page URL"
 prompt = "Use this for normal article pages."
 backend = "internal"
+retries = 1   # additional attempts on failure (0 = no retry)
 
 [tooling.download_file]
 enabled = true
 description = "Download a file from a URL and save it as an attachment"
 prompt = "Use this when the URL points to a downloadable file."
 backend = "internal"
+retries = 1
 
 [tooling.crawl_url]
 enabled = true
@@ -172,4 +174,5 @@ prompt = "Prefer this for dynamic pages; prefer markdown in tool output and fall
 endpoint = "http://localhost:11235/crawl"
 priority = 10
 timeout_secs = 30
+retries = 2   # crawl4ai may need an extra attempt on cold start
 # auth_header = "Authorization: Bearer ${CRAWLER_TOKEN}"

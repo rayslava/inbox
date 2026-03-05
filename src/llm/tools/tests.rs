@@ -25,6 +25,7 @@ fn tool_openai_definition_has_name() {
         name: "scrape_page".into(),
         description: "desc".into(),
         enabled: true,
+        retries: 0,
         backend: ToolBackendConfig::Internal,
     };
     let def = tool.openai_definition();
@@ -44,6 +45,7 @@ fn active_tool_definitions_empty_when_all_disabled() {
         name: "scrape_page".into(),
         description: "d".into(),
         enabled: false,
+        retries: 0,
         backend: ToolBackendConfig::Internal,
     }];
     let executor = ToolExecutor::new(tools, test_fetcher());
@@ -135,6 +137,7 @@ async fn execute_crawl_url_missing_url_arg_errors() {
         name: "crawl_url".into(),
         description: "crawl".into(),
         enabled: true,
+        retries: 0,
         backend: ToolBackendConfig::Crawler {
             endpoint: "http://localhost:11235/crawl".into(),
             auth_header: None,
@@ -161,6 +164,7 @@ async fn execute_crawl_url_with_wrong_backend_errors() {
         name: "crawl_url".into(),
         description: "crawl".into(),
         enabled: true,
+        retries: 0,
         backend: ToolBackendConfig::Internal,
     }];
     let executor = ToolExecutor::new(tools, test_fetcher());
@@ -182,6 +186,7 @@ async fn execute_scrape_page_with_crawler_backend_errors() {
         name: "scrape_page".into(),
         description: "scrape".into(),
         enabled: true,
+        retries: 0,
         backend: ToolBackendConfig::Crawler {
             endpoint: "http://localhost:11235/crawl".into(),
             auth_header: None,
@@ -208,6 +213,7 @@ async fn execute_download_file_with_crawler_backend_errors() {
         name: "download_file".into(),
         description: "download".into(),
         enabled: true,
+        retries: 0,
         backend: ToolBackendConfig::Crawler {
             endpoint: "http://localhost:11235/crawl".into(),
             auth_header: None,
