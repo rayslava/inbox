@@ -235,7 +235,12 @@ impl Pipeline {
             &self.config.llm,
             &self.config.general.attachments_dir,
             &self.build_llm_guidance(&enriched),
-            self.config.llm.prompts.require_tool_for_urls && !enriched.urls.is_empty(),
+            // Only force a tool call if URLs are present but none were pre-fetched by
+            // the pipeline. If url_contents is already populated the LLM prompt already
+            // contains the page text — there is nothing for a tool call to add.
+            self.config.llm.prompts.require_tool_for_urls
+                && !enriched.urls.is_empty()
+                && enriched.url_contents.is_empty(),
         );
         match self.llm.complete(req).await {
             LlmOutcome::Success(resp) => {
