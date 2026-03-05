@@ -50,7 +50,7 @@ rand                = { version = "0.10", features = ["std"] }
 dashmap             = "6"
 bytes               = "1"
 mime                = "0"
-anodized            = { version = "0", features = ["runtime-check-and-panic"] }
+anodized            = { version = "0", features = ["runtime-check-and-print"] }
 tempfile            = "3"
 urlencoding         = "2"
 base64              = "0"

@@ -28,6 +28,11 @@ impl UrlFetcher {
     /// # Panics
     /// Panics if the TLS backend cannot be initialised (extremely unlikely in practice).
     #[must_use]
+    #[spec(requires:
+        !cfg.user_agent.trim().is_empty()
+        && cfg.timeout_secs > 0
+        && cfg.max_body_bytes > 0
+    )]
     pub fn new(cfg: &UrlFetchConfig) -> Self {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
@@ -163,7 +168,6 @@ impl UrlFetcher {
     /// Download a file URL as an attachment.
     /// Saves to `{attachments_dir}/{id[0..2]}/{id[2..]}/{filename}`.
     #[instrument(skip(self, attachments_dir), fields(url = %url, id = %msg_id))]
-    #[spec(requires: !msg_id.is_nil())]
     pub async fn download_file(
         &self,
         url: &Url,

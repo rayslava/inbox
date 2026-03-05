@@ -1,3 +1,4 @@
+use anodized::spec;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -24,6 +25,12 @@ impl OpenRouterClient {
     /// # Panics
     /// Panics if the TLS backend cannot be initialised (extremely unlikely in practice).
     #[must_use]
+    #[spec(requires:
+        !cfg.model.trim().is_empty()
+        && !cfg.base_url.trim().is_empty()
+        && cfg.timeout_secs > 0
+        && cfg.retries > 0
+    )]
     pub fn from_config(cfg: &LlmBackendConfig) -> Self {
         let client = crate::tls::client_builder()
             .timeout(Duration::from_secs(cfg.timeout_secs))
@@ -223,6 +230,7 @@ impl LlmClient for OpenRouterClient {
     }
 }
 
+#[spec(requires: max_chars > 0)]
 fn truncate_for_log(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_owned()
@@ -237,6 +245,7 @@ fn truncate_for_log(s: &str, max_chars: usize) -> String {
 ///
 /// # Errors
 /// Returns an error if the text is not valid JSON or missing required fields.
+#[spec(requires: !backend.trim().is_empty())]
 pub fn parse_llm_json_response(text: &str, backend: &str) -> Result<LlmResponse, InboxError> {
     // Strip optional markdown fences
     let cleaned = strip_markdown_fences(text);

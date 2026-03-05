@@ -260,8 +260,6 @@ mod tests {
 
     #[test]
     fn render_forwarded_from_appears_in_drawer() {
-        use crate::message::Attachment;
-
         let msg = IncomingMessage::new(
             MessageSource::Telegram,
             "forwarded content".into(),

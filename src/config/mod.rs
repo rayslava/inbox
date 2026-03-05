@@ -65,6 +65,7 @@ fn interpolate_env(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn interpolate_known_var() {
@@ -103,5 +104,40 @@ mod tests {
         tooling.crawl_url.prompt = "ignored".into();
         let block = tooling.prompt_block();
         assert!(block.is_empty());
+    }
+
+    #[test]
+    fn load_interpolates_env_and_deserializes() {
+        // SAFETY: single-threaded test, no other threads reading this env var
+        unsafe { std::env::set_var("INBOX_TEST_OUTPUT", "out.org") };
+
+        let mut file = tempfile::NamedTempFile::new().expect("tempfile");
+        writeln!(
+            file,
+            r#"
+[general]
+output_file = "${{INBOX_TEST_OUTPUT}}"
+attachments_dir = "attachments"
+
+[llm]
+"#
+        )
+        .expect("write config");
+
+        let cfg = load(file.path()).expect("load config");
+        assert_eq!(cfg.general.output_file, std::path::PathBuf::from("out.org"));
+        assert_eq!(
+            cfg.general.attachments_dir,
+            std::path::PathBuf::from("attachments")
+        );
+    }
+
+    #[test]
+    fn load_invalid_toml_returns_config_error() {
+        let mut file = tempfile::NamedTempFile::new().expect("tempfile");
+        writeln!(file, "[general").expect("write config");
+
+        let err = load(file.path()).expect_err("must fail");
+        assert!(matches!(err, InboxError::Config(_)));
     }
 }

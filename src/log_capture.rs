@@ -103,3 +103,54 @@ impl Visit for MessageVisitor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_subscriber::prelude::*;
+
+    #[test]
+    fn log_store_enforces_capacity_and_newest_first() {
+        let store = LogStore::new(2);
+        store.push(LogEntry {
+            timestamp: "00:00:01.000".into(),
+            level: "INFO".into(),
+            target: "t1".into(),
+            message: "first".into(),
+        });
+        store.push(LogEntry {
+            timestamp: "00:00:02.000".into(),
+            level: "INFO".into(),
+            target: "t2".into(),
+            message: "second".into(),
+        });
+        store.push(LogEntry {
+            timestamp: "00:00:03.000".into(),
+            level: "INFO".into(),
+            target: "t3".into(),
+            message: "third".into(),
+        });
+
+        let recent = store.recent();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].message, "third");
+        assert_eq!(recent[1].message, "second");
+    }
+
+    #[test]
+    fn capture_layer_records_message_and_metadata() {
+        let store = LogStore::new(10);
+        let layer = LogCaptureLayer::new(Arc::clone(&store));
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        tracing::info!(target: "inbox::capture_test", "hello from capture layer");
+
+        let recent = store.recent();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].target, "inbox::capture_test");
+        assert_eq!(recent[0].level, "INFO");
+        assert!(recent[0].message.contains("hello from capture layer"));
+        assert!(!recent[0].timestamp.is_empty());
+    }
+}

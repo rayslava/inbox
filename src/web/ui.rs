@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use anodized::spec;
 use askama::Template;
 
 // ── Template types ────────────────────────────────────────────────────────────
@@ -70,6 +71,7 @@ pub fn parse_org_nodes(content: &str, attachments_dir: &Path) -> Vec<UiNode> {
     nodes
 }
 
+#[spec(requires: !lines.is_empty() && lines[0].starts_with('*'))]
 fn parse_node(lines: &[&str], attachments_dir: &Path) -> Option<UiNode> {
     let header = lines.first()?;
     let after_star = header.strip_prefix("* ").unwrap_or(header);

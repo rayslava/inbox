@@ -1,3 +1,4 @@
+use anodized::spec;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -25,6 +26,12 @@ impl OllamaClient {
     /// # Panics
     /// Panics if the TLS backend cannot be initialised (extremely unlikely in practice).
     #[must_use]
+    #[spec(requires:
+        !cfg.model.trim().is_empty()
+        && !cfg.base_url.trim().is_empty()
+        && cfg.timeout_secs > 0
+        && cfg.retries > 0
+    )]
     pub fn from_config(cfg: &LlmBackendConfig) -> Self {
         let client = crate::tls::client_builder()
             .timeout(Duration::from_secs(cfg.timeout_secs))
@@ -204,6 +211,7 @@ impl LlmClient for OllamaClient {
     }
 }
 
+#[spec(requires: max_chars > 0)]
 fn truncate_for_log(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_owned()

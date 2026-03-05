@@ -169,6 +169,7 @@ pub struct LlmChain {
 
 impl LlmChain {
     #[must_use]
+    #[spec(requires: max_tool_turns > 0)]
     pub fn new(
         backends: Vec<Box<dyn LlmClient>>,
         fallback: FallbackMode,
@@ -379,6 +380,7 @@ async fn execute_tool_calls(
 use crate::config::{LlmBackendConfig, LlmBackendType};
 
 #[must_use]
+#[spec(requires: cfg.llm.max_tool_turns > 0)]
 pub fn build_chain(cfg: &Config) -> LlmChain {
     let backends: Vec<Box<dyn LlmClient>> = cfg.llm.backends.iter().map(build_backend).collect();
 

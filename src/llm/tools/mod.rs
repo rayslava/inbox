@@ -34,6 +34,7 @@ pub struct Tool {
 
 impl Tool {
     #[must_use]
+    #[spec(requires: !self.name.trim().is_empty() && !self.description.trim().is_empty())]
     pub fn openai_definition(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "function",
@@ -46,6 +47,7 @@ impl Tool {
     }
 }
 
+#[spec(requires: !name.trim().is_empty())]
 fn tool_parameters(name: &str) -> serde_json::Value {
     match name {
         "scrape_page" => serde_json::json!({
@@ -96,6 +98,7 @@ impl ToolExecutor {
     /// # Panics
     /// Panics if the TLS backend cannot be initialised (extremely unlikely in practice).
     #[must_use]
+    #[spec(requires: tools.iter().all(|t| !t.name.trim().is_empty() && !t.description.trim().is_empty()))]
     pub fn new(tools: Vec<Tool>, fetcher: UrlFetcher) -> Self {
         let http_client = crate::tls::client_builder()
             .timeout(Duration::from_secs(30))
@@ -156,6 +159,7 @@ impl ToolExecutor {
         Err(last_err)
     }
 
+    #[spec(requires: !name.trim().is_empty())]
     async fn dispatch_once(
         &self,
         tool: &Tool,
@@ -303,6 +307,7 @@ impl ToolExecutor {
     }
 
     #[instrument(skip(self, backend), fields(url = %url))]
+    #[spec(requires: !url.trim().is_empty())]
     async fn run_crawl(
         &self,
         backend: &ToolBackendConfig,
@@ -329,6 +334,7 @@ impl ToolExecutor {
         }
     }
 
+    #[spec(requires: !query.trim().is_empty())]
     async fn run_web_search(
         &self,
         backend: &ToolBackendConfig,

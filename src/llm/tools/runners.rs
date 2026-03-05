@@ -10,6 +10,7 @@ use super::ToolResult;
 
 /// Execute a shell tool. argv may contain `{url}` and `{filename}` placeholders.
 /// Arguments are passed as separate argv entries — no shell interpolation.
+#[spec(requires: !argv.is_empty() && timeout_secs > 0)]
 pub(super) async fn run_shell_tool(
     argv: &[String],
     url: &str,
@@ -74,6 +75,7 @@ pub(super) struct KagiSearchToolCfg<'a> {
 }
 
 /// Execute an HTTP tool backend.
+#[spec(requires: !cfg.endpoint.is_empty() && !cfg.method.is_empty() && cfg.timeout_secs > 0)]
 pub(super) async fn run_http_tool(
     client: &reqwest::Client,
     cfg: HttpToolCfg<'_>,
@@ -159,6 +161,12 @@ pub(super) async fn run_crawler_tool(
     cfg: CrawlToolCfg<'_>,
     url: &str,
 ) -> Result<ToolResult, InboxError> {
+    #[spec(requires: !cfg.endpoint.is_empty() && cfg.timeout_secs > 0 && !url.trim().is_empty())]
+    fn validate_crawler_cfg(cfg: &CrawlToolCfg<'_>, url: &str) {
+        let _ = (cfg, url);
+    }
+    validate_crawler_cfg(&cfg, url);
+
     let body = serde_json::json!({
         "urls": [url],
         "priority": cfg.priority,
@@ -229,6 +237,12 @@ pub(super) async fn run_kagi_search_tool(
     query: &str,
     limit: Option<u32>,
 ) -> Result<ToolResult, InboxError> {
+    #[spec(requires: !cfg.endpoint.is_empty() && cfg.timeout_secs > 0 && !query.trim().is_empty())]
+    fn validate_kagi_cfg(cfg: &KagiSearchToolCfg<'_>, query: &str) {
+        let _ = (cfg, query);
+    }
+    validate_kagi_cfg(&cfg, query);
+
     let trimmed_query = query.trim();
     if trimmed_query.is_empty() {
         return Err(InboxError::LlmTool(
@@ -236,27 +250,8 @@ pub(super) async fn run_kagi_search_tool(
         ));
     }
 
-    let result_limit = limit.unwrap_or(cfg.default_limit).clamp(1, 20);
-    let mut endpoint = url::Url::parse(cfg.endpoint)
-        .map_err(|e| InboxError::LlmTool(format!("Invalid Kagi endpoint URL: {e}")))?;
-    {
-        let mut qp = endpoint.query_pairs_mut();
-        qp.append_pair("q", trimmed_query);
-        qp.append_pair("limit", &result_limit.to_string());
-    }
+    let req = build_kagi_request(client, &cfg, trimmed_query, limit)?;
     let timeout = Duration::from_secs(u64::from(cfg.timeout_secs));
-    let mut req = client.get(endpoint);
-
-    if let Some(token) = cfg.api_token {
-        let resolved = resolve_env_vars(token);
-        let token_value = resolved.trim();
-        if token_value.is_empty() {
-            return Err(InboxError::LlmTool(
-                "Kagi API token is empty (web_search.api_token)".into(),
-            ));
-        }
-        req = req.header(reqwest::header::AUTHORIZATION, format!("Bot {token_value}"));
-    }
 
     let resp = tokio::time::timeout(timeout, req.send())
         .await
@@ -277,6 +272,44 @@ pub(super) async fn run_kagi_search_tool(
         )));
     }
 
+    parse_kagi_response(resp, trimmed_query, cfg.max_snippet_chars).await
+}
+
+fn build_kagi_request(
+    client: &reqwest::Client,
+    cfg: &KagiSearchToolCfg<'_>,
+    query: &str,
+    limit: Option<u32>,
+) -> Result<reqwest::RequestBuilder, InboxError> {
+    let result_limit = limit.unwrap_or(cfg.default_limit).clamp(1, 20);
+    let mut endpoint = url::Url::parse(cfg.endpoint)
+        .map_err(|e| InboxError::LlmTool(format!("Invalid Kagi endpoint URL: {e}")))?;
+    {
+        let mut qp = endpoint.query_pairs_mut();
+        qp.append_pair("q", query);
+        qp.append_pair("limit", &result_limit.to_string());
+    }
+
+    let mut req = client.get(endpoint);
+    if let Some(token) = cfg.api_token {
+        let resolved = resolve_env_vars(token);
+        let token_value = resolved.trim();
+        if token_value.is_empty() {
+            return Err(InboxError::LlmTool(
+                "Kagi API token is empty (web_search.api_token)".into(),
+            ));
+        }
+        req = req.header(reqwest::header::AUTHORIZATION, format!("Bot {token_value}"));
+    }
+
+    Ok(req)
+}
+
+async fn parse_kagi_response(
+    resp: reqwest::Response,
+    query: &str,
+    max_snippet_chars: usize,
+) -> Result<ToolResult, InboxError> {
     let json: serde_json::Value = resp
         .json()
         .await
@@ -302,39 +335,48 @@ pub(super) async fn run_kagi_search_tool(
 
     if results.is_empty() {
         return Ok(ToolResult::Text(format!(
-            "Kagi web_search results for \"{trimmed_query}\": no results."
+            "Kagi web_search results for \"{query}\": no results."
         )));
     }
 
-    let mut lines = Vec::with_capacity(results.len());
-    for (idx, item) in results.iter().enumerate() {
-        let title = item
-            .get("title")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("(untitled)");
-        let url = item
-            .get("url")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        let snippet = item
-            .get("snippet")
-            .and_then(serde_json::Value::as_str)
-            .map(|s| s.replace('\n', " "))
-            .unwrap_or_default();
-        let snippet = truncate_chars(&snippet, cfg.max_snippet_chars);
-        lines.push(format!(
-            "{}. {}\nURL: {}\nSnippet: {}",
-            idx + 1,
-            title.trim(),
-            url.trim(),
-            snippet.trim()
-        ));
-    }
+    let lines = results
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| format_kagi_result_line(idx + 1, item, max_snippet_chars))
+        .collect::<Vec<_>>();
 
     Ok(ToolResult::Text(format!(
-        "Kagi web_search results for \"{trimmed_query}\":\n\n{}",
+        "Kagi web_search results for \"{query}\":\n\n{}",
         lines.join("\n\n")
     )))
+}
+
+#[spec(requires: rank > 0)]
+fn format_kagi_result_line(
+    rank: usize,
+    item: &serde_json::Value,
+    max_snippet_chars: usize,
+) -> String {
+    let title = item
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("(untitled)");
+    let url = item
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let snippet = item
+        .get("snippet")
+        .and_then(serde_json::Value::as_str)
+        .map(|s| s.replace('\n', " "))
+        .unwrap_or_default();
+    let snippet = truncate_chars(&snippet, max_snippet_chars);
+    format!(
+        "{rank}. {}\nURL: {}\nSnippet: {}",
+        title.trim(),
+        url.trim(),
+        snippet.trim()
+    )
 }
 
 /// Expand `${VAR}` patterns in a string using environment variables.

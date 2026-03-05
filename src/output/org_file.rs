@@ -88,6 +88,29 @@ async fn rescan_folder(client: &reqwest::Client, cfg: &SyncthingConfig, folder_i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::{
+        EnrichedMessage, IncomingMessage, MessageSource, ProcessedMessage, SourceMetadata,
+    };
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn test_processed_message(text: &str) -> ProcessedMessage {
+        ProcessedMessage {
+            enriched: EnrichedMessage {
+                original: IncomingMessage::new(
+                    MessageSource::Http,
+                    text.to_owned(),
+                    SourceMetadata::Http {
+                        remote_addr: None,
+                        user_agent: None,
+                    },
+                ),
+                urls: Vec::new(),
+                url_contents: Vec::new(),
+            },
+            llm_response: None,
+        }
+    }
 
     #[tokio::test]
     async fn append_creates_file() {
@@ -107,5 +130,152 @@ mod tests {
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(content.contains("line1"));
         assert!(content.contains("line2"));
+    }
+
+    #[tokio::test]
+    async fn rescan_folder_skips_empty_folder_id() {
+        let server = MockServer::start().await;
+        let client = reqwest::Client::new();
+        let cfg = SyncthingConfig {
+            enabled: true,
+            api_url: server.uri(),
+            api_key: "k".into(),
+            org_folder_id: String::new(),
+            attachments_folder_id: None,
+            rescan_on_write: true,
+        };
+
+        rescan_folder(&client, &cfg, "").await;
+
+        let requests = server.received_requests().await.expect("requests");
+        assert!(requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn trigger_syncthing_rescans_posts_for_org_and_attachments() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/db/scan"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let cfg = SyncthingConfig {
+            enabled: true,
+            api_url: server.uri(),
+            api_key: "k".into(),
+            org_folder_id: "org-folder".into(),
+            attachments_folder_id: Some("att-folder".into()),
+            rescan_on_write: true,
+        };
+
+        trigger_syncthing_rescans(&cfg).await;
+    }
+
+    #[tokio::test]
+    async fn trigger_syncthing_rescans_does_not_duplicate_same_folder() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/db/scan"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = SyncthingConfig {
+            enabled: true,
+            api_url: server.uri(),
+            api_key: "k".into(),
+            org_folder_id: "shared".into(),
+            attachments_folder_id: Some("shared".into()),
+            rescan_on_write: true,
+        };
+
+        trigger_syncthing_rescans(&cfg).await;
+    }
+
+    #[tokio::test]
+    async fn writer_write_appends_and_triggers_syncthing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/db/scan"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output_file = dir.path().join("inbox.org");
+        let attachments_dir = dir.path().join("attachments");
+
+        let cfg_toml = format!(
+            r#"
+[general]
+output_file = "{}"
+attachments_dir = "{}"
+
+[llm]
+
+[syncthing]
+enabled = true
+rescan_on_write = true
+api_url = "{}"
+api_key = "k"
+org_folder_id = "org-folder"
+"#,
+            output_file.display(),
+            attachments_dir.display(),
+            server.uri()
+        );
+        let cfg: Config = toml::from_str(&cfg_toml).expect("config");
+
+        let writer = OrgFileWriter;
+        let msg = test_processed_message("test message");
+        writer.write(&msg, &cfg).await.expect("write ok");
+
+        let content = tokio::fs::read_to_string(&output_file)
+            .await
+            .expect("output read");
+        assert!(content.contains("* test message"));
+    }
+
+    #[tokio::test]
+    async fn writer_write_maps_append_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output_file = dir.path().to_path_buf(); // directory path, not a file
+        let attachments_dir = dir.path().join("attachments");
+
+        let cfg_toml = format!(
+            r#"
+[general]
+output_file = "{}"
+attachments_dir = "{}"
+
+[llm]
+"#,
+            output_file.display(),
+            attachments_dir.display(),
+        );
+        let cfg: Config = toml::from_str(&cfg_toml).expect("config");
+
+        let writer = OrgFileWriter;
+        let msg = test_processed_message("test message");
+        let err = writer.write(&msg, &cfg).await.expect_err("must fail");
+        assert!(matches!(err, InboxError::Output(_)));
+    }
+
+    #[tokio::test]
+    async fn rescan_folder_network_error_is_non_fatal() {
+        let client = reqwest::Client::new();
+        let cfg = SyncthingConfig {
+            enabled: true,
+            api_url: "http://127.0.0.1:1".into(),
+            api_key: "k".into(),
+            org_folder_id: "org".into(),
+            attachments_folder_id: None,
+            rescan_on_write: true,
+        };
+        rescan_folder(&client, &cfg, "org").await;
     }
 }
