@@ -86,11 +86,12 @@ timeout_secs = 30
 
 # Fallback backend: local Ollama (comment out if not available)
 # [[llm.backends]]
-# type         = "ollama"
-# model        = "llama3.2"
-# base_url     = "http://localhost:11434"
-# timeout_secs = 60
-# think        = true   # enable extended thinking/reasoning (Ollama only; omit = model default)
+# type           = "ollama"
+# model          = "llama3.2"
+# base_url       = "http://localhost:11434"
+# timeout_secs   = 60
+# think          = true   # enable extended thinking/reasoning (Ollama only; omit = model default)
+# max_concurrent = 1      # serialize requests to avoid overloading the local model (omit = unlimited)
 
 # ── Adapters ──────────────────────────────────────────────────────────────────
 

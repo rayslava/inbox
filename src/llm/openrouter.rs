@@ -1,7 +1,9 @@
 use anodized::spec;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tracing::{debug, info, instrument};
 
 use crate::config::LlmBackendConfig;
@@ -16,6 +18,7 @@ pub struct OpenRouterClient {
     pub base_url: String,
     pub retries: u32,
     pub timeout: Duration,
+    semaphore: Option<Arc<Semaphore>>,
     client: reqwest::Client,
 }
 
@@ -43,6 +46,7 @@ impl OpenRouterClient {
             base_url: cfg.base_url.clone(),
             retries: cfg.retries,
             timeout: Duration::from_secs(cfg.timeout_secs),
+            semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
         }
     }
@@ -164,6 +168,12 @@ impl LlmClient for OpenRouterClient {
             } else {
                 None
             },
+        };
+
+        let _permit = if let Some(sem) = &self.semaphore {
+            Some(sem.acquire().await.expect("semaphore closed"))
+        } else {
+            None
         };
 
         let url = format!("{}/chat/completions", self.base_url);
@@ -295,6 +305,7 @@ mod tests {
             base_url: base_url.to_owned(),
             retries: 1,
             timeout: std::time::Duration::from_secs(5),
+            semaphore: None,
             client: reqwest::Client::new(),
         }
     }

@@ -113,6 +113,9 @@ pub struct LlmBackendConfig {
     /// extended thinking/reasoning mode. `null` / omitted = model default.
     #[serde(default)]
     pub think: Option<bool>,
+    /// Maximum number of concurrent in-flight requests to this backend.
+    /// `None` means unlimited. Set to `1` for local Ollama instances.
+    pub max_concurrent: Option<usize>,
 }
 
 fn default_openrouter_base_url() -> String {

@@ -1,7 +1,9 @@
 use anodized::spec;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tracing::{debug, info, instrument};
 
 use crate::config::LlmBackendConfig;
@@ -17,6 +19,7 @@ pub struct OllamaClient {
     pub timeout: Duration,
     /// `None` = omit from request (model decides); `Some(true/false)` = explicit.
     pub think: Option<bool>,
+    semaphore: Option<Arc<Semaphore>>,
     client: reqwest::Client,
 }
 
@@ -44,6 +47,7 @@ impl OllamaClient {
             retries: cfg.retries,
             timeout: Duration::from_secs(cfg.timeout_secs),
             think: cfg.think,
+            semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
         }
     }
@@ -151,6 +155,12 @@ impl LlmClient for OllamaClient {
             think: self.think,
         };
 
+        let _permit = if let Some(sem) = &self.semaphore {
+            Some(sem.acquire().await.expect("semaphore closed"))
+        } else {
+            None
+        };
+
         let url = format!("{}/api/chat", self.base_url);
         debug!(url = %url, model = %self.model, think = ?self.think, "Sending Ollama request");
         let resp = self
@@ -235,6 +245,7 @@ mod tests {
             retries: 1,
             timeout: std::time::Duration::from_secs(5),
             think: None,
+            semaphore: None,
             client: reqwest::Client::new(),
         }
     }
