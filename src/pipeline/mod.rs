@@ -10,6 +10,8 @@ use crate::output::OutputWriter;
 use crate::processing_status::{ProcessingStage, ProcessingTracker};
 
 pub mod content_extractor;
+pub mod preprocess;
+pub mod tags;
 pub mod url_classifier;
 pub mod url_extractor;
 pub mod url_fetcher;
@@ -96,6 +98,26 @@ impl Pipeline {
     pub async fn process(&self, mut msg: IncomingMessage) -> Result<(), InboxError> {
         let id = msg.id;
         let mut notifier = msg.status_notifier.take();
+
+        // Extract user-supplied #hashtags before any other processing.
+        let (cleaned_text, user_tags) = tags::extract_user_tags(&msg.text);
+        if !user_tags.is_empty() {
+            info!(id = %id, tags = ?user_tags, "Extracted user tags from message");
+            msg.text = cleaned_text;
+            msg.user_tags = user_tags;
+        }
+
+        // Run pre-processing rules to build hints for later stages.
+        let hints = preprocess::run_preprocessing(&msg, &self.config.pipeline.preprocessing);
+        if hints.force_web_search || !hints.suggested_tags.is_empty() {
+            info!(
+                id = %id,
+                force_web_search = hints.force_web_search,
+                suggested_tags = ?hints.suggested_tags,
+                "Pre-processing hints computed"
+            );
+        }
+        msg.preprocessing_hints = hints;
 
         self.tracker.insert(
             id,
@@ -361,6 +383,31 @@ impl Pipeline {
 impl Pipeline {
     fn build_llm_guidance(&self, enriched: &EnrichedMessage) -> String {
         let mut lines = Vec::new();
+
+        if !enriched.original.user_tags.is_empty() {
+            let tag_list = enriched
+                .original
+                .user_tags
+                .iter()
+                .map(|t| format!("#{t}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!(
+                "The user has explicitly tagged this message with: {tag_list}. \
+                 Make sure these tags appear in your tags output."
+            ));
+        }
+
+        let hints = &enriched.original.preprocessing_hints;
+        if hints.force_web_search {
+            lines.push(
+                "Use the web_search tool to find more context before producing the final JSON."
+                    .to_owned(),
+            );
+        }
+        for hint in &hints.extra_llm_hints {
+            lines.push(hint.clone());
+        }
 
         let tool_lines = self.config.tooling.prompt_block();
         if !tool_lines.trim().is_empty() {

@@ -12,6 +12,8 @@ pub struct LogEntry {
     pub level: String,
     pub target: String,
     pub message: String,
+    /// Structured fields from the tracing event (excludes the "message" field).
+    pub fields: Vec<(String, String)>,
 }
 
 pub struct LogStore {
@@ -72,7 +74,7 @@ impl<S: tracing::Subscriber> Layer<S> for LogCaptureLayer {
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         let meta = event.metadata();
-        let mut visitor = MessageVisitor::default();
+        let mut visitor = FieldCollectorVisitor::default();
         event.record(&mut visitor);
 
         self.store.push(LogEntry {
@@ -80,19 +82,24 @@ impl<S: tracing::Subscriber> Layer<S> for LogCaptureLayer {
             level: meta.level().to_string(),
             target: meta.target().to_string(),
             message: visitor.message,
+            fields: visitor.fields,
         });
     }
 }
 
 #[derive(Default)]
-struct MessageVisitor {
+struct FieldCollectorVisitor {
     message: String,
+    fields: Vec<(String, String)>,
 }
 
-impl Visit for MessageVisitor {
+impl Visit for FieldCollectorVisitor {
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
             value.clone_into(&mut self.message);
+        } else {
+            self.fields
+                .push((field.name().to_string(), value.to_string()));
         }
     }
 
@@ -100,6 +107,9 @@ impl Visit for MessageVisitor {
         if field.name() == "message" {
             // fmt::Arguments delegates Debug to Display, so no extra quotes.
             self.message = format!("{value:?}");
+        } else {
+            self.fields
+                .push((field.name().to_string(), format!("{value:?}")));
         }
     }
 }
@@ -117,18 +127,21 @@ mod tests {
             level: "INFO".into(),
             target: "t1".into(),
             message: "first".into(),
+            fields: vec![],
         });
         store.push(LogEntry {
             timestamp: "00:00:02.000".into(),
             level: "INFO".into(),
             target: "t2".into(),
             message: "second".into(),
+            fields: vec![],
         });
         store.push(LogEntry {
             timestamp: "00:00:03.000".into(),
             level: "INFO".into(),
             target: "t3".into(),
             message: "third".into(),
+            fields: vec![],
         });
 
         let recent = store.recent();
@@ -152,5 +165,33 @@ mod tests {
         assert_eq!(recent[0].level, "INFO");
         assert!(recent[0].message.contains("hello from capture layer"));
         assert!(!recent[0].timestamp.is_empty());
+        assert!(recent[0].fields.is_empty());
+    }
+
+    #[test]
+    fn capture_layer_records_structured_fields() {
+        let store = LogStore::new(10);
+        let layer = LogCaptureLayer::new(Arc::clone(&store));
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        tracing::info!(
+            tool = "scrape_page",
+            url = "https://example.com",
+            "Tool executed"
+        );
+
+        let recent = store.recent();
+        assert_eq!(recent.len(), 1);
+        assert!(recent[0].message.contains("Tool executed"));
+        let field_names: Vec<&str> = recent[0].fields.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(field_names.contains(&"tool"));
+        assert!(field_names.contains(&"url"));
+        let tool_val = recent[0]
+            .fields
+            .iter()
+            .find(|(k, _)| k == "tool")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(tool_val, Some("scrape_page"));
     }
 }

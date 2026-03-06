@@ -14,8 +14,25 @@ pub struct IncomingMessage {
     pub text: String,
     pub metadata: SourceMetadata,
     pub attachments: Vec<Attachment>,
+    /// Hashtags extracted from the message text (e.g. `#rust` → `"rust"`).
+    /// Populated by the pipeline before enrichment; empty if none were found.
+    pub user_tags: Vec<String>,
+    /// Hints produced by the pre-processing stage.
+    /// Populated before enrichment and consumed by LLM guidance and rendering.
+    pub preprocessing_hints: ProcessingHints,
     /// Per-message status notifier. Adapters set this; pipeline extracts and drives it.
     pub status_notifier: Option<Box<dyn StatusNotifier>>,
+}
+
+/// Hints derived from the pre-processing stage that guide subsequent pipeline stages.
+#[derive(Debug, Clone, Default)]
+pub struct ProcessingHints {
+    /// If `true`, instruct the LLM to call the web search tool before summarizing.
+    pub force_web_search: bool,
+    /// Additional natural-language hints appended to the LLM system prompt.
+    pub extra_llm_hints: Vec<String>,
+    /// Tags suggested by pre-processing rules; merged with LLM tags in the org output.
+    pub suggested_tags: Vec<String>,
 }
 
 impl std::fmt::Debug for IncomingMessage {
@@ -27,6 +44,8 @@ impl std::fmt::Debug for IncomingMessage {
             .field("text", &self.text)
             .field("metadata", &self.metadata)
             .field("attachments", &self.attachments)
+            .field("user_tags", &self.user_tags)
+            .field("preprocessing_hints", &self.preprocessing_hints)
             .finish_non_exhaustive()
     }
 }
@@ -41,6 +60,8 @@ impl IncomingMessage {
             text,
             metadata,
             attachments: Vec::new(),
+            user_tags: Vec::new(),
+            preprocessing_hints: ProcessingHints::default(),
             status_notifier: None,
         }
     }

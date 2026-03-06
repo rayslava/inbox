@@ -130,6 +130,35 @@ user_agent      = "inbox/1.0 (personal capture daemon)"
 # Domains to skip when auto-fetching URLs (e.g. large media sites).
 skip_domains    = ["youtube.com", "twitter.com", "x.com"]
 
+# ── Pipeline pre-processing rules ────────────────────────────────────────────
+#
+# Rules are evaluated in order before URL enrichment. All matching rules fire
+# (not first-match-wins). Supported conditions:
+#   text_word_count_lt  — fires when the message text has fewer than `threshold` words
+#   has_image_attachment — fires when at least one image is attached
+#   has_attachment       — fires when any attachment is present
+#
+# Supported actions:
+#   force_web_search — instruct the LLM to call web_search before summarising
+#   add_tag          — add `tag` to the org tags (merged with LLM tags)
+#   add_llm_hint     — append `llm_hint` to the LLM system prompt
+#
+# All rules are optional. Uncomment and customise as needed.
+#
+# [[pipeline.preprocessing.rules]]
+# name      = "short_text_search"
+# condition = "text_word_count_lt"
+# threshold = 10
+# action    = "force_web_search"
+# llm_hint  = "The input is very short — use web_search to find more context before summarising."
+#
+# [[pipeline.preprocessing.rules]]
+# name      = "image_tagging"
+# condition = "has_image_attachment"
+# action    = "add_tag"
+# tag       = "image"
+# llm_hint  = "This message contains an image — describe the visual content in the summary."
+
 # ── Pipeline content policy ───────────────────────────────────────────────────
 
 [pipeline.web_content]

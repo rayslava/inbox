@@ -12,7 +12,10 @@ pub mod tooling;
 pub use adapters::{AdaptersConfig, EmailConfig, HttpAdapterConfig, TelegramConfig};
 pub use infra::{AdminConfig, GeneralConfig, SyncthingConfig, UrlFetchConfig, WebUiConfig};
 pub use llm::{FallbackMode, LlmBackendConfig, LlmBackendType, LlmConfig, LlmPromptsConfig};
-pub use pipeline::{JsShellPolicy, PipelineConfig, WebContentConfig};
+pub use pipeline::{
+    JsShellPolicy, PipelineConfig, PreprocessingConfig, PreprocessingRule, RuleAction,
+    RuleCondition, WebContentConfig,
+};
 pub use tooling::{
     CrawlToolConfig, NamedToolConfig, ToolBackendConfig, ToolingConfig, WebSearchToolConfig,
 };

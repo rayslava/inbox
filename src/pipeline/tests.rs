@@ -22,6 +22,7 @@ fn test_config(policy: crate::config::JsShellPolicy) -> Config {
                     "please enable it to continue".into(),
                 ],
             },
+            preprocessing: crate::config::PreprocessingConfig::default(),
         },
         llm: crate::test_helpers::no_llm_config(),
         adapters: AdaptersConfig::default(),

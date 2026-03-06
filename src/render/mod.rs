@@ -100,17 +100,34 @@ pub fn render_org_node(
         })
         .collect();
 
-    let (title, tags, summary, excerpt, backend) = match &msg.llm_response {
+    // Merge user-supplied tags, pre-processing suggested tags, and LLM tags (in that
+    // priority order) into a single deduplicated list.
+    let merged_tags: Vec<String> = {
+        let mut all = original.user_tags.clone();
+        for t in &original.preprocessing_hints.suggested_tags {
+            if !all.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                all.push(t.clone());
+            }
+        }
+        if let Some(r) = &msg.llm_response {
+            for t in &r.tags {
+                if !all.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                    all.push(t.clone());
+                }
+            }
+        }
+        all
+    };
+
+    let (title, summary, excerpt, backend) = match &msg.llm_response {
         Some(r) => (
             r.title.as_str(),
-            r.tags.as_slice(),
             r.summary.as_str(),
             r.excerpt.as_deref(),
             r.produced_by.as_str(),
         ),
         None => (
             original.text.lines().next().unwrap_or("(untitled)"),
-            &[][..],
             original.text.as_str(),
             None,
             "none",
@@ -119,7 +136,7 @@ pub fn render_org_node(
 
     let tmpl = OrgNodeTemplate {
         title,
-        tags,
+        tags: &merged_tags,
         id: &id_str,
         created: &created,
         source: &source,
