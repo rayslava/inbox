@@ -101,23 +101,35 @@ impl StatusNotifier for TelegramNotifier {
 
 /// Send an initial "⏳ Processing…" reply and return a notifier for the sent message.
 ///
-/// Returns `None` if the initial send fails (e.g. bot lacks reply permission).
+/// Retries up to `MAX_NOTIFY_RETRIES` times with exponential backoff on transient failures.
+/// Returns `None` if all attempts fail (e.g. bot lacks reply permission).
 pub async fn build_telegram_notifier(
     bot: &teloxide::Bot,
     chat_id: teloxide::types::ChatId,
     reply_to: teloxide::types::MessageId,
 ) -> Option<TelegramNotifier> {
-    match bot
-        .send_message(chat_id, "⏳ Processing…")
-        .reply_parameters(teloxide::types::ReplyParameters::new(reply_to))
-        .await
-    {
-        Ok(sent) => Some(TelegramNotifier::new(bot.clone(), chat_id, sent.id)),
-        Err(e) => {
-            warn!(?e, "Failed to send initial Telegram status message");
-            None
+    for attempt in 0..MAX_NOTIFY_RETRIES {
+        if attempt > 0 {
+            let backoff = Duration::from_millis(NOTIFY_RETRY_BASE_MS * 2u64.pow(attempt - 1));
+            tokio::time::sleep(backoff).await;
+        }
+        match bot
+            .send_message(chat_id, "⏳ Processing…")
+            .reply_parameters(teloxide::types::ReplyParameters::new(reply_to))
+            .await
+        {
+            Ok(sent) => return Some(TelegramNotifier::new(bot.clone(), chat_id, sent.id)),
+            Err(e) => {
+                warn!(
+                    ?e,
+                    attempt = attempt + 1,
+                    MAX_NOTIFY_RETRIES,
+                    "Failed to send initial Telegram status message"
+                );
+            }
         }
     }
+    None
 }
 
 #[cfg(test)]
