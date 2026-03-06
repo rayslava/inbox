@@ -1,8 +1,14 @@
+use std::time::Duration;
+
 use teloxide::payloads::SendMessageSetters;
 use teloxide::prelude::Requester;
 use tracing::warn;
 
 use crate::processing_status::{ProcessingStage, StatusNotifier};
+
+const MAX_NOTIFY_RETRIES: u32 = 3;
+const TERMINAL_NOTIFY_RETRIES: u32 = 5;
+const NOTIFY_RETRY_BASE_MS: u64 = 500;
 
 pub struct TelegramNotifier {
     bot: teloxide::Bot,
@@ -36,16 +42,59 @@ pub(super) fn stage_text(stage: &ProcessingStage) -> String {
     }
 }
 
+fn is_terminal(stage: &ProcessingStage) -> bool {
+    matches!(
+        stage,
+        ProcessingStage::Done { .. } | ProcessingStage::Failed { .. }
+    )
+}
+
 #[async_trait::async_trait]
 impl StatusNotifier for TelegramNotifier {
     async fn advance(&mut self, stage: ProcessingStage) {
         let text = stage_text(&stage);
-        if let Err(e) = self
-            .bot
-            .edit_message_text(self.chat_id, self.sent_msg_id, text)
-            .await
-        {
-            warn!(?e, "Failed to update Telegram status message");
+        let retries = if is_terminal(&stage) {
+            TERMINAL_NOTIFY_RETRIES
+        } else {
+            MAX_NOTIFY_RETRIES
+        };
+
+        let mut edited = false;
+        for attempt in 0..retries {
+            if attempt > 0 {
+                let backoff = Duration::from_millis(NOTIFY_RETRY_BASE_MS * 2u64.pow(attempt - 1));
+                tokio::time::sleep(backoff).await;
+            }
+            match self
+                .bot
+                .edit_message_text(self.chat_id, self.sent_msg_id, &text)
+                .await
+            {
+                Ok(_) => {
+                    edited = true;
+                    break;
+                }
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        attempt = attempt + 1,
+                        retries,
+                        "Failed to edit Telegram status message"
+                    );
+                }
+            }
+        }
+
+        if !edited {
+            warn!("All edit retries exhausted, falling back to send_message");
+            match self.bot.send_message(self.chat_id, &text).await {
+                Ok(sent) => {
+                    self.sent_msg_id = sent.id;
+                }
+                Err(e) => {
+                    warn!(?e, "Fallback send_message also failed");
+                }
+            }
         }
     }
 }

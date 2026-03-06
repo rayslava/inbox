@@ -6,7 +6,7 @@ use tracing::instrument;
 use url::Url;
 use uuid::Uuid;
 
-use crate::config::{ToolBackendConfig, ToolingConfig};
+use crate::config::ToolBackendConfig;
 use crate::error::InboxError;
 use crate::message::Attachment;
 use crate::pipeline::url_fetcher::UrlFetcher;
@@ -16,7 +16,10 @@ use runners::{
     run_kagi_search_tool, run_shell_tool,
 };
 
+mod builders;
 mod runners;
+
+pub use builders::{default_tools, from_tooling};
 
 #[cfg(test)]
 mod tests;
@@ -143,7 +146,8 @@ impl ToolExecutor {
         for attempt in 0..attempts {
             if attempt > 0 {
                 tracing::warn!(tool = %name, attempt, "Retrying tool call after failure");
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                let backoff = Duration::from_secs(2u64.pow(attempt).min(16));
+                tokio::time::sleep(backoff).await;
             }
             match self
                 .dispatch_once(tool, name, args, msg_id, attachments_dir)
@@ -208,8 +212,13 @@ impl ToolExecutor {
         url: &Url,
     ) -> Result<ToolResult, InboxError> {
         match backend {
-            ToolBackendConfig::Internal => {
-                let content = self.fetcher.fetch_page(url).await;
+            ToolBackendConfig::Internal { timeout_secs } => {
+                let timeout = Duration::from_secs(u64::from(*timeout_secs));
+                let content = tokio::time::timeout(timeout, self.fetcher.fetch_page(url))
+                    .await
+                    .map_err(|_| {
+                        InboxError::LlmTool(format!("scrape_page timed out after {timeout_secs}s"))
+                    })?;
                 Ok(ToolResult::Text(
                     content.map_or_else(|| "Failed to fetch page".into(), |c| c.text),
                 ))
@@ -253,11 +262,16 @@ impl ToolExecutor {
         attachments_dir: &Path,
     ) -> Result<ToolResult, InboxError> {
         match backend {
-            ToolBackendConfig::Internal => {
-                let att = self
-                    .fetcher
-                    .download_file(url, msg_id, attachments_dir)
-                    .await;
+            ToolBackendConfig::Internal { timeout_secs } => {
+                let timeout = Duration::from_secs(u64::from(*timeout_secs));
+                let att = tokio::time::timeout(
+                    timeout,
+                    self.fetcher.download_file(url, msg_id, attachments_dir),
+                )
+                .await
+                .map_err(|_| {
+                    InboxError::LlmTool(format!("download_file timed out after {timeout_secs}s"))
+                })?;
                 match att {
                     Some(a) => {
                         let name = a.original_name.clone();
@@ -367,6 +381,7 @@ impl ToolExecutor {
 
 // ── ToolResult ────────────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub enum ToolResult {
     Text(String),
     Attachment {
@@ -383,120 +398,4 @@ impl ToolResult {
             Self::Attachment { text, .. } => text,
         }
     }
-}
-
-// ── Builders ──────────────────────────────────────────────────────────────────
-
-/// Build the default tool list used when tooling config is not customized.
-#[must_use]
-pub fn default_tools(fetcher: UrlFetcher) -> ToolExecutor {
-    let tools = vec![
-        Tool {
-            name: "scrape_page".into(),
-            description: "Fetch and extract readable text from a web page URL".into(),
-            enabled: true,
-            retries: 1,
-            backend: ToolBackendConfig::Internal,
-        },
-        Tool {
-            name: "download_file".into(),
-            description: "Download a file from a URL and save it as an attachment".into(),
-            enabled: true,
-            retries: 1,
-            backend: ToolBackendConfig::Internal,
-        },
-        Tool {
-            name: "crawl_url".into(),
-            description: "Crawl a URL and return markdown/html from crawler service".into(),
-            enabled: false,
-            retries: 1,
-            backend: ToolBackendConfig::Crawler {
-                endpoint: "http://localhost:11235/crawl".into(),
-                auth_header: None,
-                timeout_secs: 30,
-                priority: 10,
-            },
-        },
-        Tool {
-            name: "web_search".into(),
-            description: "Search the web and return top results".into(),
-            enabled: false,
-            retries: 1,
-            backend: ToolBackendConfig::KagiSearch {
-                endpoint: "https://kagi.com/api/v0/search".into(),
-                api_token: None,
-                timeout_secs: 15,
-                default_limit: 5,
-                max_snippet_chars: 320,
-            },
-        },
-    ];
-    ToolExecutor::new(tools, fetcher)
-}
-
-#[must_use]
-pub fn from_tooling(tooling: &ToolingConfig, fetcher: UrlFetcher) -> ToolExecutor {
-    let scrape_desc = if tooling.scrape_page.description.trim().is_empty() {
-        "Fetch and extract readable text from a web page URL".to_owned()
-    } else {
-        tooling.scrape_page.description.clone()
-    };
-    let download_desc = if tooling.download_file.description.trim().is_empty() {
-        "Download a file from a URL and save it as an attachment".to_owned()
-    } else {
-        tooling.download_file.description.clone()
-    };
-    let crawl_desc = if tooling.crawl_url.description.trim().is_empty() {
-        "Crawl a URL and return markdown/html from crawler service".to_owned()
-    } else {
-        tooling.crawl_url.description.clone()
-    };
-    let web_search_desc = if tooling.web_search.description.trim().is_empty() {
-        "Search the web and return top results".to_owned()
-    } else {
-        tooling.web_search.description.clone()
-    };
-
-    let tools = vec![
-        Tool {
-            name: "scrape_page".into(),
-            description: scrape_desc,
-            enabled: tooling.scrape_page.enabled,
-            retries: tooling.scrape_page.retries,
-            backend: tooling.scrape_page.backend.clone(),
-        },
-        Tool {
-            name: "download_file".into(),
-            description: download_desc,
-            enabled: tooling.download_file.enabled,
-            retries: tooling.download_file.retries,
-            backend: tooling.download_file.backend.clone(),
-        },
-        Tool {
-            name: "crawl_url".into(),
-            description: crawl_desc,
-            enabled: tooling.crawl_url.enabled,
-            retries: tooling.crawl_url.retries,
-            backend: ToolBackendConfig::Crawler {
-                endpoint: tooling.crawl_url.endpoint.clone(),
-                auth_header: tooling.crawl_url.auth_header.clone(),
-                timeout_secs: tooling.crawl_url.timeout_secs,
-                priority: tooling.crawl_url.priority,
-            },
-        },
-        Tool {
-            name: "web_search".into(),
-            description: web_search_desc,
-            enabled: tooling.web_search.enabled,
-            retries: tooling.web_search.retries,
-            backend: ToolBackendConfig::KagiSearch {
-                endpoint: tooling.web_search.endpoint.clone(),
-                api_token: tooling.web_search.api_token.clone(),
-                timeout_secs: tooling.web_search.timeout_secs,
-                default_limit: tooling.web_search.default_limit,
-                max_snippet_chars: tooling.web_search.max_snippet_chars,
-            },
-        },
-    ];
-    ToolExecutor::new(tools, fetcher)
 }

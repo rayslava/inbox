@@ -162,14 +162,16 @@ enabled = true
 description = "Fetch and extract readable text from a web page URL"
 prompt = "Use this for normal article pages."
 backend = "internal"
-retries = 1   # additional attempts on failure (0 = no retry)
+timeout_secs = 15
+retries = 3   # additional attempts on failure (0 = no retry); default 3
 
 [tooling.download_file]
 enabled = true
 description = "Download a file from a URL and save it as an attachment"
 prompt = "Use this when the URL points to a downloadable file."
 backend = "internal"
-retries = 1
+timeout_secs = 15
+retries = 3
 
 [tooling.crawl_url]
 enabled = true

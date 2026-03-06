@@ -60,8 +60,7 @@
 
 {% if !inbox_url.is_empty() %}
 <section class="capture"
-  data-inbox-url="{{ inbox_url }}"
-  data-auth-token="{{ auth_token }}">
+  data-inbox-url="{{ inbox_url }}">
   <textarea id="cap-text" placeholder="Quick capture — type a message…" rows="3"></textarea>
   <div class="cap-controls">
     <input type="file" id="cap-file" />
@@ -148,7 +147,6 @@ function filter(q) {
 async function submitCapture() {
   const section = document.querySelector('.capture');
   const inboxUrl = section.dataset.inboxUrl;
-  const authToken = section.dataset.authToken;
   const text = document.getElementById('cap-text').value.trim();
   const fileInput = document.getElementById('cap-file');
   const file = fileInput.files[0];
@@ -165,19 +163,15 @@ async function submitCapture() {
   status.className = '';
   status.textContent = 'Sending…';
 
-  const headers = {};
-  if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
-
   try {
     let resp;
     if (file) {
       const fd = new FormData();
       if (text) fd.append('text', text);
       fd.append(file.name, file, file.name);
-      resp = await fetch(inboxUrl + '/upload', { method: 'POST', headers, body: fd });
+      resp = await fetch(inboxUrl + '/upload', { method: 'POST', body: fd });
     } else {
-      headers['Content-Type'] = 'text/plain';
-      resp = await fetch(inboxUrl, { method: 'POST', headers, body: text });
+      resp = await fetch(inboxUrl, { method: 'POST', headers: {'Content-Type': 'text/plain'}, body: text });
     }
 
     if (resp.ok) {

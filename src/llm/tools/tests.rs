@@ -27,7 +27,7 @@ fn tool_openai_definition_has_name() {
         description: "desc".into(),
         enabled: true,
         retries: 0,
-        backend: ToolBackendConfig::Internal,
+        backend: ToolBackendConfig::Internal { timeout_secs: 15 },
     };
     let def = tool.openai_definition();
     assert_eq!(def["function"]["name"], "scrape_page");
@@ -47,7 +47,7 @@ fn active_tool_definitions_empty_when_all_disabled() {
         description: "d".into(),
         enabled: false,
         retries: 0,
-        backend: ToolBackendConfig::Internal,
+        backend: ToolBackendConfig::Internal { timeout_secs: 15 },
     }];
     let executor = ToolExecutor::new(tools, test_fetcher());
     assert!(executor.active_tool_definitions().is_empty());
@@ -194,7 +194,7 @@ async fn execute_crawl_url_with_wrong_backend_errors() {
         description: "crawl".into(),
         enabled: true,
         retries: 0,
-        backend: ToolBackendConfig::Internal,
+        backend: ToolBackendConfig::Internal { timeout_secs: 15 },
     }];
     let executor = ToolExecutor::new(tools, test_fetcher());
     let id = uuid::Uuid::new_v4();
@@ -216,7 +216,7 @@ async fn execute_web_search_with_wrong_backend_errors() {
         description: "search".into(),
         enabled: true,
         retries: 0,
-        backend: ToolBackendConfig::Internal,
+        backend: ToolBackendConfig::Internal { timeout_secs: 15 },
     }];
     let executor = ToolExecutor::new(tools, test_fetcher());
     let id = uuid::Uuid::new_v4();
@@ -568,4 +568,82 @@ fn from_tooling_builds_executor() {
     let cfg = crate::config::ToolingConfig::default();
     let executor = from_tooling(&cfg, test_fetcher());
     assert!(!executor.active_tool_definitions().is_empty());
+}
+
+#[tokio::test]
+async fn internal_scrape_respects_timeout() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/slow"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("ok")
+                .set_delay(std::time::Duration::from_secs(5)),
+        )
+        .mount(&server)
+        .await;
+
+    let tools = vec![Tool {
+        name: "scrape_page".into(),
+        description: "scrape".into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Internal { timeout_secs: 1 },
+    }];
+    let executor = ToolExecutor::new(tools, test_fetcher());
+    let id = uuid::Uuid::new_v4();
+    let result = executor
+        .execute(
+            "scrape_page",
+            &serde_json::json!({"url": format!("{}/slow", server.uri())}),
+            id,
+            std::path::Path::new("/tmp"),
+        )
+        .await;
+    assert!(result.is_err());
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("timed out"),
+        "expected timeout error, got: {err_msg}"
+    );
+}
+
+#[tokio::test]
+async fn exponential_backoff_increases_delay() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/slow"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("ok")
+                .set_delay(std::time::Duration::from_secs(10)),
+        )
+        .mount(&server)
+        .await;
+
+    let tools = vec![Tool {
+        name: "scrape_page".into(),
+        description: "scrape".into(),
+        enabled: true,
+        retries: 1,
+        backend: ToolBackendConfig::Internal { timeout_secs: 1 },
+    }];
+    let executor = ToolExecutor::new(tools, test_fetcher());
+    let id = uuid::Uuid::new_v4();
+    let start = std::time::Instant::now();
+    let result = executor
+        .execute(
+            "scrape_page",
+            &serde_json::json!({"url": format!("{}/slow", server.uri())}),
+            id,
+            std::path::Path::new("/tmp"),
+        )
+        .await;
+    let elapsed = start.elapsed();
+    assert!(result.is_err());
+    // First attempt: 1s timeout, then 2s backoff, then 1s timeout = 4s total minimum
+    assert!(
+        elapsed.as_secs() >= 3,
+        "expected backoff delay, elapsed: {elapsed:?}"
+    );
 }

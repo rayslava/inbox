@@ -26,7 +26,9 @@ impl Default for NamedToolConfig {
             enabled: true,
             prompt: String::new(),
             retries: default_tool_retries(),
-            backend: ToolBackendConfig::Internal,
+            backend: ToolBackendConfig::Internal {
+                timeout_secs: default_tool_timeout(),
+            },
         }
     }
 }
@@ -147,11 +149,13 @@ impl Default for WebSearchToolConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "backend", rename_all = "snake_case")]
 pub enum ToolBackendConfig {
-    #[default]
-    Internal,
+    Internal {
+        #[serde(default = "default_tool_timeout")]
+        timeout_secs: u32,
+    },
     Shell {
         argv: Vec<String>,
         #[serde(default = "default_tool_timeout")]
@@ -194,11 +198,19 @@ pub enum ToolBackendConfig {
     },
 }
 
+impl Default for ToolBackendConfig {
+    fn default() -> Self {
+        Self::Internal {
+            timeout_secs: default_tool_timeout(),
+        }
+    }
+}
+
 fn default_tool_timeout() -> u32 {
     15
 }
 fn default_tool_retries() -> u32 {
-    1
+    3
 }
 fn default_http_method() -> String {
     "GET".into()

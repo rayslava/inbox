@@ -95,14 +95,16 @@ async fn main() -> Result<()> {
     // Admin server
     {
         let admin_addr = cfg.admin.bind_addr;
-        let admin_router = web::admin_router(
-            Arc::clone(&cfg),
-            readiness.clone(),
+        let admin_router = web::admin_router(web::AdminRouterArgs {
+            cfg: Arc::clone(&cfg),
+            readiness: readiness.clone(),
             session_store,
-            prometheus_handle,
-            Arc::clone(&log_store),
-            Arc::clone(&tracker),
-        );
+            metrics_handle: prometheus_handle,
+            log_store: Arc::clone(&log_store),
+            tracker: Arc::clone(&tracker),
+            inbox_tx: Some(tx.clone()),
+            attachments_dir: cfg.general.attachments_dir.clone(),
+        });
         tokio::spawn(async move {
             let listener = tokio::net::TcpListener::bind(admin_addr)
                 .await

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use askama::Template;
@@ -6,18 +7,21 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
-    routing::get,
+    routing::{get, post},
 };
 use chrono::Utc;
+use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::config::Config;
 use crate::health::ReadinessState;
 use crate::log_capture::LogStore;
+use crate::message::IncomingMessage;
 use crate::processing_status::ProcessingTracker;
 
 pub mod attachments;
 pub mod auth;
+pub mod proxy;
 pub mod ui;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
@@ -30,26 +34,34 @@ pub(crate) struct AdminState {
     pub metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
     pub log_store: Arc<LogStore>,
     pub tracker: Arc<ProcessingTracker>,
+    pub inbox_tx: Option<mpsc::Sender<IncomingMessage>>,
+    pub attachments_dir: PathBuf,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
-pub fn admin_router(
-    cfg: Arc<Config>,
-    readiness: ReadinessState,
-    session_store: Arc<auth::SessionStore>,
-    metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
-    log_store: Arc<LogStore>,
-    tracker: Arc<ProcessingTracker>,
-) -> Router {
-    let web_ui_enabled = cfg.web_ui.enabled;
+pub struct AdminRouterArgs {
+    pub cfg: Arc<Config>,
+    pub readiness: ReadinessState,
+    pub session_store: Arc<auth::SessionStore>,
+    pub metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
+    pub log_store: Arc<LogStore>,
+    pub tracker: Arc<ProcessingTracker>,
+    pub inbox_tx: Option<mpsc::Sender<IncomingMessage>>,
+    pub attachments_dir: PathBuf,
+}
+
+pub fn admin_router(args: AdminRouterArgs) -> Router {
+    let web_ui_enabled = args.cfg.web_ui.enabled;
     let state = AdminState {
-        cfg,
-        readiness,
-        sessions: session_store,
-        metrics_handle,
-        log_store,
-        tracker,
+        cfg: args.cfg,
+        readiness: args.readiness,
+        sessions: args.session_store,
+        metrics_handle: args.metrics_handle,
+        log_store: args.log_store,
+        tracker: args.tracker,
+        inbox_tx: args.inbox_tx,
+        attachments_dir: args.attachments_dir,
     };
 
     let mut router = Router::new()
@@ -64,7 +76,9 @@ pub fn admin_router(
             .route("/ui", get(ui_handler))
             .route("/logs", get(logs_handler))
             .route("/status", get(status_handler))
-            .route("/attachments/{*path}", get(attachments::serve_attachment));
+            .route("/attachments/{*path}", get(attachments::serve_attachment))
+            .route("/api/inbox", post(proxy::inbox_handler))
+            .route("/api/inbox/upload", post(proxy::upload_handler));
     }
 
     router.with_state(state)
@@ -161,19 +175,12 @@ async fn ui_handler(State(state): State<AdminState>, headers: HeaderMap) -> Resp
     let mut nodes = ui::parse_org_nodes(&content, &state.cfg.general.attachments_dir);
     nodes.reverse(); // most-recent first
 
-    let http_cfg = &state.cfg.adapters.http;
-    let inbox_url = if http_cfg.enabled {
-        let addr = http_cfg.bind_addr;
-        let host = if addr.ip().is_unspecified() {
-            "localhost".to_string()
-        } else {
-            addr.ip().to_string()
-        };
-        format!("http://{}:{}/inbox", host, addr.port())
+    let inbox_url = if state.inbox_tx.is_some() {
+        "/api/inbox".to_owned()
     } else {
         String::new()
     };
-    let auth_token = http_cfg.auth_token.clone();
+    let auth_token = String::new();
 
     html_response(
         ui::InboxUiTemplate {
@@ -262,6 +269,7 @@ mod tests {
         let handle = metrics_exporter_prometheus::PrometheusBuilder::new()
             .build_recorder()
             .handle();
+        let attachments_dir = dir.path().to_path_buf();
         AdminState {
             cfg,
             readiness,
@@ -269,19 +277,23 @@ mod tests {
             metrics_handle: handle,
             log_store: LogStore::new(100),
             tracker: Arc::new(ProcessingTracker::new()),
+            inbox_tx: None,
+            attachments_dir,
         }
     }
 
     fn make_router(ready: bool) -> Router {
         let state = test_state(ready);
-        admin_router(
-            state.cfg,
-            state.readiness,
-            state.sessions,
-            state.metrics_handle,
-            state.log_store,
-            state.tracker,
-        )
+        admin_router(AdminRouterArgs {
+            cfg: state.cfg,
+            readiness: state.readiness,
+            session_store: state.sessions,
+            metrics_handle: state.metrics_handle,
+            log_store: state.log_store,
+            tracker: state.tracker,
+            inbox_tx: state.inbox_tx,
+            attachments_dir: state.attachments_dir,
+        })
     }
 
     #[tokio::test]
@@ -426,14 +438,16 @@ mod tests {
         let token = auth::generate_session_token();
         state.sessions.insert(token.clone(), Utc::now());
 
-        let router = admin_router(
-            state.cfg,
-            state.readiness,
-            state.sessions,
-            state.metrics_handle,
-            state.log_store,
-            state.tracker,
-        );
+        let router = admin_router(AdminRouterArgs {
+            cfg: state.cfg,
+            readiness: state.readiness,
+            session_store: state.sessions,
+            metrics_handle: state.metrics_handle,
+            log_store: state.log_store,
+            tracker: state.tracker,
+            inbox_tx: state.inbox_tx,
+            attachments_dir: state.attachments_dir,
+        });
         let req = Request::builder()
             .uri("/status")
             .header(header::COOKIE, format!("session={token}"))
