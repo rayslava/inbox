@@ -77,8 +77,8 @@ pub fn admin_router(args: AdminRouterArgs) -> Router {
             .route("/logs", get(logs_handler))
             .route("/status", get(status_handler))
             .route("/attachments/{*path}", get(attachments::serve_attachment))
-            .route("/api/inbox", post(proxy::inbox_handler))
-            .route("/api/inbox/upload", post(proxy::upload_handler));
+            .route("/capture", post(proxy::inbox_handler))
+            .route("/capture/upload", post(proxy::upload_handler));
     }
 
     router.with_state(state)
@@ -141,7 +141,7 @@ async fn login_post(
 
     Response::builder()
         .status(StatusCode::SEE_OTHER)
-        .header(header::LOCATION, "/ui")
+        .header(header::LOCATION, "ui")
         .header(header::SET_COOKIE, cookie)
         .body(axum::body::Body::empty())
         .unwrap()
@@ -152,7 +152,7 @@ async fn logout_handler(State(state): State<AdminState>, headers: HeaderMap) -> 
         state.sessions.remove(&token);
     }
     let clear = "session=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/";
-    let mut resp = Redirect::to("/login").into_response();
+    let mut resp = Redirect::to("login").into_response();
     resp.headers_mut().insert(
         header::SET_COOKIE,
         header::HeaderValue::from_str(clear).expect("static cookie value"),
@@ -165,7 +165,7 @@ async fn logout_handler(State(state): State<AdminState>, headers: HeaderMap) -> 
 async fn ui_handler(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     let admin = &state.cfg.admin;
     if !auth::is_authenticated(&headers, &state.sessions, admin.session_ttl_days) {
-        return Redirect::to("/login").into_response();
+        return Redirect::to("login").into_response();
     }
 
     let org_path = &state.cfg.general.output_file;
@@ -176,20 +176,15 @@ async fn ui_handler(State(state): State<AdminState>, headers: HeaderMap) -> Resp
     nodes.reverse(); // most-recent first
 
     let inbox_url = if state.inbox_tx.is_some() {
-        "/api/inbox".to_owned()
+        "capture".to_owned()
     } else {
         String::new()
     };
-    let auth_token = String::new();
 
     html_response(
-        ui::InboxUiTemplate {
-            nodes,
-            inbox_url,
-            auth_token,
-        }
-        .render()
-        .unwrap_or_default(),
+        ui::InboxUiTemplate { nodes, inbox_url }
+            .render()
+            .unwrap_or_default(),
     )
 }
 
@@ -198,7 +193,7 @@ async fn ui_handler(State(state): State<AdminState>, headers: HeaderMap) -> Resp
 async fn status_handler(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     let admin = &state.cfg.admin;
     if !auth::is_authenticated(&headers, &state.sessions, admin.session_ttl_days) {
-        return Redirect::to("/login").into_response();
+        return Redirect::to("login").into_response();
     }
     axum::Json(state.tracker.snapshot()).into_response()
 }
@@ -208,7 +203,7 @@ async fn status_handler(State(state): State<AdminState>, headers: HeaderMap) -> 
 async fn logs_handler(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     let admin = &state.cfg.admin;
     if !auth::is_authenticated(&headers, &state.sessions, admin.session_ttl_days) {
-        return Redirect::to("/login").into_response();
+        return Redirect::to("login").into_response();
     }
     let entries = state.log_store.recent();
     html_response(ui::LogsTemplate { entries }.render().unwrap_or_default())
@@ -365,7 +360,7 @@ mod tests {
         let resp = router.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let loc = resp.headers().get("location").unwrap().to_str().unwrap();
-        assert_eq!(loc, "/login");
+        assert_eq!(loc, "login");
     }
 
     #[tokio::test]
@@ -389,7 +384,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
-        // Redirect to /login
+        // Redirect to login
         let status = resp.status();
         assert!(status.is_redirection(), "expected redirect, got {status}");
     }
@@ -426,7 +421,67 @@ mod tests {
         let resp = router.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let loc = resp.headers().get("location").unwrap().to_str().unwrap();
-        assert_eq!(loc, "/login");
+        assert_eq!(loc, "login");
+    }
+
+    #[tokio::test]
+    async fn proxy_inbox_with_session_and_tx_returns_accepted() {
+        use chrono::Utc;
+        use tokio::sync::mpsc;
+
+        let state = test_state(true);
+        let (tx, _rx) = mpsc::channel(8);
+        let token = auth::generate_session_token();
+        state.sessions.insert(token.clone(), Utc::now());
+
+        let router = admin_router(AdminRouterArgs {
+            cfg: state.cfg,
+            readiness: state.readiness,
+            session_store: state.sessions,
+            metrics_handle: state.metrics_handle,
+            log_store: state.log_store,
+            tracker: state.tracker,
+            inbox_tx: Some(tx),
+            attachments_dir: state.attachments_dir,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/capture")
+            .header("content-type", "text/plain")
+            .header(axum::http::header::COOKIE, format!("session={token}"))
+            .body(Body::from("hello world"))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn proxy_inbox_without_session_returns_401_not_404() {
+        let router = make_router(true);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/capture")
+            .header("content-type", "text/plain")
+            .body(Body::from("hello"))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        // 401 = route exists but unauthenticated; 404 = route missing
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn proxy_upload_without_session_returns_401_not_404() {
+        let router = make_router(true);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/capture/upload")
+            .header("content-type", "multipart/form-data; boundary=abc")
+            .body(Body::from(
+                "--abc\r\nContent-Disposition: form-data; name=\"text\"\r\n\r\nhello\r\n--abc--",
+            ))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

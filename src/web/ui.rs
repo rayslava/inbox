@@ -22,11 +22,9 @@ pub struct LogsTemplate {
 #[template(path = "inbox_ui.html")]
 pub struct InboxUiTemplate {
     pub nodes: Vec<UiNode>,
-    /// Full URL of the HTTP adapter inbox endpoint, e.g. `http://localhost:8080/inbox`.
-    /// Empty if the HTTP adapter is disabled.
+    /// UI-local inbox endpoint path.
+    /// Empty if ingest is disabled.
     pub inbox_url: String,
-    /// Bearer token required by the HTTP adapter, or empty if auth is disabled.
-    pub auth_token: String,
 }
 
 // ── Data types ────────────────────────────────────────────────────────────────
@@ -209,7 +207,7 @@ fn try_parse_org_link(line: &str, attachments_dir: &Path) -> Option<UiAttachment
         return None;
     }
 
-    let url = format!("/attachments/{rel}");
+    let url = format!("attachments/{rel}");
     let mime = mime_guess::from_path(path_part).first_or_octet_stream();
     let mime_str = mime.essence_str();
 

@@ -15,7 +15,7 @@ processes it through a URL + LLM pipeline, and writes structured org-mode nodes.
 - Inbox API (from `[adapters.http].bind_addr`): `POST /inbox`, `POST /inbox/upload`
 - Admin API (from `[admin].bind_addr`):
   - Always: `GET /health/live`, `GET /health/ready`, `GET /metrics`
-  - If `[web_ui].enabled = true`: `GET /login`, `POST /login`, `GET /logout`, `GET /ui`, `GET /logs`, `GET /status`, `GET /attachments/*`
+  - If `[web_ui].enabled = true`: `GET /login`, `POST /login`, `GET /logout`, `GET /ui`, `GET /logs`, `GET /status`, `GET /attachments/*`, `POST /capture`, `POST /capture/upload`
 
 ## Build & run
 

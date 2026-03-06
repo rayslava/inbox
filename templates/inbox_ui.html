@@ -49,8 +49,8 @@
 <header>
   <h1>📥 Inbox</h1>
   <input id="search" type="search" placeholder="Filter…" oninput="filter(this.value)" />
-  <a class="logout" href="/logs">Logs</a>
-  <a class="logout" href="/logout">Sign out</a>
+  <a class="logout" href="logs">Logs</a>
+  <a class="logout" href="logout">Sign out</a>
 </header>
 
 <div id="status-panel" style="display:none" class="status-panel">
@@ -108,7 +108,7 @@ function escHtml(s) {
 
 async function pollStatus() {
   try {
-    const resp = await fetch('/status');
+    const resp = await fetch('status');
     if (!resp.ok) return;
     const items = await resp.json();
     const panel = document.getElementById('status-panel');
