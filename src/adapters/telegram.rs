@@ -1,4 +1,5 @@
 use std::fmt::Write;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -55,7 +56,11 @@ impl InputAdapter for TelegramAdapter {
         let mut backoff = RECONNECT_BACKOFF_INIT;
 
         loop {
-            let bot = Bot::new(&self.cfg.bot_token);
+            let client = crate::tls::client_builder()
+                .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+                .build()
+                .expect("Failed to build IPv4-only Telegram client");
+            let bot = Bot::with_client(&self.cfg.bot_token, client);
             let handler = build_handler(
                 self.cfg.allowed_user_ids.clone(),
                 self.attachments_dir.clone(),
