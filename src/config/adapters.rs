@@ -16,7 +16,7 @@ pub struct AdaptersConfig {
     pub email: EmailConfig,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TelegramConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -24,6 +24,29 @@ pub struct TelegramConfig {
     pub bot_token: String,
     #[serde(default)]
     pub allowed_user_ids: Vec<i64>,
+    #[serde(default = "default_tg_file_download_timeout_secs")]
+    pub file_download_timeout_secs: u64,
+    #[serde(default = "default_tg_file_download_retries")]
+    pub file_download_retries: u32,
+}
+
+impl Default for TelegramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bot_token: String::new(),
+            allowed_user_ids: Vec::new(),
+            file_download_timeout_secs: default_tg_file_download_timeout_secs(),
+            file_download_retries: default_tg_file_download_retries(),
+        }
+    }
+}
+
+fn default_tg_file_download_timeout_secs() -> u64 {
+    60
+}
+fn default_tg_file_download_retries() -> u32 {
+    3
 }
 
 #[derive(Debug, Clone, Deserialize)]

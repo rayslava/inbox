@@ -1,25 +1,28 @@
 use std::fmt::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anodized::spec;
+use dashmap::DashMap;
 use teloxide::net::Download;
 use teloxide::prelude::Requester;
+use tokio::io::{AsyncSeekExt, SeekFrom};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+use uuid::Uuid;
 
-/// Initial backoff before first reconnect attempt.
 const RECONNECT_BACKOFF_INIT: Duration = Duration::from_secs(1);
-/// Maximum backoff between reconnect attempts.
 const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(60);
-/// If a session lasted at least this long, reset the backoff on disconnect.
 const STABLE_THRESHOLD: Duration = Duration::from_secs(30);
 
-use crate::adapters::telegram_notifier::build_telegram_notifier;
+const FILE_DOWNLOAD_RETRY_BASE_MS: u64 = 1_000;
+
+use crate::adapters::telegram_notifier::{build_telegram_notifier, send_status_reply};
 use crate::config::TelegramConfig;
 use crate::error::InboxError;
-use crate::message::{IncomingMessage, MessageSource, SourceMetadata};
+use crate::message::{IncomingMessage, MessageSource, RetryableMessage, SourceMetadata};
 use crate::processing_status::StatusNotifier;
 
 use super::InputAdapter;
@@ -48,6 +51,7 @@ impl InputAdapter for TelegramAdapter {
 
         info!("Telegram adapter starting");
 
+        let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
         let mut backoff = RECONNECT_BACKOFF_INIT;
 
         loop {
@@ -55,6 +59,9 @@ impl InputAdapter for TelegramAdapter {
             let handler = build_handler(
                 self.cfg.allowed_user_ids.clone(),
                 self.attachments_dir.clone(),
+                self.cfg.file_download_timeout_secs,
+                self.cfg.file_download_retries,
+                retry_store.clone(),
             );
 
             // Note: no enable_ctrlc_handler() — shutdown is handled via CancellationToken.
@@ -117,13 +124,20 @@ impl InputAdapter for TelegramAdapter {
 pub fn build_handler(
     allowed_user_ids: Vec<i64>,
     attachments_dir: PathBuf,
+    file_download_timeout_secs: u64,
+    file_download_retries: u32,
+    retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
     use teloxide::prelude::*;
 
-    Update::filter_message().endpoint(
+    let retry_store_msg = retry_store.clone();
+    let retry_store_cb = retry_store;
+
+    let message_handler = Update::filter_message().endpoint(
         move |bot: Bot, msg: Message, tx: mpsc::Sender<IncomingMessage>| {
             let allowed = allowed_user_ids.clone();
             let attachments_dir = attachments_dir.clone();
+            let retry_store = retry_store_msg.clone();
             async move {
                 let user_id = msg
                     .from
@@ -135,18 +149,28 @@ pub fn build_handler(
                 }
 
                 let username = msg.from.as_ref().and_then(|u| u.username.clone());
-                let chat_id = msg.chat.id.0;
+                let chat_id_i64 = msg.chat.id.0;
                 let message_id = msg.id.0;
                 let forwarded_from = extract_forward_origin(&msg);
 
-                let (text, attachments) =
-                    extract_message_content(&bot, &msg, &attachments_dir).await;
+                // Send "⏳ Processing…" immediately so the user sees feedback before download.
+                let sent_id = send_status_reply(&bot, msg.chat.id, Some(msg.id)).await;
+
+                // Download attached files (may block; user sees "⏳" during this).
+                let (text, attachments) = extract_message_content(
+                    &bot,
+                    &msg,
+                    &attachments_dir,
+                    file_download_timeout_secs,
+                    file_download_retries,
+                )
+                .await;
 
                 let mut incoming = IncomingMessage::new(
                     MessageSource::Telegram,
                     text,
                     SourceMetadata::Telegram {
-                        chat_id,
+                        chat_id: chat_id_i64,
                         message_id,
                         username,
                         forwarded_from,
@@ -154,8 +178,21 @@ pub fn build_handler(
                 );
                 incoming.attachments = attachments;
 
-                let notifier = build_telegram_notifier(&bot, msg.chat.id, msg.id).await;
-                incoming.status_notifier = notifier.map(|n| Box::new(n) as Box<dyn StatusNotifier>);
+                // Build notifier with retry context (references the already-sent status message).
+                if let Some(sent_msg_id) = sent_id {
+                    let retry_key = incoming.id;
+                    let retryable = RetryableMessage::from(&incoming);
+                    incoming.status_notifier = Some(Box::new(
+                        crate::adapters::telegram_notifier::TelegramNotifier::new(
+                            bot.clone(),
+                            msg.chat.id,
+                            sent_msg_id,
+                            retry_store,
+                            retry_key,
+                            retryable,
+                        ),
+                    ));
+                }
 
                 metrics::counter!(
                     crate::telemetry::MESSAGES_RECEIVED,
@@ -170,16 +207,159 @@ pub fn build_handler(
                 Ok::<_, teloxide::RequestError>(())
             }
         },
+    );
+
+    let callback_handler = Update::filter_callback_query().endpoint(
+        move |bot: Bot,
+              query: teloxide::types::CallbackQuery,
+              tx: mpsc::Sender<IncomingMessage>| {
+            let retry_store = retry_store_cb.clone();
+            async move { handle_callback_query(bot, query, tx, retry_store).await }
+        },
+    );
+
+    dptree::entry()
+        .branch(message_handler)
+        .branch(callback_handler)
+}
+
+async fn handle_callback_query(
+    bot: teloxide::Bot,
+    query: teloxide::types::CallbackQuery,
+    tx: mpsc::Sender<IncomingMessage>,
+    retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
+) -> Result<(), teloxide::RequestError> {
+    use teloxide::prelude::Requester;
+
+    // Destructure query before any moves so all fields remain accessible.
+    let teloxide::types::CallbackQuery {
+        id: callback_id,
+        data,
+        message,
+        ..
+    } = query;
+
+    // Acknowledge the button press immediately (removes the spinner in Telegram).
+    bot.answer_callback_query(callback_id).await?;
+
+    let data_str = data.as_deref().unwrap_or("");
+    let Some(uuid_str) = data_str.strip_prefix("retry:") else {
+        return Ok(());
+    };
+    let Ok(key) = Uuid::parse_str(uuid_str) else {
+        return Ok(());
+    };
+    let Some((_, retryable)) = retry_store.remove(&key) else {
+        return Ok(());
+    };
+
+    let (chat_id, reply_to) = match &message {
+        Some(teloxide::types::MaybeInaccessibleMessage::Regular(m)) => {
+            (Some(m.chat.id), Some(m.id))
+        }
+        Some(teloxide::types::MaybeInaccessibleMessage::Inaccessible(m)) => (Some(m.chat.id), None),
+        None => (None, None),
+    };
+
+    let Some(chat_id) = chat_id else {
+        return Ok(());
+    };
+
+    let mut msg = IncomingMessage::new(
+        MessageSource::Telegram,
+        retryable.text.clone(),
+        retryable.metadata.clone(),
+    );
+    msg.attachments = retryable.attachments.clone();
+    msg.user_tags = retryable.user_tags.clone();
+    msg.preprocessing_hints = retryable.preprocessing_hints.clone();
+
+    let retry_key = msg.id;
+    let fresh_retryable = RetryableMessage::from(&msg);
+    let notifier = build_telegram_notifier(
+        &bot,
+        chat_id,
+        reply_to,
+        retry_store,
+        retry_key,
+        fresh_retryable,
     )
+    .await;
+    msg.status_notifier = notifier.map(|n| Box::new(n) as Box<dyn StatusNotifier>);
+
+    if let Err(e) = tx.send(msg).await {
+        warn!(?e, "Failed to enqueue retried Telegram message");
+    }
+
+    Ok(())
+}
+
+/// Return `(file_id, filename, media_kind)` for the first downloadable file in the message.
+fn classify_message_file(
+    msg: &teloxide::types::Message,
+) -> Option<(String, String, crate::message::MediaKind)> {
+    use crate::message::MediaKind;
+
+    if let Some(doc) = msg.document() {
+        let name = sanitize_filename(&doc.file_name.clone().unwrap_or_else(|| "document".into()));
+        return Some((doc.file.id.to_string(), name, MediaKind::Document));
+    }
+    if let Some(photos) = msg.photo() {
+        return photos
+            .last()
+            .map(|p| (p.file.id.to_string(), "photo.jpg".into(), MediaKind::Image));
+    }
+    if let Some(audio) = msg.audio() {
+        let name = sanitize_filename(
+            &audio
+                .file_name
+                .clone()
+                .unwrap_or_else(|| "audio.mp3".into()),
+        );
+        return Some((audio.file.id.to_string(), name, MediaKind::Audio));
+    }
+    if let Some(voice) = msg.voice() {
+        return Some((
+            voice.file.id.to_string(),
+            "voice.ogg".into(),
+            MediaKind::VoiceMessage,
+        ));
+    }
+    if let Some(video) = msg.video() {
+        let name = sanitize_filename(
+            &video
+                .file_name
+                .clone()
+                .unwrap_or_else(|| "video.mp4".into()),
+        );
+        return Some((video.file.id.to_string(), name, MediaKind::Video));
+    }
+    if let Some(sticker) = msg.sticker() {
+        return Some((
+            sticker.file.id.to_string(),
+            "sticker.webp".into(),
+            MediaKind::Sticker,
+        ));
+    }
+    if let Some(anim) = msg.animation() {
+        let name = sanitize_filename(
+            &anim
+                .file_name
+                .clone()
+                .unwrap_or_else(|| "animation.mp4".into()),
+        );
+        return Some((anim.file.id.to_string(), name, MediaKind::Animation));
+    }
+    None
 }
 
 async fn extract_message_content(
     bot: &teloxide::Bot,
     msg: &teloxide::types::Message,
     attachments_dir: &std::path::Path,
+    file_download_timeout_secs: u64,
+    file_download_retries: u32,
 ) -> (String, Vec<crate::message::Attachment>) {
-    use crate::message::MediaKind;
-
     let mut text = msg
         .text()
         .or_else(|| msg.caption())
@@ -210,62 +390,20 @@ async fn extract_message_content(
         text = format!("📊 {} [{}]", poll.question, options);
     }
 
-    // File to download: (file_id_str, filename, media_kind)
-    let file_info: Option<(String, String, MediaKind)> = if let Some(doc) = msg.document() {
-        let name = sanitize_filename(&doc.file_name.clone().unwrap_or_else(|| "document".into()));
-        Some((doc.file.id.to_string(), name, MediaKind::Document))
-    } else if let Some(photos) = msg.photo() {
-        photos
-            .last()
-            .map(|p| (p.file.id.to_string(), "photo.jpg".into(), MediaKind::Image))
-    } else if let Some(audio) = msg.audio() {
-        let name = audio
-            .file_name
-            .clone()
-            .unwrap_or_else(|| "audio.mp3".into());
-        Some((
-            audio.file.id.to_string(),
-            sanitize_filename(&name),
-            MediaKind::Audio,
-        ))
-    } else if let Some(voice) = msg.voice() {
-        Some((
-            voice.file.id.to_string(),
-            "voice.ogg".into(),
-            MediaKind::VoiceMessage,
-        ))
-    } else if let Some(video) = msg.video() {
-        let name = video
-            .file_name
-            .clone()
-            .unwrap_or_else(|| "video.mp4".into());
-        Some((
-            video.file.id.to_string(),
-            sanitize_filename(&name),
-            MediaKind::Video,
-        ))
-    } else if let Some(sticker) = msg.sticker() {
-        Some((
-            sticker.file.id.to_string(),
-            "sticker.webp".into(),
-            MediaKind::Sticker,
-        ))
-    } else if let Some(anim) = msg.animation() {
-        let name = anim
-            .file_name
-            .clone()
-            .unwrap_or_else(|| "animation.mp4".into());
-        Some((
-            anim.file.id.to_string(),
-            sanitize_filename(&name),
-            MediaKind::Animation,
-        ))
-    } else {
-        None
-    };
+    let file_info = classify_message_file(msg);
 
     if let Some((file_id, filename, media_kind)) = file_info {
-        match download_telegram_file(bot, &file_id, &filename, attachments_dir, media_kind).await {
+        match download_telegram_file(
+            bot,
+            &file_id,
+            &filename,
+            attachments_dir,
+            media_kind,
+            file_download_timeout_secs,
+            file_download_retries,
+        )
+        .await
+        {
             Ok(att) => attachments.push(att),
             Err(e) => {
                 warn!(?e, "Failed to download Telegram file");
@@ -283,6 +421,8 @@ async fn download_telegram_file(
     filename: &str,
     attachments_dir: &std::path::Path,
     media_kind: crate::message::MediaKind,
+    timeout_secs: u64,
+    retries: u32,
 ) -> Result<crate::message::Attachment, InboxError> {
     #[spec(requires: !file_id.is_empty() && !filename.is_empty())]
     fn validate_input(file_id: &str, filename: &str) {
@@ -309,20 +449,50 @@ async fn download_telegram_file(
         .await
         .map_err(InboxError::Io)?;
 
-    bot.download_file(&file.path, &mut dst)
-        .await
-        .map_err(|e| InboxError::Adapter(format!("Telegram download error: {e}")))?;
+    let timeout = Duration::from_secs(timeout_secs);
 
-    let mime = mime_guess::from_path(&save_path)
-        .first_raw()
-        .map(str::to_owned);
+    for attempt in 0..retries {
+        if attempt > 0 {
+            let backoff =
+                Duration::from_millis(FILE_DOWNLOAD_RETRY_BASE_MS * 2u64.pow(attempt - 1));
+            tokio::time::sleep(backoff).await;
+            // Truncate file so partial data from previous attempt is discarded.
+            dst.set_len(0).await.map_err(InboxError::Io)?;
+            dst.seek(SeekFrom::Start(0)).await.map_err(InboxError::Io)?;
+        }
 
-    Ok(crate::message::Attachment {
-        original_name: filename.to_owned(),
-        saved_path: save_path,
-        mime_type: mime,
-        media_kind,
-    })
+        match tokio::time::timeout(timeout, bot.download_file(&file.path, &mut dst)).await {
+            Ok(Ok(())) => {
+                let mime = mime_guess::from_path(&save_path)
+                    .first_raw()
+                    .map(str::to_owned);
+                return Ok(crate::message::Attachment {
+                    original_name: filename.to_owned(),
+                    saved_path: save_path,
+                    mime_type: mime,
+                    media_kind,
+                });
+            }
+            Ok(Err(e)) => {
+                warn!(
+                    ?e,
+                    attempt = attempt + 1,
+                    retries,
+                    "Telegram file download attempt failed"
+                );
+            }
+            Err(_) => {
+                warn!(
+                    attempt = attempt + 1,
+                    retries, timeout_secs, "Telegram file download attempt timed out"
+                );
+            }
+        }
+    }
+
+    Err(InboxError::Adapter(
+        "all Telegram file download attempts failed".into(),
+    ))
 }
 
 /// Extract a human-readable display name from a forwarded message's origin, if any.

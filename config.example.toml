@@ -101,6 +101,10 @@ enabled = true
 bot_token = "${TELEGRAM_BOT_TOKEN}"
 # Restrict to specific Telegram user IDs (empty = allow all).
 allowed_user_ids = []
+# Per-attempt timeout for downloading attached files (seconds). Default: 60.
+# file_download_timeout_secs = 60
+# Number of download attempts before giving up. Default: 3.
+# file_download_retries = 3
 
 [adapters.http]
 enabled = true

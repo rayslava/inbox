@@ -72,6 +72,30 @@ impl IncomingMessage {
     }
 }
 
+/// A clone-able snapshot of an [`IncomingMessage`] used to re-enqueue failed messages.
+#[derive(Clone)]
+pub struct RetryableMessage {
+    pub text: String,
+    pub metadata: SourceMetadata,
+    pub attachments: Vec<Attachment>,
+    pub user_tags: Vec<String>,
+    pub preprocessing_hints: ProcessingHints,
+    pub received_at: DateTime<Utc>,
+}
+
+impl From<&IncomingMessage> for RetryableMessage {
+    fn from(msg: &IncomingMessage) -> Self {
+        Self {
+            text: msg.text.clone(),
+            metadata: msg.metadata.clone(),
+            attachments: msg.attachments.clone(),
+            user_tags: msg.user_tags.clone(),
+            preprocessing_hints: msg.preprocessing_hints.clone(),
+            received_at: msg.received_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageSource {
     Telegram,
