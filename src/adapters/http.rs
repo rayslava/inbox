@@ -14,6 +14,8 @@ use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
+use uuid::Uuid;
+
 use crate::config::HttpAdapterConfig;
 use crate::error::InboxError;
 use crate::message::{Attachment, IncomingMessage, MediaKind, MessageSource, SourceMetadata};
@@ -101,6 +103,8 @@ async fn inbox_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
+    let msg_id = Uuid::new_v4();
+
     let (text, attachment) = if content_type.starts_with("application/json") {
         let json: serde_json::Value = match serde_json::from_slice(&body) {
             Ok(v) => v,
@@ -113,11 +117,18 @@ async fn inbox_handler(
         // Binary body — treat as single file upload
         let filename = derive_filename_from_headers(&headers).unwrap_or_else(|| "upload".into());
         let mime = content_type.to_owned();
-        let att = save_bytes(&state.adapter.attachments_dir, &filename, &mime, &body).await;
+        let att = save_bytes(
+            &state.adapter.attachments_dir,
+            &filename,
+            &mime,
+            &body,
+            msg_id,
+        )
+        .await;
         (filename.clone(), att.ok())
     };
 
-    enqueue_message(&state, text, attachment, &headers).await
+    enqueue_message(&state, text, attachment, &headers, msg_id).await
 }
 
 async fn upload_handler(
@@ -131,6 +142,8 @@ async fn upload_handler(
 
     let mut text = String::new();
     let mut attachments: Vec<Attachment> = Vec::new();
+
+    let msg_id = Uuid::new_v4();
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_owned();
@@ -148,14 +161,21 @@ async fn upload_handler(
         if name == "text" {
             text = String::from_utf8_lossy(&data).into_owned();
         } else if let Some(fname) = filename
-            && let Ok(att) =
-                save_bytes(&state.adapter.attachments_dir, &fname, &content_type, &data).await
+            && let Ok(att) = save_bytes(
+                &state.adapter.attachments_dir,
+                &fname,
+                &content_type,
+                &data,
+                msg_id,
+            )
+            .await
         {
             attachments.push(att);
         }
     }
 
-    let mut msg = IncomingMessage::new(
+    let mut msg = IncomingMessage::with_id(
+        msg_id,
         MessageSource::Http,
         text,
         SourceMetadata::Http {
@@ -194,6 +214,7 @@ async fn enqueue_message(
     text: String,
     attachment: Option<Attachment>,
     headers: &HeaderMap,
+    msg_id: Uuid,
 ) -> StatusCode {
     let remote_addr = None; // axum ConnectInfo requires extra extractor setup
     let user_agent = headers
@@ -201,7 +222,8 @@ async fn enqueue_message(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
-    let mut msg = IncomingMessage::new(
+    let mut msg = IncomingMessage::with_id(
+        msg_id,
         MessageSource::Http,
         text,
         SourceMetadata::Http {
@@ -227,6 +249,7 @@ async fn save_bytes(
     filename: &str,
     mime: &str,
     data: &[u8],
+    msg_id: Uuid,
 ) -> Result<Attachment, InboxError> {
     #[spec(requires: !filename.is_empty() && !data.is_empty())]
     fn validate_input(filename: &str, data: &[u8]) {
@@ -234,7 +257,7 @@ async fn save_bytes(
     }
     validate_input(filename, data);
 
-    let id = uuid::Uuid::new_v4();
+    let id = msg_id;
     let safe_name = sanitize_filename(filename);
     let path = attachment_save_path(attachments_dir, id, &safe_name);
 

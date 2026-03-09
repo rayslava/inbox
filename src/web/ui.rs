@@ -3,6 +3,7 @@ use std::path::Path;
 
 use anodized::spec;
 use askama::Template;
+use uuid::Uuid;
 
 // ── Template types ────────────────────────────────────────────────────────────
 
@@ -99,8 +100,9 @@ fn parse_node(lines: &[&str], attachments_dir: &Path) -> Option<UiNode> {
 
     let created = props.remove("CREATED").unwrap_or_default();
     let source = props.remove("SOURCE").unwrap_or_default();
+    let node_id = props.remove("ID").unwrap_or_default();
 
-    let (summary, excerpt, attachments) = parse_body(&body, attachments_dir);
+    let (summary, excerpt, attachments) = parse_body(&body, attachments_dir, &node_id);
     let search_text = format!("{title} {source} {tags:?} {summary}");
 
     Some(UiNode {
@@ -147,6 +149,7 @@ fn parse_property(line: &str) -> Option<(String, String)> {
 fn parse_body(
     lines: &[&str],
     attachments_dir: &Path,
+    node_id: &str,
 ) -> (String, Option<String>, Vec<UiAttachment>) {
     let mut summary_lines: Vec<&str> = Vec::new();
     let mut in_quote = false;
@@ -167,7 +170,7 @@ fn parse_body(
         }
         if in_quote {
             quote_lines.push(line);
-        } else if let Some(att) = try_parse_org_link(line, attachments_dir) {
+        } else if let Some(att) = try_parse_org_link(line, attachments_dir, node_id) {
             attachments.push(att);
         } else {
             summary_lines.push(line);
@@ -184,9 +187,31 @@ fn parse_body(
     (summary, excerpt, attachments)
 }
 
-fn try_parse_org_link(line: &str, attachments_dir: &Path) -> Option<UiAttachment> {
-    // Match [[file:path][name]]
+fn try_parse_org_link(line: &str, attachments_dir: &Path, node_id: &str) -> Option<UiAttachment> {
     let stripped = line.trim();
+
+    // Match [[attachment:filename][name]] — preferred format for new entries
+    if let Some(without_prefix) = stripped.strip_prefix("[[attachment:") {
+        let (filename, rest) = without_prefix.split_once("][")?;
+        let name = rest.strip_suffix("]]")?.to_owned();
+
+        if filename.contains("..") || filename.contains('/') {
+            return None;
+        }
+
+        let id = Uuid::parse_str(node_id).ok()?;
+        let full_path =
+            crate::pipeline::url_fetcher::attachment_save_path(attachments_dir, id, filename);
+        let rel = full_path
+            .strip_prefix(attachments_dir)
+            .ok()?
+            .to_string_lossy()
+            .into_owned();
+
+        return Some(attachment_html(&rel, &name, filename));
+    }
+
+    // Match [[file:path][name]] — backward compat for entries written before the fix
     let without_prefix = stripped.strip_prefix("[[file:")?;
     let (path_part, rest) = without_prefix.split_once("][")?;
     let name = rest.strip_suffix("]]")?.to_owned();
@@ -202,13 +227,16 @@ fn try_parse_org_link(line: &str, attachments_dir: &Path) -> Option<UiAttachment
         |p| p.to_string_lossy().into_owned(),
     );
 
-    // Prevent path traversal in generated URLs
     if rel.contains("..") {
         return None;
     }
 
+    Some(attachment_html(&rel, &name, path_part))
+}
+
+fn attachment_html(rel: &str, name: &str, path_hint: &str) -> UiAttachment {
     let url = format!("attachments/{rel}");
-    let mime = mime_guess::from_path(path_part).first_or_octet_stream();
+    let mime = mime_guess::from_path(path_hint).first_or_octet_stream();
     let mime_str = mime.essence_str();
 
     let html = if mime_str.starts_with("image/") {
@@ -223,5 +251,5 @@ fn try_parse_org_link(line: &str, attachments_dir: &Path) -> Option<UiAttachment
         format!(r#"<a href="{url}" class="doc-link">{name}</a>"#)
     };
 
-    Some(UiAttachment { html })
+    UiAttachment { html }
 }

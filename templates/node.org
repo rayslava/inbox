@@ -18,5 +18,5 @@
 #+end_quote
 {% endif %}
 {% for att in attachments %}
-[[file:{{ att.path }}][{{ att.name }}]]
+[[attachment:{{ att.name }}][{{ att.name }}]]
 {% endfor %}

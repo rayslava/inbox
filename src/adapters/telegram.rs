@@ -20,6 +20,11 @@ const STABLE_THRESHOLD: Duration = Duration::from_secs(30);
 
 const FILE_DOWNLOAD_RETRY_BASE_MS: u64 = 1_000;
 
+struct DownloadConfig {
+    timeout_secs: u64,
+    retries: u32,
+}
+
 use crate::adapters::telegram_notifier::{build_telegram_notifier, send_status_reply};
 use crate::config::TelegramConfig;
 use crate::error::InboxError;
@@ -161,17 +166,19 @@ pub fn build_handler(
                 // Send "⏳ Processing…" immediately so the user sees feedback before download.
                 let sent_id = send_status_reply(&bot, msg.chat.id, Some(msg.id)).await;
 
-                // Download attached files (may block; user sees "⏳" during this).
-                let (text, attachments) = extract_message_content(
-                    &bot,
-                    &msg,
-                    &attachments_dir,
-                    file_download_timeout_secs,
-                    file_download_retries,
-                )
-                .await;
+                // Pre-generate the message ID so attachments are stored under the same UUID.
+                let msg_id = Uuid::new_v4();
 
-                let mut incoming = IncomingMessage::new(
+                // Download attached files (may block; user sees "⏳" during this).
+                let dl_cfg = DownloadConfig {
+                    timeout_secs: file_download_timeout_secs,
+                    retries: file_download_retries,
+                };
+                let (text, attachments) =
+                    extract_message_content(&bot, &msg, &attachments_dir, &dl_cfg, msg_id).await;
+
+                let mut incoming = IncomingMessage::with_id(
+                    msg_id,
                     MessageSource::Telegram,
                     text,
                     SourceMetadata::Telegram {
@@ -362,8 +369,8 @@ async fn extract_message_content(
     bot: &teloxide::Bot,
     msg: &teloxide::types::Message,
     attachments_dir: &std::path::Path,
-    file_download_timeout_secs: u64,
-    file_download_retries: u32,
+    dl_cfg: &DownloadConfig,
+    msg_id: Uuid,
 ) -> (String, Vec<crate::message::Attachment>) {
     let mut text = msg
         .text()
@@ -404,8 +411,8 @@ async fn extract_message_content(
             &filename,
             attachments_dir,
             media_kind,
-            file_download_timeout_secs,
-            file_download_retries,
+            dl_cfg,
+            msg_id,
         )
         .await
         {
@@ -426,8 +433,8 @@ async fn download_telegram_file(
     filename: &str,
     attachments_dir: &std::path::Path,
     media_kind: crate::message::MediaKind,
-    timeout_secs: u64,
-    retries: u32,
+    dl_cfg: &DownloadConfig,
+    msg_id: Uuid,
 ) -> Result<crate::message::Attachment, InboxError> {
     #[spec(requires: !file_id.is_empty() && !filename.is_empty())]
     fn validate_input(file_id: &str, filename: &str) {
@@ -440,7 +447,7 @@ async fn download_telegram_file(
         .await
         .map_err(|e| InboxError::Adapter(format!("Telegram getFile error: {e}")))?;
 
-    let id = uuid::Uuid::new_v4();
+    let id = msg_id;
     let save_path =
         crate::pipeline::url_fetcher::attachment_save_path(attachments_dir, id, filename);
 
@@ -454,9 +461,9 @@ async fn download_telegram_file(
         .await
         .map_err(InboxError::Io)?;
 
-    let timeout = Duration::from_secs(timeout_secs);
+    let timeout = Duration::from_secs(dl_cfg.timeout_secs);
 
-    for attempt in 0..retries {
+    for attempt in 0..dl_cfg.retries {
         if attempt > 0 {
             let backoff =
                 Duration::from_millis(FILE_DOWNLOAD_RETRY_BASE_MS * 2u64.pow(attempt - 1));
@@ -482,14 +489,16 @@ async fn download_telegram_file(
                 warn!(
                     ?e,
                     attempt = attempt + 1,
-                    retries,
+                    retries = dl_cfg.retries,
                     "Telegram file download attempt failed"
                 );
             }
             Err(_) => {
                 warn!(
                     attempt = attempt + 1,
-                    retries, timeout_secs, "Telegram file download attempt timed out"
+                    retries = dl_cfg.retries,
+                    timeout_secs = dl_cfg.timeout_secs,
+                    "Telegram file download attempt timed out"
                 );
             }
         }

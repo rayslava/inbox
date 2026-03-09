@@ -53,8 +53,18 @@ impl std::fmt::Debug for IncomingMessage {
 impl IncomingMessage {
     #[must_use]
     pub fn new(source: MessageSource, text: String, metadata: SourceMetadata) -> Self {
+        Self::with_id(Uuid::new_v4(), source, text, metadata)
+    }
+
+    #[must_use]
+    pub fn with_id(
+        id: Uuid,
+        source: MessageSource,
+        text: String,
+        metadata: SourceMetadata,
+    ) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id,
             source,
             received_at: Utc::now(),
             text,

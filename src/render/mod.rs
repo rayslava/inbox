@@ -5,7 +5,6 @@ use crate::message::ProcessedMessage;
 
 pub struct AttachmentRef<'a> {
     pub name: &'a str,
-    pub path: String,
     pub path_rel: String, // relative to attachments_dir, for /attachments/* URL
 }
 
@@ -73,14 +72,9 @@ pub fn render_org_node(
     let att_refs: Vec<AttachmentRef<'_>> = original
         .attachments
         .iter()
-        .map(|a| {
-            let path_str = a.saved_path.to_string_lossy();
-            let rel = relative_path(&a.saved_path, attachments_dir);
-            AttachmentRef {
-                name: &a.original_name,
-                path: path_str.into_owned(),
-                path_rel: rel,
-            }
+        .map(|a| AttachmentRef {
+            name: &a.original_name,
+            path_rel: relative_path(&a.saved_path, attachments_dir),
         })
         .collect();
 
@@ -233,12 +227,10 @@ mod tests {
             attachments: &[
                 AttachmentRef {
                     name: "a.pdf",
-                    path: "/p/a.pdf".to_owned(),
                     path_rel: "a.pdf".to_owned(),
                 },
                 AttachmentRef {
                     name: "b.jpg",
-                    path: "/p/b.jpg".to_owned(),
                     path_rel: "b.jpg".to_owned(),
                 },
             ],
