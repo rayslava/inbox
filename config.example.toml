@@ -105,6 +105,9 @@ allowed_user_ids = []
 # file_download_timeout_secs = 60
 # Number of download attempts before giving up. Default: 3.
 # file_download_retries = 3
+# Time (ms) to wait for additional parts of a media group (album) before
+# flushing them as a single message. Default: 1500.
+# media_group_timeout_ms = 1500
 
 [adapters.http]
 enabled = true

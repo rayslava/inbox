@@ -213,7 +213,7 @@ async fn send_status_reply_sends_processing_message() {
     assert_eq!(r.sent_messages_text[0].bot_request.text, "⏳ Processing…");
 }
 
-/// Tests that `send_status_reply` with a `reply_to` sets the reply_parameters.
+/// Tests that `send_status_reply` with a `reply_to` sets the `reply_parameters`.
 #[tokio::test]
 async fn send_status_reply_with_reply_to_sets_parameters() {
     let handler = Update::filter_message().endpoint(move |bot: Bot, msg: Message| async move {

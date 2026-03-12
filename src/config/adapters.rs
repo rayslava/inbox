@@ -28,6 +28,8 @@ pub struct TelegramConfig {
     pub file_download_timeout_secs: u64,
     #[serde(default = "default_tg_file_download_retries")]
     pub file_download_retries: u32,
+    #[serde(default = "default_tg_media_group_timeout_ms")]
+    pub media_group_timeout_ms: u64,
 }
 
 impl Default for TelegramConfig {
@@ -38,6 +40,7 @@ impl Default for TelegramConfig {
             allowed_user_ids: Vec::new(),
             file_download_timeout_secs: default_tg_file_download_timeout_secs(),
             file_download_retries: default_tg_file_download_retries(),
+            media_group_timeout_ms: default_tg_media_group_timeout_ms(),
         }
     }
 }
@@ -47,6 +50,9 @@ fn default_tg_file_download_timeout_secs() -> u64 {
 }
 fn default_tg_file_download_retries() -> u32 {
     3
+}
+fn default_tg_media_group_timeout_ms() -> u64 {
+    1500
 }
 
 #[derive(Debug, Clone, Deserialize)]

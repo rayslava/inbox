@@ -40,14 +40,21 @@ fn default_handler(
     dir: PathBuf,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
     let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
-    build_handler(allowed, dir, 60, 3, retry_store)
+    build_handler(allowed, dir, 60, 3, 1500, retry_store)
+}
+
+fn handler_with_short_media_group_timeout(
+    dir: PathBuf,
+) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
+    let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
+    build_handler(vec![], dir, 60, 3, 100, retry_store)
 }
 
 fn handler_with_store(
     dir: PathBuf,
     retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
-    build_handler(vec![], dir, 60, 3, retry_store)
+    build_handler(vec![], dir, 60, 3, 1500, retry_store)
 }
 
 fn make_retryable(text: &str) -> RetryableMessage {
@@ -308,8 +315,7 @@ async fn audio_message_is_enqueued() {
     // Either downloaded successfully or skipped with a note.
     assert!(
         msg.attachments.len() == 1 || msg.text.contains("[attachment skipped"),
-        "audio should produce attachment or skip note: {:?}",
-        msg
+        "audio should produce attachment or skip note: {msg:?}"
     );
 }
 
@@ -325,8 +331,7 @@ async fn video_message_is_enqueued() {
     let msg = rx.try_recv().expect("video message should be enqueued");
     assert!(
         msg.attachments.len() == 1 || msg.text.contains("[attachment skipped"),
-        "video should produce attachment or skip note: {:?}",
-        msg
+        "video should produce attachment or skip note: {msg:?}"
     );
 }
 
@@ -342,8 +347,7 @@ async fn sticker_message_is_enqueued() {
     let msg = rx.try_recv().expect("sticker message should be enqueued");
     assert!(
         msg.attachments.len() == 1 || msg.text.contains("[attachment skipped"),
-        "sticker should produce attachment or skip note: {:?}",
-        msg
+        "sticker should produce attachment or skip note: {msg:?}"
     );
 }
 
@@ -359,8 +363,7 @@ async fn animation_message_is_enqueued() {
     let msg = rx.try_recv().expect("animation message should be enqueued");
     assert!(
         msg.attachments.len() == 1 || msg.text.contains("[attachment skipped"),
-        "animation should produce attachment or skip note: {:?}",
-        msg
+        "animation should produce attachment or skip note: {msg:?}"
     );
 }
 
@@ -450,4 +453,56 @@ async fn callback_query_retry_reenqueues_message() {
         !retry_store.contains_key(&key),
         "key must be removed from store after retry"
     );
+}
+
+// ── Media group aggregation ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn media_group_message_is_buffered_not_sent_immediately() {
+    // teloxide_tests runs dispatch in a nested runtime that is destroyed after
+    // dispatch(), so we cannot test the delayed flush end-to-end here.
+    // Instead we verify that a document with media_group_id does NOT produce an
+    // immediate message (proving the buffering path is entered), while a
+    // document without media_group_id does (see single_document_without_media_group_is_not_delayed).
+    let (tx, mut rx) = make_channel();
+    let (_tmp, dir) = temp_attachments();
+
+    let mut bot = MockBot::new(
+        MockMessageDocument::new()
+            .file_name("grouped.pdf".to_string())
+            .caption("Album part".to_string())
+            .media_group_id("mg-456"),
+        handler_with_short_media_group_timeout(dir),
+    );
+    bot.dependencies(dptree::deps![tx]);
+    bot.dispatch().await;
+
+    // The message must NOT arrive immediately — it's buffered for the media group.
+    assert!(
+        rx.try_recv().is_err(),
+        "media group message should be buffered, not sent immediately"
+    );
+}
+
+#[tokio::test]
+async fn single_document_without_media_group_is_not_delayed() {
+    let (tx, mut rx) = make_channel();
+    let (_tmp, dir) = temp_attachments();
+
+    let mut bot = MockBot::new(
+        MockMessageDocument::new()
+            .file_name("solo.pdf".to_string())
+            .caption("Solo doc".to_string()),
+        handler_with_short_media_group_timeout(dir),
+    );
+    bot.dependencies(dptree::deps![tx]);
+    bot.dispatch().await;
+
+    // Should arrive immediately (no media group delay).
+    let msg = rx
+        .try_recv()
+        .expect("single document should be enqueued immediately");
+    assert_eq!(msg.text, "Solo doc");
+    assert_eq!(msg.attachments.len(), 1);
+    assert_eq!(msg.attachments[0].original_name, "solo.pdf");
 }

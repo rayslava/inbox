@@ -2,6 +2,7 @@ use std::fmt::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anodized::spec;
@@ -25,6 +26,7 @@ struct DownloadConfig {
     retries: u32,
 }
 
+use crate::adapters::telegram_media_group::{self, MediaGroupMap};
 use crate::adapters::telegram_notifier::{build_telegram_notifier, send_status_reply};
 use crate::config::TelegramConfig;
 use crate::error::InboxError;
@@ -71,6 +73,7 @@ impl InputAdapter for TelegramAdapter {
                 self.attachments_dir.clone(),
                 self.cfg.file_download_timeout_secs,
                 self.cfg.file_download_retries,
+                self.cfg.media_group_timeout_ms,
                 retry_store.clone(),
             );
 
@@ -136,18 +139,21 @@ pub fn build_handler(
     attachments_dir: PathBuf,
     file_download_timeout_secs: u64,
     file_download_retries: u32,
+    media_group_timeout_ms: u64,
     retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
     use teloxide::prelude::*;
 
     let retry_store_msg = retry_store.clone();
     let retry_store_cb = retry_store;
+    let media_groups: MediaGroupMap = telegram_media_group::new_map();
 
     let message_handler = Update::filter_message().endpoint(
         move |bot: Bot, msg: Message, tx: mpsc::Sender<IncomingMessage>| {
             let allowed = allowed_user_ids.clone();
             let attachments_dir = attachments_dir.clone();
             let retry_store = retry_store_msg.clone();
+            let media_groups = media_groups.clone();
             async move {
                 let user_id = msg
                     .from
@@ -158,63 +164,22 @@ pub fn build_handler(
                     return Ok(());
                 }
 
-                let username = msg.from.as_ref().and_then(|u| u.username.clone());
-                let chat_id_i64 = msg.chat.id.0;
-                let message_id = msg.id.0;
-                let forwarded_from = extract_forward_origin(&msg);
-
-                // Send "⏳ Processing…" immediately so the user sees feedback before download.
-                let sent_id = send_status_reply(&bot, msg.chat.id, Some(msg.id)).await;
-
-                // Pre-generate the message ID so attachments are stored under the same UUID.
-                let msg_id = Uuid::new_v4();
-
-                // Download attached files (may block; user sees "⏳" during this).
-                let dl_cfg = DownloadConfig {
-                    timeout_secs: file_download_timeout_secs,
-                    retries: file_download_retries,
-                };
-                let (text, attachments) =
-                    extract_message_content(&bot, &msg, &attachments_dir, &dl_cfg, msg_id).await;
-
-                let mut incoming = IncomingMessage::with_id(
-                    msg_id,
-                    MessageSource::Telegram,
-                    text,
-                    SourceMetadata::Telegram {
-                        chat_id: chat_id_i64,
-                        message_id,
-                        username,
-                        forwarded_from,
+                handle_message(
+                    bot,
+                    msg,
+                    tx,
+                    MessageContext {
+                        attachments_dir,
+                        dl_cfg: DownloadConfig {
+                            timeout_secs: file_download_timeout_secs,
+                            retries: file_download_retries,
+                        },
+                        media_group_timeout_ms,
+                        retry_store,
+                        media_groups,
                     },
-                );
-                incoming.attachments = attachments;
-
-                // Build notifier with retry context (references the already-sent status message).
-                if let Some(sent_msg_id) = sent_id {
-                    let retry_key = incoming.id;
-                    let retryable = RetryableMessage::from(&incoming);
-                    incoming.status_notifier = Some(Box::new(
-                        crate::adapters::telegram_notifier::TelegramNotifier::new(
-                            bot.clone(),
-                            msg.chat.id,
-                            sent_msg_id,
-                            retry_store,
-                            retry_key,
-                            retryable,
-                        ),
-                    ));
-                }
-
-                metrics::counter!(
-                    crate::telemetry::MESSAGES_RECEIVED,
-                    "source" => "telegram"
                 )
-                .increment(1);
-
-                if let Err(e) = tx.send(incoming).await {
-                    warn!(?e, "Failed to enqueue Telegram message");
-                }
+                .await;
 
                 Ok::<_, teloxide::RequestError>(())
             }
@@ -233,6 +198,112 @@ pub fn build_handler(
     dptree::entry()
         .branch(message_handler)
         .branch(callback_handler)
+}
+
+struct MessageContext {
+    attachments_dir: PathBuf,
+    dl_cfg: DownloadConfig,
+    media_group_timeout_ms: u64,
+    retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
+    media_groups: MediaGroupMap,
+}
+
+async fn handle_message(
+    bot: teloxide::Bot,
+    msg: teloxide::types::Message,
+    tx: mpsc::Sender<IncomingMessage>,
+    ctx: MessageContext,
+) {
+    let username = msg.from.as_ref().and_then(|u| u.username.clone());
+    let message_id = msg.id.0;
+    let forwarded_from = extract_forward_origin(&msg);
+
+    // Media group: buffer parts and flush as a single message.
+    if let Some(group_id) = msg.media_group_id() {
+        let group_id_str = group_id.0.clone();
+        let (state, is_first) =
+            telegram_media_group::get_or_create(&ctx.media_groups, &group_id_str);
+
+        let msg_id = state
+            .inner
+            .lock()
+            .expect("media group mutex poisoned")
+            .msg_id;
+
+        if is_first {
+            let sent_id = send_status_reply(&bot, msg.chat.id, Some(msg.id)).await;
+            telegram_media_group::set_metadata(
+                &state,
+                msg.chat.id,
+                message_id,
+                username,
+                forwarded_from,
+                sent_id,
+            );
+            telegram_media_group::spawn_flush(
+                ctx.media_groups,
+                group_id_str.clone(),
+                state.clone(),
+                Duration::from_millis(ctx.media_group_timeout_ms),
+                tx,
+                bot.clone(),
+                ctx.retry_store,
+            );
+        }
+
+        state.pending_downloads.fetch_add(1, Ordering::Release);
+        let (text, attachments) =
+            extract_message_content(&bot, &msg, &ctx.attachments_dir, &ctx.dl_cfg, msg_id).await;
+        telegram_media_group::add_content(&state, text, attachments);
+        state.pending_downloads.fetch_sub(1, Ordering::Release);
+
+        return;
+    }
+
+    // Single message (no media group).
+    let sent_id = send_status_reply(&bot, msg.chat.id, Some(msg.id)).await;
+    let msg_id = Uuid::new_v4();
+
+    let (text, attachments) =
+        extract_message_content(&bot, &msg, &ctx.attachments_dir, &ctx.dl_cfg, msg_id).await;
+
+    let mut incoming = IncomingMessage::with_id(
+        msg_id,
+        MessageSource::Telegram,
+        text,
+        SourceMetadata::Telegram {
+            chat_id: msg.chat.id.0,
+            message_id,
+            username,
+            forwarded_from,
+        },
+    );
+    incoming.attachments = attachments;
+
+    if let Some(sent_msg_id) = sent_id {
+        let retry_key = incoming.id;
+        let retryable = RetryableMessage::from(&incoming);
+        incoming.status_notifier = Some(Box::new(
+            crate::adapters::telegram_notifier::TelegramNotifier::new(
+                bot.clone(),
+                msg.chat.id,
+                sent_msg_id,
+                ctx.retry_store,
+                retry_key,
+                retryable,
+            ),
+        ));
+    }
+
+    metrics::counter!(
+        crate::telemetry::MESSAGES_RECEIVED,
+        "source" => "telegram"
+    )
+    .increment(1);
+
+    if let Err(e) = tx.send(incoming).await {
+        warn!(?e, "Failed to enqueue Telegram message");
+    }
 }
 
 async fn handle_callback_query(
