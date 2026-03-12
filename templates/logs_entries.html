@@ -1,0 +1,24 @@
+{% for entry in entries %}
+  <tr>
+    <td class="ts">{{ entry.timestamp }}</td>
+    <td><span class="lvl lvl-{{ entry.level }}">{{ entry.level }}</span></td>
+    <td class="target">{{ entry.target }}</td>
+    <td class="msg">
+      {{ entry.message }}
+      {% if !entry.fields.is_empty() %}
+        <div class="fields">
+          {% for (k, v) in entry.fields %}
+            <span class="field-key">{{ k }}</span
+            ><span class="field-sep">=</span>{{ v }}{% if !loop.last %}
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% endif %}
+    </td>
+  </tr>
+{% endfor %}
+{% if entries.is_empty() %}
+  <tr>
+    <td class="empty" colspan="4">No log entries yet.</td>
+  </tr>
+{% endif %}

@@ -1,70 +1,153 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="5">
-  <title>📋 Logs</title>
-  <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; background: #f9fafb; margin: 0; padding: 1rem; }
-    header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
-    header h1 { margin: 0; font-size: 1.4rem; flex: 1; }
-    a.nav { font-size: 0.85rem; color: #6b7280; text-decoration: none; }
-    a.nav:hover { text-decoration: underline; }
-    table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; font-size: 0.82rem; }
-    th { text-align: left; padding: 0.5rem 0.7rem; background: #f3f4f6; color: #374151; font-weight: 600; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
-    td { padding: 0.35rem 0.7rem; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
-    tr:last-child td { border-bottom: none; }
-    .ts { color: #9ca3af; white-space: nowrap; font-family: monospace; font-size: 0.78rem; }
-    .target { color: #6b7280; font-family: monospace; font-size: 0.78rem; white-space: nowrap; }
-    .msg { color: #111827; word-break: break-word; }
-    .fields { margin-top: 0.2rem; font-family: monospace; font-size: 0.74rem; color: #6b7280; word-break: break-all; }
-    .field-key { color: #4b5563; font-weight: 600; }
-    .field-sep { color: #9ca3af; }
-    .lvl { font-weight: 700; font-size: 0.75rem; text-transform: uppercase; white-space: nowrap; }
-    .lvl-ERROR { color: #dc2626; }
-    .lvl-WARN  { color: #d97706; }
-    .lvl-INFO  { color: #2563eb; }
-    .lvl-DEBUG { color: #6b7280; }
-    .lvl-TRACE { color: #d1d5db; }
-    .empty { color: #9ca3af; text-align: center; padding: 3rem; }
-  </style>
-</head>
-<body>
-<header>
-  <h1>📋 Logs</h1>
-  <a class="nav" href="ui">← Inbox</a>
-  <a class="nav" href="logout">Sign out</a>
-</header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>📋 Logs</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: system-ui, sans-serif;
+        background: #f9fafb;
+        margin: 0;
+        padding: 1rem;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1rem;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 1.4rem;
+        flex: 1;
+      }
+      a.nav {
+        font-size: 0.85rem;
+        color: #6b7280;
+        text-decoration: none;
+      }
+      a.nav:hover {
+        text-decoration: underline;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        overflow: hidden;
+        font-size: 0.82rem;
+      }
+      th {
+        text-align: left;
+        padding: 0.5rem 0.7rem;
+        background: #f3f4f6;
+        color: #374151;
+        font-weight: 600;
+        border-bottom: 1px solid #e5e7eb;
+        white-space: nowrap;
+      }
+      td {
+        padding: 0.35rem 0.7rem;
+        border-bottom: 1px solid #f3f4f6;
+        vertical-align: top;
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      .ts {
+        color: #9ca3af;
+        white-space: nowrap;
+        font-family: monospace;
+        font-size: 0.78rem;
+      }
+      .target {
+        color: #6b7280;
+        font-family: monospace;
+        font-size: 0.78rem;
+        white-space: nowrap;
+      }
+      .msg {
+        color: #111827;
+        word-break: break-word;
+      }
+      .fields {
+        margin-top: 0.2rem;
+        font-family: monospace;
+        font-size: 0.74rem;
+        color: #6b7280;
+        word-break: break-all;
+      }
+      .field-key {
+        color: #4b5563;
+        font-weight: 600;
+      }
+      .field-sep {
+        color: #9ca3af;
+      }
+      .lvl {
+        font-weight: 700;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .lvl-ERROR {
+        color: #dc2626;
+      }
+      .lvl-WARN {
+        color: #d97706;
+      }
+      .lvl-INFO {
+        color: #2563eb;
+      }
+      .lvl-DEBUG {
+        color: #6b7280;
+      }
+      .lvl-TRACE {
+        color: #d1d5db;
+      }
+      .empty {
+        color: #9ca3af;
+        text-align: center;
+        padding: 3rem;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>📋 Logs</h1>
+      <a class="nav" href="ui">← Inbox</a>
+      <a class="nav" href="logout">Sign out</a>
+    </header>
 
-<table>
-  <thead>
-    <tr>
-      <th>Time</th>
-      <th>Level</th>
-      <th>Target</th>
-      <th>Message</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for entry in entries %}
-    <tr>
-      <td class="ts">{{ entry.timestamp }}</td>
-      <td><span class="lvl lvl-{{ entry.level }}">{{ entry.level }}</span></td>
-      <td class="target">{{ entry.target }}</td>
-      <td class="msg">
-        {{ entry.message }}
-        {% if !entry.fields.is_empty() %}
-        <div class="fields">{% for (k, v) in entry.fields %}<span class="field-key">{{ k }}</span><span class="field-sep">=</span>{{ v }}{% if !loop.last %}  {% endif %}{% endfor %}</div>
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-    {% if entries.is_empty() %}
-    <tr><td class="empty" colspan="4">No log entries yet.</td></tr>
-    {% endif %}
-  </tbody>
-</table>
-</body>
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Level</th>
+          <th>Target</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% include "logs_entries.html" %}
+      </tbody>
+    </table>
+
+    <script>
+      async function pollLogs() {
+        try {
+          const resp = await fetch("logs/entries");
+          if (!resp.ok) return;
+          document.querySelector("tbody").innerHTML = await resp.text();
+        } catch (_) {}
+      }
+      setInterval(pollLogs, 5000);
+    </script>
+  </body>
 </html>

@@ -1,0 +1,26 @@
+{% for node in nodes %}
+  <article class="node" data-text="{{ node.search_text }}">
+    <h2>{{ node.title }}</h2>
+    <div class="meta">
+      <span>{{ node.created }}</span>
+      <span>{{ node.source }}</span>
+      {% if !node.tags.is_empty() %}
+        <span class="tags"
+          >{% for tag in node.tags %}<span>{{ tag }}</span>{% endfor %}</span
+        >
+      {% endif %}
+    </div>
+    <div class="summary">{{ node.summary }}</div>
+    {% if let Some(exc) = node.excerpt %}
+      <blockquote>{{ exc }}</blockquote>
+    {% endif %}
+    {% if !node.attachments.is_empty() %}
+      <div class="attachments">
+        {% for att in node.attachments %}{{ att.html|safe }}{% endfor %}
+      </div>
+    {% endif %}
+  </article>
+{% endfor %}
+{% if nodes.is_empty() %}
+  <p style="color:#9ca3af;text-align:center;margin-top:3rem">No items yet.</p>
+{% endif %}

@@ -1,196 +1,377 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="30">
-  <title>📥 Inbox</title>
-  <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; background: #f9fafb; margin: 0; padding: 1rem; }
-    header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
-    header h1 { margin: 0; font-size: 1.4rem; flex: 1; }
-    #search { padding: 0.4rem 0.7rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.95rem; width: 260px; }
-    a.logout { font-size: 0.85rem; color: #6b7280; text-decoration: none; }
-    a.logout:hover { text-decoration: underline; }
-    .capture { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; }
-    .capture textarea { width: 100%; border: 1px solid #d1d5db; border-radius: 6px; padding: 0.5rem 0.7rem; font-size: 0.95rem; font-family: inherit; resize: vertical; }
-    .capture textarea:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 2px #e0e7ff; }
-    .cap-controls { display: flex; align-items: center; gap: 0.7rem; margin-top: 0.5rem; flex-wrap: wrap; }
-    .cap-controls input[type=file] { font-size: 0.85rem; color: #6b7280; }
-    .cap-controls button { padding: 0.4rem 1rem; background: #6366f1; color: white; border: none; border-radius: 6px; font-size: 0.9rem; cursor: pointer; }
-    .cap-controls button:hover { background: #4f46e5; }
-    .cap-controls button:disabled { background: #a5b4fc; cursor: not-allowed; }
-    #cap-status { font-size: 0.85rem; color: #6b7280; }
-    #cap-status.ok { color: #16a34a; }
-    #cap-status.err { color: #dc2626; }
-    .node { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.2rem; margin-bottom: 1rem; }
-    .node h2 { margin: 0 0 0.4rem; font-size: 1.05rem; }
-    .node .meta { font-size: 0.78rem; color: #6b7280; margin-bottom: 0.6rem; display: flex; gap: 0.8rem; flex-wrap: wrap; }
-    .node .tags span { background: #dbeafe; color: #1d4ed8; border-radius: 12px; padding: 0.15rem 0.5rem; font-size: 0.75rem; margin-right: 0.3rem; }
-    .node .summary { font-size: 0.9rem; color: #374151; }
-    .node blockquote { border-left: 3px solid #d1d5db; margin: 0.6rem 0; padding: 0.3rem 0.8rem; color: #6b7280; font-style: italic; font-size: 0.88rem; }
-    .node .attachments { margin-top: 0.6rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
-    .node .attachments img { max-width: 200px; max-height: 150px; border-radius: 4px; object-fit: cover; }
-    .node .attachments audio, .node .attachments video { max-width: 100%; }
-    .node .attachments .doc-link { font-size: 0.85rem; }
-    .hidden { display: none; }
-    .status-panel { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 1rem; margin-bottom: 1.2rem; }
-    .status-panel h3 { margin: 0 0 0.6rem; font-size: 0.95rem; color: #92400e; }
-    #status-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
-    .status-item { display: flex; align-items: center; gap: 0.5rem; font-size: 0.88rem; }
-    .status-icon { font-size: 1rem; }
-    .status-source { color: #6b7280; }
-    .status-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .status-label { color: #6b7280; font-size: 0.78rem; }
-  </style>
-</head>
-<body>
-<header>
-  <h1>📥 Inbox</h1>
-  <input id="search" type="search" placeholder="Filter…" oninput="filter(this.value)" />
-  <a class="logout" href="logs">Logs</a>
-  <a class="logout" href="logout">Sign out</a>
-</header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>📥 Inbox</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: system-ui, sans-serif;
+        background: #f9fafb;
+        margin: 0;
+        padding: 1rem;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1rem;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 1.4rem;
+        flex: 1;
+      }
+      #search {
+        padding: 0.4rem 0.7rem;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        font-size: 0.95rem;
+        width: 260px;
+      }
+      a.logout {
+        font-size: 0.85rem;
+        color: #6b7280;
+        text-decoration: none;
+      }
+      a.logout:hover {
+        text-decoration: underline;
+      }
+      .capture {
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1.2rem;
+      }
+      .capture textarea {
+        width: 100%;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        padding: 0.5rem 0.7rem;
+        font-size: 0.95rem;
+        font-family: inherit;
+        resize: vertical;
+      }
+      .capture textarea:focus {
+        outline: none;
+        border-color: #6366f1;
+        box-shadow: 0 0 0 2px #e0e7ff;
+      }
+      .cap-controls {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        margin-top: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .cap-controls input[type="file"] {
+        font-size: 0.85rem;
+        color: #6b7280;
+      }
+      .cap-controls button {
+        padding: 0.4rem 1rem;
+        background: #6366f1;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-size: 0.9rem;
+        cursor: pointer;
+      }
+      .cap-controls button:hover {
+        background: #4f46e5;
+      }
+      .cap-controls button:disabled {
+        background: #a5b4fc;
+        cursor: not-allowed;
+      }
+      #cap-status {
+        font-size: 0.85rem;
+        color: #6b7280;
+      }
+      #cap-status.ok {
+        color: #16a34a;
+      }
+      #cap-status.err {
+        color: #dc2626;
+      }
+      .node {
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 1.2rem;
+        margin-bottom: 1rem;
+      }
+      .node h2 {
+        margin: 0 0 0.4rem;
+        font-size: 1.05rem;
+      }
+      .node .meta {
+        font-size: 0.78rem;
+        color: #6b7280;
+        margin-bottom: 0.6rem;
+        display: flex;
+        gap: 0.8rem;
+        flex-wrap: wrap;
+      }
+      .node .tags span {
+        background: #dbeafe;
+        color: #1d4ed8;
+        border-radius: 12px;
+        padding: 0.15rem 0.5rem;
+        font-size: 0.75rem;
+        margin-right: 0.3rem;
+      }
+      .node .summary {
+        font-size: 0.9rem;
+        color: #374151;
+      }
+      .node blockquote {
+        border-left: 3px solid #d1d5db;
+        margin: 0.6rem 0;
+        padding: 0.3rem 0.8rem;
+        color: #6b7280;
+        font-style: italic;
+        font-size: 0.88rem;
+      }
+      .node .attachments {
+        margin-top: 0.6rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+      .node .attachments img {
+        max-width: 200px;
+        max-height: 150px;
+        border-radius: 4px;
+        object-fit: cover;
+      }
+      .node .attachments audio,
+      .node .attachments video {
+        max-width: 100%;
+      }
+      .node .attachments .doc-link {
+        font-size: 0.85rem;
+      }
+      .hidden {
+        display: none;
+      }
+      .status-panel {
+        background: #fffbeb;
+        border: 1px solid #fcd34d;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1.2rem;
+      }
+      .status-panel h3 {
+        margin: 0 0 0.6rem;
+        font-size: 0.95rem;
+        color: #92400e;
+      }
+      #status-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+      .status-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.88rem;
+      }
+      .status-icon {
+        font-size: 1rem;
+      }
+      .status-source {
+        color: #6b7280;
+      }
+      .status-text {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .status-label {
+        color: #6b7280;
+        font-size: 0.78rem;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>📥 Inbox</h1>
+      <input
+        id="search"
+        type="search"
+        placeholder="Filter…"
+        oninput="filter(this.value)"
+      />
+      <a class="logout" href="logs">Logs</a>
+      <a class="logout" href="logout">Sign out</a>
+    </header>
 
-<div id="status-panel" style="display:none" class="status-panel">
-  <h3>In progress</h3>
-  <ul id="status-list"></ul>
-</div>
+    <div id="status-panel" style="display:none" class="status-panel">
+      <h3>In progress</h3>
+      <ul id="status-list"></ul>
+    </div>
 
-{% if !inbox_url.is_empty() %}
-<section class="capture"
-  data-inbox-url="{{ inbox_url }}">
-  <textarea id="cap-text" placeholder="Quick capture — type a message…" rows="3"></textarea>
-  <div class="cap-controls">
-    <input type="file" id="cap-file" />
-    <button id="cap-btn" onclick="submitCapture()">Send</button>
-    <span id="cap-status"></span>
-  </div>
-</section>
-{% endif %}
+    {% if !inbox_url.is_empty() %}
+      <section class="capture" data-inbox-url="{{ inbox_url }}">
+        <textarea
+          id="cap-text"
+          placeholder="Quick capture — type a message…"
+          rows="3"
+        ></textarea>
+        <div class="cap-controls">
+          <input type="file" id="cap-file" />
+          <button id="cap-btn" onclick="submitCapture()">Send</button>
+          <span id="cap-status"></span>
+        </div>
+      </section>
+    {% endif %}
 
-<div id="nodes">
-{% for node in nodes %}
-<article class="node" data-text="{{ node.search_text }}">
-  <h2>{{ node.title }}</h2>
-  <div class="meta">
-    <span>{{ node.created }}</span>
-    <span>{{ node.source }}</span>
-    {% if !node.tags.is_empty() %}<span class="tags">{% for tag in node.tags %}<span>{{ tag }}</span>{% endfor %}</span>{% endif %}
-  </div>
-  <div class="summary">{{ node.summary }}</div>
-  {% if let Some(exc) = node.excerpt %}<blockquote>{{ exc }}</blockquote>{% endif %}
-  {% if !node.attachments.is_empty() %}
-  <div class="attachments">
-    {% for att in node.attachments %}{{ att.html|safe }}{% endfor %}
-  </div>
-  {% endif %}
-</article>
-{% endfor %}
-{% if nodes.is_empty() %}<p style="color:#9ca3af;text-align:center;margin-top:3rem">No items yet.</p>{% endif %}
-</div>
+    <div id="nodes">{% include "inbox_nodes.html" %}</div>
 
-<script>
-const STAGE_ICONS = {
-  received: '⏳', enriching: '🔍', running_llm: '🤖',
-  writing: '✍️', done: '✅', failed: '❌'
-};
-const STAGE_LABELS = {
-  received: 'Received', enriching: 'Fetching content',
-  running_llm: 'Analysing', writing: 'Saving',
-  done: 'Done', failed: 'Failed'
-};
+    <script>
+      const STAGE_ICONS = {
+        received: "⏳",
+        enriching: "🔍",
+        running_llm: "🤖",
+        writing: "✍️",
+        done: "✅",
+        failed: "❌",
+      };
+      const STAGE_LABELS = {
+        received: "Received",
+        enriching: "Fetching content",
+        running_llm: "Analysing",
+        writing: "Saving",
+        done: "Done",
+        failed: "Failed",
+      };
 
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
+      function escHtml(s) {
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
 
-async function pollStatus() {
-  try {
-    const resp = await fetch('status');
-    if (!resp.ok) return;
-    const items = await resp.json();
-    const panel = document.getElementById('status-panel');
-    const list  = document.getElementById('status-list');
-    if (!items || items.length === 0) {
-      panel.style.display = 'none';
-      return;
-    }
-    panel.style.display = '';
-    list.innerHTML = items.map(item => {
-      const stageKey = item.stage;
-      const icon = STAGE_ICONS[stageKey] ?? '…';
-      const label = STAGE_LABELS[stageKey] ?? stageKey;
-      const title = stageKey === 'done' ? (item.title ?? '') : item.text_preview;
-      return `<li class="status-item status-${escHtml(stageKey)}">
+      async function pollStatus() {
+        try {
+          const resp = await fetch("status");
+          if (!resp.ok) return;
+          const items = await resp.json();
+          const panel = document.getElementById("status-panel");
+          const list = document.getElementById("status-list");
+          if (!items || items.length === 0) {
+            panel.style.display = "none";
+            return;
+          }
+          panel.style.display = "";
+          list.innerHTML = items
+            .map((item) => {
+              const stageKey = item.stage;
+              const icon = STAGE_ICONS[stageKey] ?? "…";
+              const label = STAGE_LABELS[stageKey] ?? stageKey;
+              const title =
+                stageKey === "done" ? (item.title ?? "") : item.text_preview;
+              return `<li class="status-item status-${escHtml(stageKey)}">
         <span class="status-icon">${icon}</span>
         <span class="status-source">[${escHtml(item.source)}]</span>
         <span class="status-text">${escHtml(title)}</span>
         <span class="status-label">${escHtml(label)}</span>
       </li>`;
-    }).join('');
-  } catch (_) {}
-}
+            })
+            .join("");
+        } catch (_) {}
+      }
 
-setInterval(pollStatus, 3000);
-pollStatus();
+      setInterval(pollStatus, 3000);
+      pollStatus();
 
-function filter(q) {
-  q = q.toLowerCase();
-  document.querySelectorAll('#nodes .node').forEach(el => {
-    const match = !q || el.dataset.text.toLowerCase().includes(q);
-    el.classList.toggle('hidden', !match);
-  });
-}
+      async function pollNodes() {
+        try {
+          const resp = await fetch("ui/nodes");
+          if (!resp.ok) return;
+          document.getElementById("nodes").innerHTML = await resp.text();
+          const q = document.getElementById("search").value;
+          if (q) filter(q);
+        } catch (_) {}
+      }
+      setInterval(pollNodes, 30000);
 
-async function submitCapture() {
-  const section = document.querySelector('.capture');
-  const inboxUrl = section.dataset.inboxUrl;
-  const text = document.getElementById('cap-text').value.trim();
-  const fileInput = document.getElementById('cap-file');
-  const file = fileInput.files[0];
-  const status = document.getElementById('cap-status');
-  const btn = document.getElementById('cap-btn');
+      function filter(q) {
+        q = q.toLowerCase();
+        document.querySelectorAll("#nodes .node").forEach((el) => {
+          const match = !q || el.dataset.text.toLowerCase().includes(q);
+          el.classList.toggle("hidden", !match);
+        });
+      }
 
-  if (!text && !file) {
-    status.className = 'err';
-    status.textContent = 'Nothing to send';
-    return;
-  }
+      async function submitCapture() {
+        const section = document.querySelector(".capture");
+        const inboxUrl = section.dataset.inboxUrl;
+        const text = document.getElementById("cap-text").value.trim();
+        const fileInput = document.getElementById("cap-file");
+        const file = fileInput.files[0];
+        const status = document.getElementById("cap-status");
+        const btn = document.getElementById("cap-btn");
 
-  btn.disabled = true;
-  status.className = '';
-  status.textContent = 'Sending…';
+        if (!text && !file) {
+          status.className = "err";
+          status.textContent = "Nothing to send";
+          return;
+        }
 
-  try {
-    let resp;
-    if (file) {
-      const fd = new FormData();
-      if (text) fd.append('text', text);
-      fd.append(file.name, file, file.name);
-      resp = await fetch(inboxUrl + '/upload', { method: 'POST', body: fd });
-    } else {
-      resp = await fetch(inboxUrl, { method: 'POST', headers: {'Content-Type': 'text/plain'}, body: text });
-    }
+        btn.disabled = true;
+        status.className = "";
+        status.textContent = "Sending…";
 
-    if (resp.ok) {
-      status.className = 'ok';
-      status.textContent = '✓ Sent';
-      document.getElementById('cap-text').value = '';
-      fileInput.value = '';
-      setTimeout(() => { status.textContent = ''; }, 3000);
-    } else {
-      status.className = 'err';
-      status.textContent = '✗ Error ' + resp.status;
-    }
-  } catch (e) {
-    status.className = 'err';
-    status.textContent = '✗ ' + e.message;
-  } finally {
-    btn.disabled = false;
-  }
-}
-</script>
-</body>
+        try {
+          let resp;
+          if (file) {
+            const fd = new FormData();
+            if (text) fd.append("text", text);
+            fd.append(file.name, file, file.name);
+            resp = await fetch(inboxUrl + "/upload", {
+              method: "POST",
+              body: fd,
+            });
+          } else {
+            resp = await fetch(inboxUrl, {
+              method: "POST",
+              headers: { "Content-Type": "text/plain" },
+              body: text,
+            });
+          }
+
+          if (resp.ok) {
+            status.className = "ok";
+            status.textContent = "✓ Sent";
+            document.getElementById("cap-text").value = "";
+            fileInput.value = "";
+            setTimeout(() => {
+              status.textContent = "";
+            }, 3000);
+          } else {
+            status.className = "err";
+            status.textContent = "✗ Error " + resp.status;
+          }
+        } catch (e) {
+          status.className = "err";
+          status.textContent = "✗ " + e.message;
+        } finally {
+          btn.disabled = false;
+        }
+      }
+    </script>
+  </body>
 </html>

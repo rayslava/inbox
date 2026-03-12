@@ -28,6 +28,18 @@ pub struct InboxUiTemplate {
     pub inbox_url: String,
 }
 
+#[derive(Template)]
+#[template(path = "inbox_nodes.html")]
+pub struct InboxNodesTemplate {
+    pub nodes: Vec<UiNode>,
+}
+
+#[derive(Template)]
+#[template(path = "logs_entries.html")]
+pub struct LogsEntriesTemplate {
+    pub entries: Vec<crate::log_capture::LogEntry>,
+}
+
 // ── Data types ────────────────────────────────────────────────────────────────
 
 pub struct UiAttachment {

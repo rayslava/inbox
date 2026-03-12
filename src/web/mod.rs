@@ -71,10 +71,14 @@ pub fn admin_router(args: AdminRouterArgs) -> Router {
 
     if web_ui_enabled {
         router = router
+            .route("/", get(root_redirect))
+            .route("/favicon.svg", get(favicon_handler))
             .route("/login", get(login_get).post(login_post))
             .route("/logout", get(logout_handler))
             .route("/ui", get(ui_handler))
+            .route("/ui/nodes", get(ui_nodes_handler))
             .route("/logs", get(logs_handler))
+            .route("/logs/entries", get(logs_entries_handler))
             .route("/status", get(status_handler))
             .route("/attachments/{*path}", get(attachments::serve_attachment))
             .route("/capture", post(proxy::inbox_handler))
@@ -82,6 +86,22 @@ pub fn admin_router(args: AdminRouterArgs) -> Router {
     }
 
     router.with_state(state)
+}
+
+// ── Root / favicon ───────────────────────────────────────────────────────────
+
+async fn root_redirect() -> Redirect {
+    Redirect::to("ui")
+}
+
+const FAVICON_SVG: &str = include_str!("../../static/favicon.svg");
+
+async fn favicon_handler() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "image/svg+xml")],
+        FAVICON_SVG,
+    )
 }
 
 // ── Health handlers ───────────────────────────────────────────────────────────
@@ -183,6 +203,41 @@ async fn ui_handler(State(state): State<AdminState>, headers: HeaderMap) -> Resp
 
     html_response(
         ui::InboxUiTemplate { nodes, inbox_url }
+            .render()
+            .unwrap_or_default(),
+    )
+}
+
+// ── Fragment handlers ─────────────────────────────────────────────────────────
+
+async fn ui_nodes_handler(State(state): State<AdminState>, headers: HeaderMap) -> Response {
+    let admin = &state.cfg.admin;
+    if !auth::is_authenticated(&headers, &state.sessions, admin.session_ttl_days) {
+        return Redirect::to("login").into_response();
+    }
+
+    let org_path = &state.cfg.general.output_file;
+    let content = tokio::fs::read_to_string(org_path)
+        .await
+        .unwrap_or_default();
+    let mut nodes = ui::parse_org_nodes(&content, &state.cfg.general.attachments_dir);
+    nodes.reverse();
+
+    html_response(
+        ui::InboxNodesTemplate { nodes }
+            .render()
+            .unwrap_or_default(),
+    )
+}
+
+async fn logs_entries_handler(State(state): State<AdminState>, headers: HeaderMap) -> Response {
+    let admin = &state.cfg.admin;
+    if !auth::is_authenticated(&headers, &state.sessions, admin.session_ttl_days) {
+        return Redirect::to("login").into_response();
+    }
+    let entries = state.log_store.recent();
+    html_response(
+        ui::LogsEntriesTemplate { entries }
             .render()
             .unwrap_or_default(),
     )
@@ -409,6 +464,110 @@ mod tests {
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn ui_nodes_without_session_redirects_to_login() {
+        let router = make_router(true);
+        let req = Request::builder()
+            .uri("/ui/nodes")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn logs_entries_without_session_redirects_to_login() {
+        let router = make_router(true);
+        let req = Request::builder()
+            .uri("/logs/entries")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn ui_nodes_with_session_returns_html_fragment() {
+        use axum::http::header;
+        use chrono::Utc;
+
+        let state = test_state(true);
+        let token = auth::generate_session_token();
+        state.sessions.insert(token.clone(), Utc::now());
+
+        let router = admin_router(AdminRouterArgs {
+            cfg: state.cfg,
+            readiness: state.readiness,
+            session_store: state.sessions,
+            metrics_handle: state.metrics_handle,
+            log_store: state.log_store,
+            tracker: state.tracker,
+            inbox_tx: state.inbox_tx,
+            attachments_dir: state.attachments_dir,
+        });
+        let req = Request::builder()
+            .uri("/ui/nodes")
+            .header(header::COOKIE, format!("session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("text/html"));
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        // Fragment should NOT contain <html> or <head>
+        assert!(!text.contains("<html"));
+        assert!(!text.contains("<head"));
+    }
+
+    #[tokio::test]
+    async fn logs_entries_with_session_returns_html_fragment() {
+        use axum::http::header;
+        use chrono::Utc;
+
+        let state = test_state(true);
+        let token = auth::generate_session_token();
+        state.sessions.insert(token.clone(), Utc::now());
+
+        let router = admin_router(AdminRouterArgs {
+            cfg: state.cfg,
+            readiness: state.readiness,
+            session_store: state.sessions,
+            metrics_handle: state.metrics_handle,
+            log_store: state.log_store,
+            tracker: state.tracker,
+            inbox_tx: state.inbox_tx,
+            attachments_dir: state.attachments_dir,
+        });
+        let req = Request::builder()
+            .uri("/logs/entries")
+            .header(header::COOKIE, format!("session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("text/html"));
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(!text.contains("<html"));
     }
 
     #[tokio::test]
