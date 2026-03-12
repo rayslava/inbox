@@ -4,8 +4,9 @@ use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::runners::{
-    CrawlToolCfg, HttpToolCfg, KagiSearchToolCfg, resolve_env_vars, run_crawler_tool,
-    run_http_tool, run_kagi_search_tool, run_shell_tool,
+    CrawlToolCfg, DuckDuckGoSearchToolCfg, HttpToolCfg, KagiSearchToolCfg, resolve_env_vars,
+    run_crawler_tool, run_duckduckgo_search_tool, run_http_tool, run_kagi_search_tool,
+    run_shell_tool,
 };
 use super::{Tool, ToolExecutor, ToolResult, default_tools, from_tooling};
 
@@ -646,4 +647,170 @@ async fn exponential_backoff_increases_delay() {
         elapsed.as_secs() >= 3,
         "expected backoff delay, elapsed: {elapsed:?}"
     );
+}
+
+static DDG_HTML_FIXTURE: &str = r#"<!DOCTYPE html><html><body>
+<div class="results_links_deep">
+  <a class="result__a" href="/l/?uddg=https%3A%2F%2Fwww.rust-lang.org%2F&amp;rut=x">Rust Programming Language</a>
+  <span class="result__snippet">A language empowering everyone to build reliable software.</span>
+</div>
+<div class="results_links_deep">
+  <a class="result__a" href="/l/?uddg=https%3A%2F%2Fdoc.rust-lang.org%2F&amp;rut=y">Rust Documentation</a>
+  <span class="result__snippet">The Rust reference and book.</span>
+</div>
+</body></html>"#;
+
+#[tokio::test]
+async fn run_duckduckgo_search_formats_results() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/html/"))
+        .and(query_param("q", "rust language"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html; charset=utf-8")
+                .set_body_string(DDG_HTML_FIXTURE),
+        )
+        .mount(&server)
+        .await;
+
+    let client = reqwest::Client::new();
+    let cfg = DuckDuckGoSearchToolCfg {
+        endpoint: &format!("{}/html/", server.uri()),
+        timeout_secs: 5,
+        default_limit: 5,
+        max_snippet_chars: 320,
+    };
+
+    let result = run_duckduckgo_search_tool(&client, cfg, "rust language", None)
+        .await
+        .unwrap();
+    assert!(result.text().contains("DuckDuckGo search results"));
+    assert!(result.text().contains("Rust Programming Language"));
+    assert!(result.text().contains("https://www.rust-lang.org/"));
+    assert!(result.text().contains("Rust Documentation"));
+}
+
+#[tokio::test]
+async fn run_duckduckgo_search_tool_empty_query_errors() {
+    let client = reqwest::Client::new();
+    let cfg = DuckDuckGoSearchToolCfg {
+        endpoint: "https://duckduckgo.com/html/",
+        timeout_secs: 5,
+        default_limit: 5,
+        max_snippet_chars: 120,
+    };
+    let result = run_duckduckgo_search_tool(&client, cfg, "  ", None).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn execute_duckduckgo_search_missing_query_arg_errors() {
+    let tools = vec![crate::llm::tools::Tool {
+        name: "duckduckgo_search".into(),
+        description: "search".into(),
+        enabled: true,
+        retries: 0,
+        backend: crate::config::ToolBackendConfig::DuckDuckGoSearch {
+            endpoint: "https://duckduckgo.com/html/".into(),
+            timeout_secs: 5,
+            default_limit: 3,
+            max_snippet_chars: 120,
+        },
+    }];
+    let executor = super::ToolExecutor::new(tools, test_fetcher());
+    let id = uuid::Uuid::new_v4();
+    let result = executor
+        .execute(
+            "duckduckgo_search",
+            &serde_json::json!({}),
+            id,
+            std::path::Path::new("/tmp"),
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn execute_duckduckgo_search_with_wrong_backend_errors() {
+    let tools = vec![crate::llm::tools::Tool {
+        name: "duckduckgo_search".into(),
+        description: "search".into(),
+        enabled: true,
+        retries: 0,
+        backend: crate::config::ToolBackendConfig::Internal { timeout_secs: 15 },
+    }];
+    let executor = super::ToolExecutor::new(tools, test_fetcher());
+    let id = uuid::Uuid::new_v4();
+    let result = executor
+        .execute(
+            "duckduckgo_search",
+            &serde_json::json!({"query":"rust async"}),
+            id,
+            std::path::Path::new("/tmp"),
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+/// Manual integration test: `TEST_WITH_DDG=1 cargo test duckduckgo_live_search -- --nocapture`.
+///
+/// Verifies that the real DuckDuckGo HTML endpoint returns parseable results.
+/// Skipped automatically unless `TEST_WITH_DDG=1` is set.
+#[tokio::test]
+async fn duckduckgo_live_search() {
+    if std::env::var("TEST_WITH_DDG").as_deref() != Ok("1") {
+        return;
+    }
+    let client = reqwest::Client::new();
+    let cfg = DuckDuckGoSearchToolCfg {
+        endpoint: "https://duckduckgo.com/html/",
+        timeout_secs: 15,
+        default_limit: 3,
+        max_snippet_chars: 320,
+    };
+    let result = run_duckduckgo_search_tool(&client, cfg, "Rust programming language", Some(3))
+        .await
+        .expect("DDG live search should succeed");
+    let text = result.text();
+    println!("DDG result:\n{text}");
+    assert!(
+        text.contains("DuckDuckGo search results"),
+        "Expected formatted results header, got: {text}"
+    );
+    assert!(!text.is_empty(), "Expected non-empty results");
+}
+
+/// Manual integration test: `TEST_WITH_KAGI=1 KAGI_API_TOKEN=<token> cargo test kagi_live`.
+///
+/// Verifies the real Kagi Search API call succeeds and returns formatted results.
+/// Skipped automatically unless `TEST_WITH_KAGI=1` is set.
+#[tokio::test]
+async fn kagi_live_search() {
+    if std::env::var("TEST_WITH_KAGI").as_deref() != Ok("1") {
+        return;
+    }
+    let token =
+        std::env::var("KAGI_API_TOKEN").expect("KAGI_API_TOKEN must be set when TEST_WITH_KAGI=1");
+
+    let client = reqwest::Client::new();
+    let cfg = KagiSearchToolCfg {
+        endpoint: "https://kagi.com/api/v0/search",
+        api_token: Some(&token),
+        timeout_secs: 15,
+        default_limit: 3,
+        max_snippet_chars: 320,
+    };
+
+    let result = run_kagi_search_tool(&client, cfg, "Rust programming language", Some(3))
+        .await
+        .expect("Kagi live search should succeed");
+
+    let text = result.text();
+    println!("Kagi result:\n{text}");
+    assert!(
+        text.contains("Kagi web_search results"),
+        "Expected formatted results header, got: {text}"
+    );
+    assert!(!text.is_empty(), "Expected non-empty results");
 }

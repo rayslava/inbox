@@ -17,7 +17,8 @@ pub use pipeline::{
     RuleCondition, WebContentConfig,
 };
 pub use tooling::{
-    CrawlToolConfig, NamedToolConfig, ToolBackendConfig, ToolingConfig, WebSearchToolConfig,
+    CrawlToolConfig, DuckDuckGoSearchToolConfig, KagiSearchToolConfig, NamedToolConfig,
+    ToolBackendConfig, ToolingConfig,
 };
 
 // ── Top-level ─────────────────────────────────────────────────────────────────

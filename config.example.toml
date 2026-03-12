@@ -230,3 +230,13 @@ default_limit = 5
 max_snippet_chars = 320
 timeout_secs = 15
 retries = 1
+
+[tooling.duckduckgo_search]
+enabled = false
+description = "Search the web via DuckDuckGo and return top results"
+prompt = "Use this for general web lookups when page URLs are not provided."
+endpoint = "https://duckduckgo.com/html/"
+default_limit = 5
+max_snippet_chars = 320
+timeout_secs = 15
+retries = 1

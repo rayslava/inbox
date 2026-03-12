@@ -74,6 +74,13 @@ pub(super) struct KagiSearchToolCfg<'a> {
     pub max_snippet_chars: usize,
 }
 
+pub(super) struct DuckDuckGoSearchToolCfg<'a> {
+    pub endpoint: &'a str,
+    pub timeout_secs: u32,
+    pub default_limit: u32,
+    pub max_snippet_chars: usize,
+}
+
 /// Execute an HTTP tool backend.
 #[spec(requires: !cfg.endpoint.is_empty() && !cfg.method.is_empty() && cfg.timeout_secs > 0)]
 pub(super) async fn run_http_tool(
@@ -266,9 +273,22 @@ pub(super) async fn run_kagi_search_tool(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        let hint = if status.as_u16() == 401 {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                if json["meta"]["api_balance"].is_null() {
+                    " (check: API credits loaded? Search API token used? Closed-beta access granted?)"
+                } else {
+                    " (invalid or expired API token)"
+                }
+            } else {
+                ""
+            }
+        } else {
+            ""
+        };
         let preview: String = body.chars().take(200).collect();
         return Err(InboxError::LlmTool(format!(
-            "Kagi web_search returned status {status}: {preview}"
+            "Kagi web_search returned status {status}: {preview}{hint}"
         )));
     }
 
@@ -377,6 +397,128 @@ fn format_kagi_result_line(
         url.trim(),
         snippet.trim()
     )
+}
+
+pub(super) async fn run_duckduckgo_search_tool(
+    client: &reqwest::Client,
+    cfg: DuckDuckGoSearchToolCfg<'_>,
+    query: &str,
+    limit: Option<u32>,
+) -> Result<ToolResult, InboxError> {
+    #[spec(requires: !cfg.endpoint.is_empty() && cfg.timeout_secs > 0 && !query.trim().is_empty())]
+    fn validate(cfg: &DuckDuckGoSearchToolCfg<'_>, query: &str) {
+        let _ = (cfg, query);
+    }
+    validate(&cfg, query);
+
+    let trimmed_query = query.trim();
+    if trimmed_query.is_empty() {
+        return Err(InboxError::LlmTool(
+            "duckduckgo_search missing non-empty 'query'".into(),
+        ));
+    }
+
+    let result_limit = limit.unwrap_or(cfg.default_limit).clamp(1, 20);
+    let mut endpoint = url::Url::parse(cfg.endpoint)
+        .map_err(|e| InboxError::LlmTool(format!("Invalid DDG endpoint URL: {e}")))?;
+    endpoint.query_pairs_mut().append_pair("q", trimmed_query);
+
+    let timeout = Duration::from_secs(u64::from(cfg.timeout_secs));
+    let resp = tokio::time::timeout(
+        timeout,
+        client
+            .get(endpoint)
+            .header(
+                reqwest::header::USER_AGENT,
+                "Mozilla/5.0 (compatible; inbox-search/1.0)",
+            )
+            .header(reqwest::header::ACCEPT, "text/html")
+            .send(),
+    )
+    .await
+    .map_err(|_| {
+        InboxError::LlmTool(format!(
+            "DuckDuckGo search timed out after {}s",
+            cfg.timeout_secs
+        ))
+    })?
+    .map_err(|e| InboxError::LlmTool(format!("DuckDuckGo search request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let preview: String = body.chars().take(200).collect();
+        return Err(InboxError::LlmTool(format!(
+            "DuckDuckGo search returned status {status}: {preview}"
+        )));
+    }
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| InboxError::LlmTool(format!("DuckDuckGo body read failed: {e}")))?;
+
+    Ok(parse_ddg_html(
+        &body,
+        trimmed_query,
+        result_limit as usize,
+        cfg.max_snippet_chars,
+    ))
+}
+
+fn parse_ddg_html(html: &str, query: &str, limit: usize, max_snippet_chars: usize) -> ToolResult {
+    use scraper::{Html, Selector};
+
+    let doc = Html::parse_document(html);
+    let container_sel = Selector::parse("div.results_links_deep").unwrap();
+    let title_sel = Selector::parse("a.result__a").unwrap();
+    let snippet_sel = Selector::parse(".result__snippet").unwrap();
+
+    let mut lines: Vec<String> = Vec::new();
+
+    for container in doc.select(&container_sel).take(limit) {
+        let Some(title_node) = container.select(&title_sel).next() else {
+            continue;
+        };
+        let title: String = title_node.text().collect();
+        let href = title_node.attr("href").unwrap_or("");
+
+        let url = url::Url::parse(&format!("https://duckduckgo.com{href}"))
+            .ok()
+            .and_then(|u| {
+                u.query_pairs()
+                    .find(|(k, _)| k == "uddg")
+                    .map(|(_, v)| v.into_owned())
+            })
+            .unwrap_or_else(|| href.to_owned());
+
+        let snippet: String = container
+            .select(&snippet_sel)
+            .next()
+            .map(|el| el.text().collect())
+            .unwrap_or_default();
+        let snippet = snippet.replace('\n', " ");
+        let snippet = truncate_chars(&snippet, max_snippet_chars);
+
+        lines.push(format!(
+            "{}. {}\nURL: {}\nSnippet: {}",
+            lines.len() + 1,
+            title.trim(),
+            url.trim(),
+            snippet.trim()
+        ));
+    }
+
+    if lines.is_empty() {
+        return ToolResult::Text(format!(
+            "DuckDuckGo search results for \"{query}\": no results."
+        ));
+    }
+
+    ToolResult::Text(format!(
+        "DuckDuckGo search results for \"{query}\":\n\n{}",
+        lines.join("\n\n")
+    ))
 }
 
 /// Expand `${VAR}` patterns in a string using environment variables.

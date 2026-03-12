@@ -12,8 +12,8 @@ use crate::message::Attachment;
 use crate::pipeline::url_fetcher::UrlFetcher;
 
 use runners::{
-    CrawlToolCfg, HttpToolCfg, KagiSearchToolCfg, run_crawler_tool, run_http_tool,
-    run_kagi_search_tool, run_shell_tool,
+    CrawlToolCfg, DuckDuckGoSearchToolCfg, HttpToolCfg, KagiSearchToolCfg, run_crawler_tool,
+    run_duckduckgo_search_tool, run_http_tool, run_kagi_search_tool, run_shell_tool,
 };
 
 mod builders;
@@ -74,7 +74,7 @@ fn tool_parameters(name: &str) -> serde_json::Value {
             },
             "required": ["url"]
         }),
-        "web_search" => serde_json::json!({
+        "web_search" | "duckduckgo_search" => serde_json::json!({
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "The web search query" },
@@ -194,7 +194,7 @@ impl ToolExecutor {
                     .ok_or_else(|| InboxError::LlmTool("crawl_url missing 'url'".into()))?;
                 self.run_crawl(&tool.backend, url_str).await
             }
-            "web_search" => {
+            "web_search" | "duckduckgo_search" => {
                 let query = args["query"]
                     .as_str()
                     .ok_or_else(|| InboxError::LlmTool("web_search missing 'query'".into()))?;
@@ -247,9 +247,11 @@ impl ToolExecutor {
             ToolBackendConfig::Crawler { .. } => Err(InboxError::LlmTool(
                 "scrape_page does not support crawler backend".into(),
             )),
-            ToolBackendConfig::KagiSearch { .. } => Err(InboxError::LlmTool(
-                "scrape_page does not support kagi_search backend".into(),
-            )),
+            ToolBackendConfig::KagiSearch { .. } | ToolBackendConfig::DuckDuckGoSearch { .. } => {
+                Err(InboxError::LlmTool(
+                    "scrape_page does not support search backends".into(),
+                ))
+            }
         }
     }
 
@@ -314,9 +316,11 @@ impl ToolExecutor {
             ToolBackendConfig::Crawler { .. } => Err(InboxError::LlmTool(
                 "download_file does not support crawler backend".into(),
             )),
-            ToolBackendConfig::KagiSearch { .. } => Err(InboxError::LlmTool(
-                "download_file does not support kagi_search backend".into(),
-            )),
+            ToolBackendConfig::KagiSearch { .. } | ToolBackendConfig::DuckDuckGoSearch { .. } => {
+                Err(InboxError::LlmTool(
+                    "download_file does not support search backends".into(),
+                ))
+            }
         }
     }
 
@@ -372,8 +376,22 @@ impl ToolExecutor {
                 };
                 run_kagi_search_tool(&self.http_client, cfg, query, limit).await
             }
+            ToolBackendConfig::DuckDuckGoSearch {
+                endpoint,
+                timeout_secs,
+                default_limit,
+                max_snippet_chars,
+            } => {
+                let cfg = DuckDuckGoSearchToolCfg {
+                    endpoint,
+                    timeout_secs: *timeout_secs,
+                    default_limit: *default_limit,
+                    max_snippet_chars: *max_snippet_chars,
+                };
+                run_duckduckgo_search_tool(&self.http_client, cfg, query, limit).await
+            }
             _ => Err(InboxError::LlmTool(
-                "web_search requires kagi_search backend".into(),
+                "web_search requires a search backend (kagi_search or duckduckgo_search)".into(),
             )),
         }
     }

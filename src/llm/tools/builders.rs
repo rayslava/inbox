@@ -46,6 +46,18 @@ pub fn default_tools(fetcher: UrlFetcher) -> ToolExecutor {
                 max_snippet_chars: 320,
             },
         },
+        Tool {
+            name: "duckduckgo_search".into(),
+            description: "Search the web via DuckDuckGo and return top results".into(),
+            enabled: false,
+            retries: 1,
+            backend: ToolBackendConfig::DuckDuckGoSearch {
+                endpoint: "https://duckduckgo.com/html/".into(),
+                timeout_secs: 15,
+                default_limit: 5,
+                max_snippet_chars: 320,
+            },
+        },
     ];
     ToolExecutor::new(tools, fetcher)
 }
@@ -74,7 +86,11 @@ pub fn from_tooling(tooling: &ToolingConfig, fetcher: UrlFetcher) -> ToolExecuto
     );
     let web_search_desc = desc_or(
         &tooling.web_search.description,
-        "Search the web and return top results",
+        "Search the web via Kagi and return top results",
+    );
+    let ddg_search_desc = desc_or(
+        &tooling.duckduckgo_search.description,
+        "Search the web via DuckDuckGo and return top results",
     );
 
     let tools = vec![
@@ -115,6 +131,18 @@ pub fn from_tooling(tooling: &ToolingConfig, fetcher: UrlFetcher) -> ToolExecuto
                 timeout_secs: tooling.web_search.timeout_secs,
                 default_limit: tooling.web_search.default_limit,
                 max_snippet_chars: tooling.web_search.max_snippet_chars,
+            },
+        },
+        Tool {
+            name: "duckduckgo_search".into(),
+            description: ddg_search_desc,
+            enabled: tooling.duckduckgo_search.enabled,
+            retries: tooling.duckduckgo_search.retries,
+            backend: ToolBackendConfig::DuckDuckGoSearch {
+                endpoint: tooling.duckduckgo_search.endpoint.clone(),
+                timeout_secs: tooling.duckduckgo_search.timeout_secs,
+                default_limit: tooling.duckduckgo_search.default_limit,
+                max_snippet_chars: tooling.duckduckgo_search.max_snippet_chars,
             },
         },
     ];
