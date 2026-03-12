@@ -259,7 +259,7 @@ fn sanitize_filename(s: &str) -> String {
 #[must_use]
 #[spec(requires: !filename.is_empty())]
 pub fn attachment_save_path(base: &Path, id: Uuid, filename: &str) -> PathBuf {
-    let id_str = id.to_string().replace('-', "");
+    let id_str = id.to_string();
     let dir1 = &id_str[..2];
     let dir2 = &id_str[2..];
     base.join(dir1).join(dir2).join(filename)
@@ -291,9 +291,8 @@ mod tests {
         let id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let base = Path::new("/data/attachments");
         let path = attachment_save_path(base, id, "report.pdf");
-        // id without hyphens = 550e8400e29b41d4a716446655440000
-        // first 2 chars: "55", rest: "0e8400e29b41d4a716446655440000"
-        assert!(path.to_str().unwrap().contains("/55/"));
+        // first 2 chars: "55", rest: "0e8400-e29b-41d4-a716-446655440000"
+        assert!(path.to_str().unwrap().contains("/55/0e8400-e29b-41d4-a716-446655440000/"));
         assert!(path.ends_with("report.pdf"));
     }
 }
