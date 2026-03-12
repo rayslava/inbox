@@ -7,6 +7,7 @@ use tracing::{debug, info, warn};
 use crate::config::{Config, FallbackMode, LlmConfig};
 use crate::error::InboxError;
 use crate::message::{EnrichedMessage, LlmResponse};
+use crate::pipeline::url_extractor::extract_http_url_strings;
 use crate::pipeline::url_fetcher::UrlFetcher;
 
 pub mod ollama;
@@ -199,6 +200,9 @@ impl LlmChain {
                 req_attempt.tool_definitions = tool_defs.clone();
                 let mut turns = 0usize;
                 let mut required_tool_prompts = 0usize;
+                let mut tool_source_url_set: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                let mut tool_source_urls: Vec<String> = Vec::new();
 
                 loop {
                     let tool_names: Vec<&str> = req_attempt
@@ -257,7 +261,10 @@ impl LlmChain {
                                 "backend" => backend.name().to_owned()
                             )
                             .record(start.elapsed().as_secs_f64());
-                            return LlmOutcome::Success(resp);
+                            return LlmOutcome::Success(append_missing_source_links(
+                                resp,
+                                &tool_source_urls,
+                            ));
                         }
                         Ok(LlmCompletion::ToolCalls(calls)) => {
                             if calls.is_empty() {
@@ -284,10 +291,15 @@ impl LlmChain {
                             };
 
                             let output = execute_tool_calls(executor, &calls, &req_attempt).await;
+                            for url in output.source_urls {
+                                if tool_source_url_set.insert(url.clone()) {
+                                    tool_source_urls.push(url);
+                                }
+                            }
                             req_attempt
                                 .user_content
                                 .push_str("\n\n--- Tool execution results ---\n");
-                            req_attempt.user_content.push_str(&output);
+                            req_attempt.user_content.push_str(&output.text);
                             req_attempt.require_initial_tool_call = false;
                             turns += 1;
                         }
@@ -342,19 +354,24 @@ async fn execute_tool_calls(
     executor: &tools::ToolExecutor,
     calls: &[ToolCall],
     req: &LlmRequest,
-) -> String {
+) -> ToolExecutionOutput {
+    let results = futures::future::join_all(calls.iter().map(|call| {
+        executor.execute(
+            &call.name,
+            &call.arguments,
+            req.msg_id,
+            req.attachments_dir.as_path(),
+        )
+    }))
+    .await;
+
     let mut outputs = Vec::with_capacity(calls.len());
-    for call in calls {
+    let mut source_url_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut source_urls: Vec<String> = Vec::new();
+
+    for (call, result) in calls.iter().zip(results) {
         info!(tool = %call.name, "Executing LLM tool call");
-        match executor
-            .execute(
-                &call.name,
-                &call.arguments,
-                req.msg_id,
-                req.attachments_dir.as_path(),
-            )
-            .await
-        {
+        match result {
             Ok(tools::ToolResult::Text(text) | tools::ToolResult::Attachment { text, .. }) => {
                 let result_preview: String = text.chars().take(120).collect();
                 info!(
@@ -363,6 +380,11 @@ async fn execute_tool_calls(
                     result_preview = %result_preview,
                     "Tool call result"
                 );
+                for url in extract_http_url_strings(&text) {
+                    if source_url_set.insert(url.clone()) {
+                        source_urls.push(url);
+                    }
+                }
                 outputs.push(format!("tool `{}`: {text}", call.name));
             }
             Err(e) => {
@@ -372,7 +394,47 @@ async fn execute_tool_calls(
         }
     }
 
-    outputs.join("\n")
+    ToolExecutionOutput {
+        text: outputs.join("\n"),
+        source_urls,
+    }
+}
+
+struct ToolExecutionOutput {
+    text: String,
+    source_urls: Vec<String>,
+}
+
+fn append_missing_source_links(mut resp: LlmResponse, tool_source_urls: &[String]) -> LlmResponse {
+    if tool_source_urls.is_empty() {
+        return resp;
+    }
+
+    let mut already_present: std::collections::HashSet<String> =
+        extract_http_url_strings(&resp.summary)
+            .into_iter()
+            .collect();
+    if let Some(excerpt) = &resp.excerpt {
+        already_present.extend(extract_http_url_strings(excerpt));
+    }
+
+    let missing: Vec<&str> = tool_source_urls
+        .iter()
+        .filter(|url| !already_present.contains(*url))
+        .map(String::as_str)
+        .collect();
+
+    if missing.is_empty() {
+        return resp;
+    }
+
+    resp.summary.push_str("\n\nSources:");
+    for url in missing {
+        resp.summary.push_str("\n- ");
+        resp.summary.push_str(url);
+    }
+
+    resp
 }
 
 // ── Builder ───────────────────────────────────────────────────────────────────

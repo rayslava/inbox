@@ -12,6 +12,28 @@ fn url_re() -> &'static Regex {
     })
 }
 
+/// Extract all HTTP(S) URLs from a text string as raw strings.
+/// Use this when you need URL strings without URL validation (e.g. for source link deduplication).
+/// Duplicate URLs are deduplicated while preserving order.
+#[must_use]
+pub fn extract_http_url_strings(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    url_re()
+        .find_iter(text)
+        .filter_map(|m| {
+            let raw = m
+                .as_str()
+                .trim_end_matches(['.', ',', ')', '>', ';', '\'', '"'])
+                .to_owned();
+            if seen.insert(raw.clone()) {
+                Some(raw)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Extract all HTTP(S) URLs from a text string.
 /// Duplicate URLs (by string) are deduplicated while preserving order.
 #[must_use]
@@ -63,5 +85,37 @@ mod tests {
     #[test]
     fn empty_text_returns_empty() {
         assert!(extract_urls("no urls here").is_empty());
+    }
+
+    #[test]
+    fn extract_http_url_strings_deduplicates_and_preserves_order() {
+        let urls = extract_http_url_strings(
+            "a https://b.example/x then https://a.example/y then https://b.example/x again",
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "https://b.example/x".to_owned(),
+                "https://a.example/y".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_http_url_strings_strips_trailing_punctuation() {
+        let urls = extract_http_url_strings("See https://example.com/a), and https://b.example/.");
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/a".to_owned(),
+                "https://b.example/".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_http_url_strings_keeps_http_tokens_without_url_validation() {
+        let urls = extract_http_url_strings("raw token https://example.com/space here");
+        assert_eq!(urls, vec!["https://example.com/space".to_owned()]);
     }
 }

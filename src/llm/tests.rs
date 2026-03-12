@@ -5,7 +5,10 @@ use crate::message::{
 use crate::url_content::UrlContent;
 use async_trait::async_trait;
 
-use super::{LlmChain, LlmClient, LlmCompletion, LlmOutcome, LlmRequest, ToolCall};
+use super::{
+    LlmChain, LlmClient, LlmCompletion, LlmOutcome, LlmRequest, ToolCall,
+    append_missing_source_links,
+};
 use crate::error::InboxError;
 
 fn make_enriched(text: &str) -> EnrichedMessage {
@@ -141,6 +144,46 @@ async fn chain_discard_fallback_when_no_backends() {
 fn max_tool_turns_accessor() {
     let chain = LlmChain::new(vec![], FallbackMode::Raw, 7, None);
     assert_eq!(chain.max_tool_turns(), 7);
+}
+
+#[test]
+fn append_missing_source_links_adds_sources_block() {
+    let resp = crate::message::LlmResponse {
+        title: "Title".into(),
+        tags: vec![],
+        summary: "Summary body".into(),
+        excerpt: None,
+        produced_by: "mock".into(),
+    };
+    let out = append_missing_source_links(
+        resp,
+        &[
+            "https://example.com/a".into(),
+            "https://example.com/b".into(),
+        ],
+    );
+    assert!(out.summary.contains("Sources:"));
+    assert!(out.summary.contains("https://example.com/a"));
+    assert!(out.summary.contains("https://example.com/b"));
+}
+
+#[test]
+fn append_missing_source_links_skips_already_present_links() {
+    let resp = crate::message::LlmResponse {
+        title: "Title".into(),
+        tags: vec![],
+        summary: "Summary uses https://example.com/a".into(),
+        excerpt: Some("Quote with https://example.com/b".into()),
+        produced_by: "mock".into(),
+    };
+    let out = append_missing_source_links(
+        resp,
+        &[
+            "https://example.com/a".into(),
+            "https://example.com/b".into(),
+        ],
+    );
+    assert!(!out.summary.contains("Sources:"));
 }
 
 struct ToolCallsLlm;

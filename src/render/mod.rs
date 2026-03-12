@@ -2,6 +2,7 @@ use askama::Template;
 
 use crate::error::InboxError;
 use crate::message::ProcessedMessage;
+use crate::pipeline::url_extractor::extract_http_url_strings;
 
 pub struct AttachmentRef<'a> {
     pub name: &'a str,
@@ -17,6 +18,7 @@ pub struct OrgNodeTemplate<'a> {
     pub created: &'a str,
     pub source: &'a str,
     pub urls: &'a [String],
+    pub roam_refs: &'a [String],
     pub attachments: &'a [AttachmentRef<'a>],
     pub llm_backend: &'a str,
     pub summary: &'a str,
@@ -128,6 +130,16 @@ pub fn render_org_node(
         ),
     };
 
+    let summary_urls = extract_http_url_strings(summary);
+    let excerpt_urls = excerpt.map(extract_http_url_strings).unwrap_or_default();
+    let mut roam_refs = urls.clone();
+    let mut roam_ref_set: std::collections::HashSet<String> = urls.iter().cloned().collect();
+    for url in summary_urls.into_iter().chain(excerpt_urls) {
+        if roam_ref_set.insert(url.clone()) {
+            roam_refs.push(url);
+        }
+    }
+
     let tmpl = OrgNodeTemplate {
         title,
         tags: &merged_tags,
@@ -135,6 +147,7 @@ pub fn render_org_node(
         created: &created,
         source: &source,
         urls: &urls,
+        roam_refs: &roam_refs,
         attachments: &att_refs,
         llm_backend: backend,
         summary,
@@ -224,6 +237,7 @@ mod tests {
             created: "now",
             source: "http",
             urls: &[],
+            roam_refs: &[],
             attachments: &[
                 AttachmentRef {
                     name: "a.pdf",
@@ -265,6 +279,40 @@ mod tests {
         };
         let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
         assert!(result.contains("https://example.com/page"));
+    }
+
+    #[test]
+    fn render_roam_refs_collects_links_from_summary_and_excerpt() {
+        let resp = LlmResponse {
+            title: "My Title".into(),
+            tags: vec![],
+            summary: "See https://a.example/path and https://b.example/.".into(),
+            excerpt: Some("Quote from https://c.example/info".into()),
+            produced_by: "mock".into(),
+        };
+        let msg = make_processed("raw text", Some(resp));
+        let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+        assert!(result.contains(":ROAM_REFS:"));
+        assert!(result.contains("https://a.example/path"));
+        assert!(result.contains("https://b.example/"));
+        assert!(result.contains("https://c.example/info"));
+    }
+
+    #[test]
+    fn render_heading_is_immediately_followed_by_properties_drawer() {
+        let resp = LlmResponse {
+            title: "My Title".into(),
+            tags: vec![],
+            summary: "A summary.".into(),
+            excerpt: None,
+            produced_by: "mock".into(),
+        };
+        let msg = make_processed("raw text", Some(resp));
+        let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+        assert!(
+            result.starts_with("* My Title\n:PROPERTIES:\n"),
+            "expected heading directly followed by drawer, got:\n{result}"
+        );
     }
 
     #[test]
