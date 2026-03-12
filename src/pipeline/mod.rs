@@ -251,7 +251,7 @@ impl Pipeline {
             .url_fetch
             .skip_domains
             .iter()
-            .any(|d| host.ends_with(d.as_str()))
+            .any(|d| host_matches_skip_domain(host, d))
         {
             debug!(%url, "Skipping URL — domain is in skip list");
             return;
@@ -378,6 +378,26 @@ impl Pipeline {
             }
         }
     }
+}
+
+fn host_matches_skip_domain(host: &str, skip_domain: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let domain = skip_domain
+        .trim()
+        .trim_start_matches('.')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+
+    if host.is_empty() || domain.is_empty() {
+        return false;
+    }
+
+    if host == domain {
+        return true;
+    }
+
+    host.strip_suffix(&domain)
+        .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 impl Pipeline {

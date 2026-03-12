@@ -755,7 +755,7 @@ async fn execute_duckduckgo_search_with_wrong_backend_errors() {
 
 /// Manual integration test: `TEST_WITH_DDG=1 cargo test duckduckgo_live_search -- --nocapture`.
 ///
-/// Verifies that the real DuckDuckGo HTML endpoint returns parseable results.
+/// Verifies that the real `DuckDuckGo` HTML endpoint returns parseable results.
 /// Skipped automatically unless `TEST_WITH_DDG=1` is set.
 #[tokio::test]
 async fn duckduckgo_live_search() {

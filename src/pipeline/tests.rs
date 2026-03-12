@@ -71,3 +71,12 @@ fn js_shell_match_disabled_when_policy_not_tool_only() {
         "This page doesn't work properly without JavaScript enabled"
     ));
 }
+
+#[test]
+fn host_skip_domain_match_is_boundary_safe() {
+    assert!(host_matches_skip_domain("youtube.com", "youtube.com"));
+    assert!(host_matches_skip_domain("m.youtube.com", "youtube.com"));
+    assert!(host_matches_skip_domain("m.YouTube.com", ".youtube.com"));
+    assert!(!host_matches_skip_domain("notyoutube.com", "youtube.com"));
+    assert!(!host_matches_skip_domain("youtube.com.evil", "youtube.com"));
+}

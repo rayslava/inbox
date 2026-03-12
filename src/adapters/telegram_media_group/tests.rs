@@ -215,7 +215,7 @@ async fn spawn_flush_waits_for_pending_downloads() {
     let bot = teloxide::Bot::with_client("fake:token", client);
     let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
 
-    let state_clone = Arc::clone(&groups.get("grp").unwrap().value());
+    let state_clone = Arc::clone(groups.get("grp").unwrap().value());
     spawn_flush(
         groups.clone(),
         "grp".to_owned(),
