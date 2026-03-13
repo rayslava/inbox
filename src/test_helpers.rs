@@ -17,6 +17,14 @@ pub fn mock_llm_chain(response: LlmResponse) -> Arc<LlmChain> {
     Arc::new(LlmChain::new(vec![client], FallbackMode::Raw, 3, None))
 }
 
+/// Build a `LlmChain` backed by a `MockLlm` that always returns `InboxError::Llm`,
+/// with `FallbackMode::Discard` so the pipeline propagates the failure as `Err`.
+#[must_use]
+pub fn failing_llm_chain(message: impl Into<String>) -> Arc<LlmChain> {
+    let client = Box::new(MockLlm::failing(message)) as Box<dyn LlmClient>;
+    Arc::new(LlmChain::new(vec![client], FallbackMode::Discard, 3, None))
+}
+
 /// Build a default `LlmResponse` for use in tests.
 #[must_use]
 pub fn default_llm_response() -> LlmResponse {

@@ -5,8 +5,13 @@ use crate::message::LlmResponse;
 
 use super::{LlmClient, LlmCompletion, LlmRequest};
 
+pub enum MockLlmBehavior {
+    Success(LlmResponse),
+    Fail(String),
+}
+
 pub struct MockLlm {
-    pub response: LlmResponse,
+    pub behavior: MockLlmBehavior,
     pub name: String,
 }
 
@@ -14,8 +19,16 @@ impl MockLlm {
     #[must_use]
     pub fn new(response: LlmResponse) -> Self {
         Self {
-            response,
+            behavior: MockLlmBehavior::Success(response),
             name: "mock".into(),
+        }
+    }
+
+    #[must_use]
+    pub fn failing(message: impl Into<String>) -> Self {
+        Self {
+            behavior: MockLlmBehavior::Fail(message.into()),
+            name: "mock-failing".into(),
         }
     }
 }
@@ -32,6 +45,9 @@ impl LlmClient for MockLlm {
         1
     }
     async fn complete(&self, _req: LlmRequest) -> Result<LlmCompletion, InboxError> {
-        Ok(LlmCompletion::Message(self.response.clone()))
+        match &self.behavior {
+            MockLlmBehavior::Success(resp) => Ok(LlmCompletion::Message(resp.clone())),
+            MockLlmBehavior::Fail(msg) => Err(InboxError::Llm(msg.clone())),
+        }
     }
 }

@@ -52,6 +52,15 @@ async fn run_imap_session(
     }
 }
 
+/// Unified I/O trait for IMAP streams (TLS or plain TCP).
+///
+/// Rust trait objects can have only one non-auto primary trait; this supertrait
+/// combines `AsyncRead`, `AsyncWrite`, `Debug`, and the auto traits `Unpin +
+/// Send` so that `Box<dyn ImapIo>` satisfies all constraints required by
+/// `async_imap::Client` / `Session`.
+trait ImapIo: futures::AsyncRead + futures::AsyncWrite + std::fmt::Debug + Unpin + Send {}
+impl<T: futures::AsyncRead + futures::AsyncWrite + std::fmt::Debug + Unpin + Send> ImapIo for T {}
+
 async fn imap_idle_loop(
     cfg: &EmailConfig,
     attachments_dir: &std::path::Path,
@@ -60,30 +69,35 @@ async fn imap_idle_loop(
     use std::sync::Arc;
 
     use async_imap::extensions::idle::IdleResponse;
-    use rustls_pki_types::ServerName;
-    use tokio_rustls::TlsConnector;
     use tokio_util::compat::TokioAsyncReadCompatExt;
-
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let tls_config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    let connector = TlsConnector::from(Arc::new(tls_config));
 
     let tcp = tokio::net::TcpStream::connect((cfg.host.as_str(), cfg.port))
         .await
         .map_err(|e| InboxError::Adapter(format!("IMAP TCP connect failed: {e}")))?;
 
-    let server_name = ServerName::try_from(cfg.host.clone())
-        .map_err(|e| InboxError::Adapter(format!("Invalid IMAP hostname: {e}")))?;
-    let tls_stream = connector
-        .connect(server_name, tcp)
-        .await
-        .map_err(|e| InboxError::Adapter(format!("IMAP TLS handshake failed: {e}")))?;
+    let client: async_imap::Client<Box<dyn ImapIo>> = if cfg.tls {
+        use rustls_pki_types::ServerName;
+        use tokio_rustls::TlsConnector;
 
-    // tokio-rustls returns a tokio stream; wrap with compat for async-imap (futures I/O).
-    let client = async_imap::Client::new(tls_stream.compat());
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let connector = TlsConnector::from(Arc::new(tls_config));
+
+        let server_name = ServerName::try_from(cfg.host.clone())
+            .map_err(|e| InboxError::Adapter(format!("Invalid IMAP hostname: {e}")))?;
+        let tls_stream = connector
+            .connect(server_name, tcp)
+            .await
+            .map_err(|e| InboxError::Adapter(format!("IMAP TLS handshake failed: {e}")))?;
+
+        // tokio-rustls returns a tokio stream; wrap with compat for async-imap (futures I/O).
+        async_imap::Client::new(Box::new(tls_stream.compat()))
+    } else {
+        async_imap::Client::new(Box::new(tcp.compat()))
+    };
 
     let mut session = client
         .login(&cfg.username, &cfg.password)
@@ -124,15 +138,12 @@ async fn imap_idle_loop(
     Ok(())
 }
 
-async fn fetch_unseen<S>(
+async fn fetch_unseen<S: ImapIo>(
     session: &mut async_imap::Session<S>,
     _cfg: &EmailConfig,
     _attachments_dir: &std::path::Path,
     tx: &mpsc::Sender<IncomingMessage>,
-) -> Result<(), InboxError>
-where
-    S: futures::AsyncRead + futures::AsyncWrite + Unpin + Send + std::fmt::Debug,
-{
+) -> Result<(), InboxError> {
     let search = session
         .search("UNSEEN")
         .await
@@ -219,46 +230,4 @@ fn parse_email_raw(raw: &[u8]) -> Option<IncomingMessage> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::parse_email_raw;
-    use crate::message::SourceMetadata;
-
-    #[test]
-    fn parse_email_with_body_prefers_body_text() {
-        let raw = b"Subject: Hi\nFrom: a@example.com\nMessage-ID: <m1>\n\nHello\nWorld";
-        let msg = parse_email_raw(raw).expect("message parsed");
-        assert_eq!(msg.text, "Hello\nWorld");
-        match msg.metadata {
-            SourceMetadata::Email {
-                subject,
-                from,
-                message_id,
-            } => {
-                assert_eq!(subject, "Hi");
-                assert_eq!(from, "a@example.com");
-                assert_eq!(message_id.as_deref(), Some("<m1>"));
-            }
-            _ => panic!("expected email metadata"),
-        }
-    }
-
-    #[test]
-    fn parse_email_without_body_falls_back_to_subject() {
-        let raw = b"Subject: SubjectOnly\nFrom: b@example.com\n\n";
-        let msg = parse_email_raw(raw).expect("message parsed");
-        assert_eq!(msg.text, "SubjectOnly");
-    }
-
-    #[test]
-    fn parse_email_empty_returns_none() {
-        let raw = b"\n\n";
-        assert!(parse_email_raw(raw).is_none());
-    }
-
-    #[test]
-    fn parse_email_without_headers_uses_body() {
-        let raw = b"\njust body";
-        let msg = parse_email_raw(raw).expect("message parsed");
-        assert_eq!(msg.text, "just body");
-    }
-}
+mod tests;

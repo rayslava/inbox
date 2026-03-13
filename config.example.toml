@@ -128,6 +128,7 @@ username = "${EMAIL_USERNAME}"
 password = "${EMAIL_PASSWORD}"
 mailbox  = "INBOX"
 mark_as_seen = true
+# tls = true   # default; set to false only for local/test IMAP servers
 # Move processed emails here instead of just marking as seen (optional).
 # processed_mailbox = "Processed"
 

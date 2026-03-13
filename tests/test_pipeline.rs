@@ -6,6 +6,7 @@ use inbox::{
         AdaptersConfig, AdminConfig, Config, GeneralConfig, PipelineConfig, SyncthingConfig,
         ToolingConfig, UrlFetchConfig, WebUiConfig,
     },
+    error::InboxError,
     message::{IncomingMessage, MessageSource, SourceMetadata},
     output::{OutputWriter, org_file::OrgFileWriter},
     pipeline::Pipeline,
@@ -125,4 +126,51 @@ async fn pipeline_appends_multiple_messages() {
     let content = tokio::fs::read_to_string(&output_file).await.unwrap();
     let headline_count = content.matches("* Test title").count();
     assert_eq!(headline_count, 3, "expected 3 org headlines");
+}
+
+#[tokio::test]
+async fn pipeline_llm_discard_returns_error() {
+    let (_tmp, dir) = helpers::temp_dir();
+    let output_file = dir.join("inbox.org");
+    let cfg = Arc::new(minimal_config(dir.clone(), output_file.clone()));
+    let llm = helpers::failing_llm_chain("simulated LLM failure");
+    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Arc::new(Pipeline::new(Arc::clone(&cfg), llm, writer, tracker));
+    let msg = IncomingMessage::new(
+        MessageSource::Http,
+        "test".into(),
+        SourceMetadata::Http {
+            remote_addr: None,
+            user_agent: None,
+        },
+    );
+    let result = pipeline.process(msg).await;
+    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), InboxError::Pipeline(_)),
+        "expected Pipeline error"
+    );
+}
+
+#[tokio::test]
+async fn pipeline_output_writer_failure_returns_error() {
+    let (_tmp, dir) = helpers::temp_dir();
+    // Use the directory itself as the output file — writing to a directory path fails.
+    let output_file = dir.clone();
+    let cfg = Arc::new(minimal_config(dir.clone(), output_file));
+    let llm = helpers::mock_llm_chain(helpers::default_llm_response());
+    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Arc::new(Pipeline::new(Arc::clone(&cfg), llm, writer, tracker));
+    let msg = IncomingMessage::new(
+        MessageSource::Http,
+        "test".into(),
+        SourceMetadata::Http {
+            remote_addr: None,
+            user_agent: None,
+        },
+    );
+    let result = pipeline.process(msg).await;
+    assert!(result.is_err());
 }

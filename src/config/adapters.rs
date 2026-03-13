@@ -97,6 +97,9 @@ pub struct EmailConfig {
     pub mark_as_seen: bool,
     #[serde(default)]
     pub processed_mailbox: String,
+    /// Use TLS for the IMAP connection. Set `false` only for local/test servers.
+    #[serde(default = "bool_true")]
+    pub tls: bool,
 }
 
 impl Default for EmailConfig {
@@ -110,6 +113,7 @@ impl Default for EmailConfig {
             mailbox: default_mailbox(),
             mark_as_seen: true,
             processed_mailbox: String::new(),
+            tls: true,
         }
     }
 }
