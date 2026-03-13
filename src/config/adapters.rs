@@ -30,6 +30,14 @@ pub struct TelegramConfig {
     pub file_download_retries: u32,
     #[serde(default = "default_tg_media_group_timeout_ms")]
     pub media_group_timeout_ms: u64,
+    /// Maximum attempts to send/edit a Telegram status message (non-terminal stages).
+    /// Terminal stages (Done/Failed) use twice this value.
+    #[serde(default = "default_tg_status_notify_retries")]
+    pub status_notify_retries: u32,
+    /// Base delay (ms) for exponential backoff between status notification retries.
+    /// Capped internally at 30 seconds.
+    #[serde(default = "default_tg_status_notify_retry_base_ms")]
+    pub status_notify_retry_base_ms: u64,
 }
 
 impl Default for TelegramConfig {
@@ -41,6 +49,8 @@ impl Default for TelegramConfig {
             file_download_timeout_secs: default_tg_file_download_timeout_secs(),
             file_download_retries: default_tg_file_download_retries(),
             media_group_timeout_ms: default_tg_media_group_timeout_ms(),
+            status_notify_retries: default_tg_status_notify_retries(),
+            status_notify_retry_base_ms: default_tg_status_notify_retry_base_ms(),
         }
     }
 }
@@ -53,6 +63,12 @@ fn default_tg_file_download_retries() -> u32 {
 }
 fn default_tg_media_group_timeout_ms() -> u64 {
     1500
+}
+fn default_tg_status_notify_retries() -> u32 {
+    5
+}
+fn default_tg_status_notify_retry_base_ms() -> u64 {
+    1000
 }
 
 #[derive(Debug, Clone, Deserialize)]

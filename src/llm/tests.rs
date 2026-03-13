@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::config::FallbackMode;
 use crate::message::{
     Attachment, EnrichedMessage, IncomingMessage, MediaKind, MessageSource, SourceMetadata,
@@ -354,4 +357,85 @@ fn llm_request_ignores_non_image_attachments_for_vision() {
         req.images.is_empty(),
         "audio attachment should not produce vision images"
     );
+}
+
+// ── activate_thinking tests ───────────────────────────────────────────────────
+
+/// Returns `activate_thinking` on the first call, then a success response.
+struct ActivateThinkingLlm {
+    calls: Arc<AtomicUsize>,
+    response: crate::message::LlmResponse,
+}
+
+#[async_trait]
+impl LlmClient for ActivateThinkingLlm {
+    fn name(&self) -> &'static str {
+        "activate_thinking_mock"
+    }
+    fn model(&self) -> &'static str {
+        "test-model"
+    }
+    fn retries(&self) -> u32 {
+        1
+    }
+    fn thinking_supported(&self) -> bool {
+        true
+    }
+    async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            // First call: request thinking mode
+            assert!(
+                req.think.is_none(),
+                "first call should not have think set yet"
+            );
+            Ok(LlmCompletion::ToolCalls(vec![ToolCall {
+                id: "at1".into(),
+                name: "activate_thinking".into(),
+                arguments: serde_json::json!({}),
+            }]))
+        } else {
+            // Second call: thinking should be activated
+            assert_eq!(
+                req.think,
+                Some(true),
+                "second call should have think=Some(true)"
+            );
+            Ok(LlmCompletion::Message(self.response.clone()))
+        }
+    }
+}
+
+#[tokio::test]
+async fn chain_activate_thinking_retries_with_think_true() {
+    let resp = crate::test_helpers::default_llm_response();
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let llm = ActivateThinkingLlm {
+        calls: Arc::clone(&call_count),
+        response: resp,
+    };
+    let chain = LlmChain::new(
+        vec![Box::new(llm) as Box<dyn LlmClient>],
+        FallbackMode::Raw,
+        5,
+        None,
+    );
+    let req = LlmRequest::simple("s", "u");
+    let outcome = chain.complete(req).await;
+    assert!(
+        matches!(outcome, LlmOutcome::Success(_)),
+        "expected success after activate_thinking"
+    );
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        2,
+        "should have made exactly 2 LLM calls"
+    );
+}
+
+#[test]
+fn thinking_supported_false_by_default() {
+    // MockLlm inherits the default impl which returns false
+    let mock = crate::llm::mock::MockLlm::new(crate::test_helpers::default_llm_response());
+    assert!(!mock.thinking_supported());
 }

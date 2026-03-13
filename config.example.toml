@@ -94,8 +94,10 @@ timeout_secs = 30
 # model          = "llama3.2"
 # base_url       = "http://localhost:11434"
 # timeout_secs   = 60
-# think          = true   # enable extended thinking/reasoning (Ollama only; omit = model default)
-# max_concurrent = 1      # serialize requests to avoid overloading the local model (omit = unlimited)
+# think              = true   # static default; model may also call activate_thinking tool
+# think_timeout_secs = 300    # timeout for thinking requests (default: timeout_secs)
+# thinking_supported = true   # allow model to call activate_thinking (Ollama only; default: false)
+# max_concurrent     = 1      # serialize requests to avoid overloading the local model (omit = unlimited)
 
 # ── Adapters ──────────────────────────────────────────────────────────────────
 
@@ -112,6 +114,12 @@ allowed_user_ids = []
 # Time (ms) to wait for additional parts of a media group (album) before
 # flushing them as a single message. Default: 1500.
 # media_group_timeout_ms = 1500
+# Max attempts to send/edit a status message (non-terminal stages).
+# Terminal stages (Done/Failed) use twice this value. Default: 5.
+# status_notify_retries = 5
+# Base delay (ms) for exponential backoff between status notification retries.
+# Capped at 30 seconds. Default: 1000.
+# status_notify_retry_base_ms = 1000
 
 [adapters.http]
 enabled = true

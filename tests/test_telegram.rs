@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use inbox::adapters::telegram::build_handler;
+use inbox::adapters::telegram_notifier::NotifyConfig;
 use inbox::message::{IncomingMessage, MessageSource, RetryableMessage, SourceMetadata};
 use teloxide::dptree;
 use teloxide_tests::{
@@ -40,21 +41,54 @@ fn default_handler(
     dir: PathBuf,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
     let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
-    build_handler(allowed, dir, 60, 3, 1500, retry_store)
+    build_handler(
+        allowed,
+        dir,
+        60,
+        3,
+        1500,
+        NotifyConfig {
+            retries: 3,
+            retry_base_ms: 100,
+        },
+        retry_store,
+    )
 }
 
 fn handler_with_short_media_group_timeout(
     dir: PathBuf,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
     let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
-    build_handler(vec![], dir, 60, 3, 100, retry_store)
+    build_handler(
+        vec![],
+        dir,
+        60,
+        3,
+        100,
+        NotifyConfig {
+            retries: 3,
+            retry_base_ms: 100,
+        },
+        retry_store,
+    )
 }
 
 fn handler_with_store(
     dir: PathBuf,
     retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
-    build_handler(vec![], dir, 60, 3, 1500, retry_store)
+    build_handler(
+        vec![],
+        dir,
+        60,
+        3,
+        1500,
+        NotifyConfig {
+            retries: 3,
+            retry_base_ms: 100,
+        },
+        retry_store,
+    )
 }
 
 fn make_retryable(text: &str) -> RetryableMessage {

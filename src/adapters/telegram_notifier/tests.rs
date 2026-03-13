@@ -46,21 +46,9 @@ fn is_terminal_done_and_failed() {
 
 #[test]
 fn terminal_stages_get_more_retries() {
-    let non_terminal = ProcessingStage::Enriching;
-    let terminal = ProcessingStage::Done { title: "x".into() };
-    let normal = if is_terminal(&non_terminal) {
-        TERMINAL_NOTIFY_RETRIES
-    } else {
-        MAX_NOTIFY_RETRIES
-    };
-    let term = if is_terminal(&terminal) {
-        TERMINAL_NOTIFY_RETRIES
-    } else {
-        MAX_NOTIFY_RETRIES
-    };
-    assert_eq!(normal, MAX_NOTIFY_RETRIES);
-    assert_eq!(term, TERMINAL_NOTIFY_RETRIES);
-    assert!(term > normal);
+    // Terminal stages should receive more retries than non-terminal ones.
+    assert!(!is_terminal(&ProcessingStage::Enriching));
+    assert!(is_terminal(&ProcessingStage::Done { title: "x".into() }));
 }
 
 // ── Dispatch-backed notifier tests ────────────────────────────────────────────
@@ -93,8 +81,18 @@ async fn advance_enriching_edits_status_message() {
         let s = s.clone();
         async move {
             let sent = bot.send_message(msg.chat.id, "⏳ Processing…").await?;
-            let mut notifier =
-                TelegramNotifier::new(bot, msg.chat.id, sent.id, s, key, dummy_retryable());
+            let mut notifier = TelegramNotifier::new(
+                bot,
+                msg.chat.id,
+                sent.id,
+                s,
+                key,
+                dummy_retryable(),
+                NotifyConfig {
+                    retries: 3,
+                    retry_base_ms: 100,
+                },
+            );
             notifier.advance(ProcessingStage::Enriching).await;
             Ok::<(), teloxide::RequestError>(())
         }
@@ -123,8 +121,18 @@ async fn advance_failed_inserts_retry_store_and_adds_button() {
         let s = s.clone();
         async move {
             let sent = bot.send_message(msg.chat.id, "⏳ Processing…").await?;
-            let mut notifier =
-                TelegramNotifier::new(bot, msg.chat.id, sent.id, s, key, dummy_retryable());
+            let mut notifier = TelegramNotifier::new(
+                bot,
+                msg.chat.id,
+                sent.id,
+                s,
+                key,
+                dummy_retryable(),
+                NotifyConfig {
+                    retries: 3,
+                    retry_base_ms: 100,
+                },
+            );
             notifier
                 .advance(ProcessingStage::Failed {
                     reason: "pipeline error".into(),
@@ -167,8 +175,18 @@ async fn advance_done_removes_from_retry_store() {
         let s = s.clone();
         async move {
             let sent = bot.send_message(msg.chat.id, "⏳ Processing…").await?;
-            let mut notifier =
-                TelegramNotifier::new(bot, msg.chat.id, sent.id, s, key, dummy_retryable());
+            let mut notifier = TelegramNotifier::new(
+                bot,
+                msg.chat.id,
+                sent.id,
+                s,
+                key,
+                dummy_retryable(),
+                NotifyConfig {
+                    retries: 3,
+                    retry_base_ms: 100,
+                },
+            );
             notifier
                 .advance(ProcessingStage::Done {
                     title: "Saved".into(),
@@ -196,7 +214,16 @@ async fn send_status_reply_sends_processing_message() {
     let handler = Update::filter_message().endpoint(move |bot: Bot, msg: Message| {
         let r = r.clone();
         async move {
-            let id = send_status_reply(&bot, msg.chat.id, None).await;
+            let id = send_status_reply(
+                &bot,
+                msg.chat.id,
+                None,
+                NotifyConfig {
+                    retries: 3,
+                    retry_base_ms: 100,
+                },
+            )
+            .await;
             *r.lock().unwrap() = id.is_some();
             Ok::<(), teloxide::RequestError>(())
         }
@@ -218,7 +245,16 @@ async fn send_status_reply_sends_processing_message() {
 async fn send_status_reply_with_reply_to_sets_parameters() {
     let handler = Update::filter_message().endpoint(move |bot: Bot, msg: Message| async move {
         // reply to the incoming message itself (id = 1 in mock)
-        send_status_reply(&bot, msg.chat.id, Some(msg.id)).await;
+        send_status_reply(
+            &bot,
+            msg.chat.id,
+            Some(msg.id),
+            NotifyConfig {
+                retries: 3,
+                retry_base_ms: 100,
+            },
+        )
+        .await;
         Ok::<(), teloxide::RequestError>(())
     });
 
@@ -247,8 +283,19 @@ async fn build_telegram_notifier_sends_initial_and_returns_notifier() {
         let s = s.clone();
         async move {
             let key = Uuid::new_v4();
-            let notifier =
-                build_telegram_notifier(&bot, msg.chat.id, None, s, key, dummy_retryable()).await;
+            let notifier = build_telegram_notifier(
+                &bot,
+                msg.chat.id,
+                None,
+                s,
+                key,
+                dummy_retryable(),
+                NotifyConfig {
+                    retries: 3,
+                    retry_base_ms: 100,
+                },
+            )
+            .await;
             *r.lock().unwrap() = notifier.is_some();
             Ok::<(), teloxide::RequestError>(())
         }

@@ -94,6 +94,13 @@ pub(crate) fn add_content(state: &MediaGroupState, text: String, attachments: Ve
     inner.attachments.extend(attachments);
 }
 
+/// Groups the bot handle, retry store and notify config needed when flushing a media group.
+pub(crate) struct FlushContext {
+    pub bot: teloxide::Bot,
+    pub retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
+    pub notify_cfg: crate::adapters::telegram_notifier::NotifyConfig,
+}
+
 /// Spawn the delayed flush task for a media group.
 pub(crate) fn spawn_flush(
     groups: MediaGroupMap,
@@ -101,8 +108,7 @@ pub(crate) fn spawn_flush(
     state: Arc<MediaGroupState>,
     timeout: Duration,
     tx: mpsc::Sender<IncomingMessage>,
-    bot: teloxide::Bot,
-    retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
+    ctx: FlushContext,
 ) {
     tokio::spawn(async move {
         tokio::time::sleep(timeout).await;
@@ -123,7 +129,7 @@ pub(crate) fn spawn_flush(
         // Remove from map so late arrivals become standalone messages.
         groups.remove(&group_id);
 
-        flush(state, &group_id, tx, bot, retry_store).await;
+        flush(state, &group_id, tx, ctx).await;
     });
 }
 
@@ -134,9 +140,13 @@ async fn flush(
     state: Arc<MediaGroupState>,
     group_id: &str,
     tx: mpsc::Sender<IncomingMessage>,
-    bot: teloxide::Bot,
-    retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
+    ctx: FlushContext,
 ) {
+    let FlushContext {
+        bot,
+        retry_store,
+        notify_cfg,
+    } = ctx;
     let (incoming_base, sent_status_id, chat_id) = {
         let inner = state.inner.lock().expect("media group mutex poisoned");
         let n_attachments = inner.attachments.len();
@@ -176,6 +186,7 @@ async fn flush(
             retry_store,
             retry_key,
             retryable,
+            notify_cfg,
         )) as Box<dyn StatusNotifier>);
     }
 

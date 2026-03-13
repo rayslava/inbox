@@ -117,15 +117,17 @@ async fn imap_idle_loop_login_failure_returns_error() {
 
     let cfg = test_email_cfg("127.0.0.1", port);
     let (tx, _rx) = mpsc::channel(10);
-    let result =
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            imap_idle_loop(&cfg, std::path::Path::new("/tmp"), &tx).await
-        })
-        .await
-        .expect("test timed out");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        imap_idle_loop(&cfg, std::path::Path::new("/tmp"), &tx).await
+    })
+    .await
+    .expect("test timed out");
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string().to_ascii_lowercase();
-    assert!(msg.contains("login") || msg.contains("imap"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("login") || msg.contains("imap"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -141,15 +143,17 @@ async fn imap_idle_loop_select_failure_returns_error() {
 
     let cfg = test_email_cfg("127.0.0.1", port);
     let (tx, _rx) = mpsc::channel(10);
-    let result =
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            imap_idle_loop(&cfg, std::path::Path::new("/tmp"), &tx).await
-        })
-        .await
-        .expect("test timed out");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        imap_idle_loop(&cfg, std::path::Path::new("/tmp"), &tx).await
+    })
+    .await
+    .expect("test timed out");
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string().to_ascii_lowercase();
-    assert!(msg.contains("select") || msg.contains("imap"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("select") || msg.contains("imap"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -160,7 +164,11 @@ async fn imap_idle_loop_no_unseen_messages_channel_empty() {
         imap_write(&mut stream, &format!("{tag} OK logged in\r\n")).await;
         let (tag2, _) = imap_read_cmd(&mut stream).await; // SELECT
         imap_write(&mut stream, "* 0 EXISTS\r\n").await;
-        imap_write(&mut stream, &format!("{tag2} OK [READ-WRITE] SELECT complete\r\n")).await;
+        imap_write(
+            &mut stream,
+            &format!("{tag2} OK [READ-WRITE] SELECT complete\r\n"),
+        )
+        .await;
         let (tag3, _) = imap_read_cmd(&mut stream).await; // SEARCH UNSEEN
         imap_write(&mut stream, "* SEARCH\r\n").await;
         imap_write(&mut stream, &format!("{tag3} OK SEARCH complete\r\n")).await;
@@ -190,7 +198,11 @@ async fn imap_idle_loop_fetches_message_onto_channel() {
         imap_write(&mut stream, &format!("{tag} OK logged in\r\n")).await;
         let (tag2, _) = imap_read_cmd(&mut stream).await; // SELECT
         imap_write(&mut stream, "* 1 EXISTS\r\n").await;
-        imap_write(&mut stream, &format!("{tag2} OK [READ-WRITE] SELECT complete\r\n")).await;
+        imap_write(
+            &mut stream,
+            &format!("{tag2} OK [READ-WRITE] SELECT complete\r\n"),
+        )
+        .await;
         let (tag3, _) = imap_read_cmd(&mut stream).await; // SEARCH UNSEEN
         imap_write(&mut stream, "* SEARCH 1\r\n").await;
         imap_write(&mut stream, &format!("{tag3} OK SEARCH complete\r\n")).await;

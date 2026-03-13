@@ -19,6 +19,9 @@ pub struct OllamaClient {
     pub timeout: Duration,
     /// `None` = omit from request (model decides); `Some(true/false)` = explicit.
     pub think: Option<bool>,
+    /// Extended timeout applied when thinking is active. `None` = use `self.timeout`.
+    pub think_timeout: Option<Duration>,
+    pub thinking_supported: bool,
     semaphore: Option<Arc<Semaphore>>,
     client: reqwest::Client,
 }
@@ -47,6 +50,8 @@ impl OllamaClient {
             retries: cfg.retries,
             timeout: Duration::from_secs(cfg.timeout_secs),
             think: cfg.think,
+            think_timeout: cfg.think_timeout_secs.map(Duration::from_secs),
+            thinking_supported: cfg.thinking_supported,
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
         }
@@ -115,6 +120,9 @@ impl LlmClient for OllamaClient {
     fn retries(&self) -> u32 {
         self.retries
     }
+    fn thinking_supported(&self) -> bool {
+        self.thinking_supported
+    }
 
     #[instrument(skip(self, req), fields(model = %self.model))]
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
@@ -123,8 +131,12 @@ impl LlmClient for OllamaClient {
             user_content,
             tool_definitions,
             images,
+            think: req_think,
             ..
         } = req;
+
+        // Per-request think flag takes precedence over backend default.
+        let effective_think = req_think.or(self.think);
 
         let image_b64s: Option<Vec<String>> = if images.is_empty() {
             None
@@ -152,7 +164,7 @@ impl LlmClient for OllamaClient {
             messages,
             stream: false,
             tools: tool_definitions,
-            think: self.think,
+            think: effective_think,
         };
 
         let _permit = if let Some(sem) = &self.semaphore {
@@ -162,11 +174,13 @@ impl LlmClient for OllamaClient {
         };
 
         let url = format!("{}/api/chat", self.base_url);
-        debug!(url = %url, model = %self.model, think = ?self.think, "Sending Ollama request");
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
+        debug!(url = %url, model = %self.model, think = ?effective_think, "Sending Ollama request");
+        let request = self.client.post(&url).json(&body);
+        let request = match (effective_think, self.think_timeout) {
+            (Some(true), Some(timeout)) => request.timeout(timeout),
+            _ => request,
+        };
+        let resp = request
             .send()
             .await
             .map_err(|e| InboxError::Llm(e.to_string()))?;
@@ -245,6 +259,8 @@ mod tests {
             retries: 1,
             timeout: std::time::Duration::from_secs(5),
             think: None,
+            think_timeout: None,
+            thinking_supported: false,
             semaphore: None,
             client: reqwest::Client::new(),
         }

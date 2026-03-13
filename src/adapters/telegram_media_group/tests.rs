@@ -176,8 +176,14 @@ async fn spawn_flush_sends_combined_message_after_timeout() {
         state,
         Duration::from_millis(50),
         tx,
-        bot,
-        retry_store,
+        FlushContext {
+            bot,
+            retry_store,
+            notify_cfg: crate::adapters::telegram_notifier::NotifyConfig {
+                retries: 3,
+                retry_base_ms: 100,
+            },
+        },
     );
 
     // Wait for flush to fire.
@@ -222,8 +228,14 @@ async fn spawn_flush_waits_for_pending_downloads() {
         state_clone.clone(),
         Duration::from_millis(50),
         tx,
-        bot,
-        retry_store,
+        FlushContext {
+            bot,
+            retry_store,
+            notify_cfg: crate::adapters::telegram_notifier::NotifyConfig {
+                retries: 3,
+                retry_base_ms: 100,
+            },
+        },
     );
 
     // After timeout elapses, message should NOT be sent yet (download pending).

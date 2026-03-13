@@ -74,6 +74,10 @@ impl InputAdapter for TelegramAdapter {
                 self.cfg.file_download_timeout_secs,
                 self.cfg.file_download_retries,
                 self.cfg.media_group_timeout_ms,
+                crate::adapters::telegram_notifier::NotifyConfig {
+                    retries: self.cfg.status_notify_retries,
+                    retry_base_ms: self.cfg.status_notify_retry_base_ms,
+                },
                 retry_store.clone(),
             );
 
@@ -140,6 +144,7 @@ pub fn build_handler(
     file_download_timeout_secs: u64,
     file_download_retries: u32,
     media_group_timeout_ms: u64,
+    notify_cfg: crate::adapters::telegram_notifier::NotifyConfig,
     retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
     use teloxide::prelude::*;
@@ -175,6 +180,7 @@ pub fn build_handler(
                             retries: file_download_retries,
                         },
                         media_group_timeout_ms,
+                        notify_cfg,
                         retry_store,
                         media_groups,
                     },
@@ -191,7 +197,7 @@ pub fn build_handler(
               query: teloxide::types::CallbackQuery,
               tx: mpsc::Sender<IncomingMessage>| {
             let retry_store = retry_store_cb.clone();
-            async move { handle_callback_query(bot, query, tx, retry_store).await }
+            async move { handle_callback_query(bot, query, tx, retry_store, notify_cfg).await }
         },
     );
 
@@ -204,6 +210,7 @@ struct MessageContext {
     attachments_dir: PathBuf,
     dl_cfg: DownloadConfig,
     media_group_timeout_ms: u64,
+    notify_cfg: crate::adapters::telegram_notifier::NotifyConfig,
     retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
     media_groups: MediaGroupMap,
 }
@@ -231,7 +238,7 @@ async fn handle_message(
             .msg_id;
 
         if is_first {
-            let sent_id = send_status_reply(&bot, msg.chat.id, Some(msg.id)).await;
+            let sent_id = send_status_reply(&bot, msg.chat.id, Some(msg.id), ctx.notify_cfg).await;
             telegram_media_group::set_metadata(
                 &state,
                 msg.chat.id,
@@ -246,8 +253,11 @@ async fn handle_message(
                 state.clone(),
                 Duration::from_millis(ctx.media_group_timeout_ms),
                 tx,
-                bot.clone(),
-                ctx.retry_store,
+                telegram_media_group::FlushContext {
+                    bot: bot.clone(),
+                    retry_store: ctx.retry_store,
+                    notify_cfg: ctx.notify_cfg,
+                },
             );
         }
 
@@ -261,7 +271,7 @@ async fn handle_message(
     }
 
     // Single message (no media group).
-    let sent_id = send_status_reply(&bot, msg.chat.id, Some(msg.id)).await;
+    let sent_id = send_status_reply(&bot, msg.chat.id, Some(msg.id), ctx.notify_cfg).await;
     let msg_id = Uuid::new_v4();
 
     let (text, attachments) =
@@ -291,6 +301,7 @@ async fn handle_message(
                 ctx.retry_store,
                 retry_key,
                 retryable,
+                ctx.notify_cfg,
             ),
         ));
     }
@@ -311,6 +322,7 @@ async fn handle_callback_query(
     query: teloxide::types::CallbackQuery,
     tx: mpsc::Sender<IncomingMessage>,
     retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
+    notify_cfg: crate::adapters::telegram_notifier::NotifyConfig,
 ) -> Result<(), teloxide::RequestError> {
     use teloxide::prelude::Requester;
 
@@ -366,6 +378,7 @@ async fn handle_callback_query(
         retry_store,
         retry_key,
         fresh_retryable,
+        notify_cfg,
     )
     .await;
     msg.status_notifier = notifier.map(|n| Box::new(n) as Box<dyn StatusNotifier>);

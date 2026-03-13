@@ -4,11 +4,10 @@ use anodized::spec;
 use async_trait::async_trait;
 use tracing::{debug, info, warn};
 
-use crate::config::{Config, FallbackMode, LlmConfig};
+use crate::config::{FallbackMode, LlmConfig};
 use crate::error::InboxError;
 use crate::message::{EnrichedMessage, LlmResponse};
 use crate::pipeline::url_extractor::extract_http_url_strings;
-use crate::pipeline::url_fetcher::UrlFetcher;
 
 pub mod ollama;
 pub mod openrouter;
@@ -27,6 +26,10 @@ pub struct LlmRequest {
     /// Base64-encoded image attachments to include in the vision prompt.
     /// Each entry is `(mime_type, base64_data)`.
     pub images: Vec<(String, String)>,
+    /// Per-request thinking mode override.
+    /// Set to `Some(true)` by the chain when `activate_thinking` tool is called.
+    /// `None` = use backend default.
+    pub think: Option<bool>,
 }
 
 impl LlmRequest {
@@ -113,6 +116,7 @@ impl LlmRequest {
             tool_definitions: Vec::new(),
             require_initial_tool_call,
             images,
+            think: None,
         }
     }
 
@@ -126,6 +130,7 @@ impl LlmRequest {
             tool_definitions: Vec::new(),
             require_initial_tool_call: false,
             images: Vec::new(),
+            think: None,
         }
     }
 }
@@ -156,7 +161,25 @@ pub trait LlmClient: Send + Sync {
     fn name(&self) -> &str;
     fn model(&self) -> &str;
     fn retries(&self) -> u32;
+    /// Whether this backend supports the `think` field. Controls whether
+    /// `activate_thinking` is offered in the tool list.
+    fn thinking_supported(&self) -> bool {
+        false
+    }
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError>;
+}
+
+fn activate_thinking_tool_def() -> serde_json::Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "activate_thinking",
+            "description": "Activate extended thinking/reasoning mode for this request. \
+                            Call this when the task requires deep analysis, complex \
+                            multi-step reasoning, or careful deliberation.",
+            "parameters": { "type": "object", "properties": {} }
+        }
+    })
 }
 
 // ── LlmChain ─────────────────────────────────────────────────────────────────
@@ -188,10 +211,14 @@ impl LlmChain {
     /// Try each backend in order with retries. On exhaustion, apply fallback policy.
     #[spec(requires: self.max_tool_turns > 0)]
     pub async fn complete(&self, req: LlmRequest) -> LlmOutcome {
-        let tool_defs = self
+        let thinking_supported = self.backends.iter().any(|b| b.thinking_supported());
+        let mut tool_defs = self
             .tool_executor
             .as_ref()
             .map_or_else(Vec::new, tools::ToolExecutor::active_tool_definitions);
+        if thinking_supported && !tool_defs.is_empty() {
+            tool_defs.push(activate_thinking_tool_def());
+        }
 
         for backend in &self.backends {
             for attempt in 0..backend.retries() {
@@ -267,6 +294,20 @@ impl LlmChain {
                             ));
                         }
                         Ok(LlmCompletion::ToolCalls(calls)) => {
+                            // Partition: activate_thinking is handled internally
+                            let (thinking_calls, calls): (Vec<_>, Vec<_>) = calls
+                                .into_iter()
+                                .partition(|c| c.name == "activate_thinking");
+
+                            if !thinking_calls.is_empty() && req_attempt.think.is_none() {
+                                info!(backend = backend.name(), "LLM activated thinking mode");
+                                req_attempt.think = Some(true);
+                                if calls.is_empty() {
+                                    // Only activate_thinking — retry without consuming a turn
+                                    continue;
+                                }
+                            }
+
                             if calls.is_empty() {
                                 warn!(
                                     backend = backend.name(),
@@ -274,6 +315,7 @@ impl LlmChain {
                                 );
                                 break;
                             }
+
                             if turns >= self.max_tool_turns {
                                 warn!(
                                     backend = backend.name(),
@@ -439,32 +481,8 @@ fn append_missing_source_links(mut resp: LlmResponse, tool_source_urls: &[String
 
 // ── Builder ───────────────────────────────────────────────────────────────────
 
-use crate::config::{LlmBackendConfig, LlmBackendType};
-
-#[must_use]
-#[spec(requires: cfg.llm.max_tool_turns > 0)]
-pub fn build_chain(cfg: &Config) -> LlmChain {
-    let backends: Vec<Box<dyn LlmClient>> = cfg.llm.backends.iter().map(build_backend).collect();
-
-    let tool_executor = Some(tools::from_tooling(
-        &cfg.tooling,
-        UrlFetcher::new(&cfg.url_fetch),
-    ));
-
-    LlmChain::new(
-        backends,
-        cfg.llm.fallback,
-        cfg.llm.max_tool_turns,
-        tool_executor,
-    )
-}
-
-fn build_backend(cfg: &LlmBackendConfig) -> Box<dyn LlmClient> {
-    match cfg.backend_type {
-        LlmBackendType::Openrouter => Box::new(openrouter::OpenRouterClient::from_config(cfg)),
-        LlmBackendType::Ollama => Box::new(ollama::OllamaClient::from_config(cfg)),
-    }
-}
+mod builder;
+pub use builder::build_chain;
 
 #[cfg(test)]
 mod tests;

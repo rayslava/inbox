@@ -11,9 +11,15 @@ use uuid::Uuid;
 use crate::message::RetryableMessage;
 use crate::processing_status::{ProcessingStage, StatusNotifier};
 
-const MAX_NOTIFY_RETRIES: u32 = 3;
-const TERMINAL_NOTIFY_RETRIES: u32 = 5;
-const NOTIFY_RETRY_BASE_MS: u64 = 500;
+/// Hard upper bound on retry delay regardless of base and attempt count.
+const MAX_BACKOFF_MS: u64 = 30_000;
+
+/// Retry policy for status notification calls.
+#[derive(Clone, Copy)]
+pub struct NotifyConfig {
+    pub retries: u32,
+    pub retry_base_ms: u64,
+}
 
 pub struct TelegramNotifier {
     bot: teloxide::Bot,
@@ -22,6 +28,8 @@ pub struct TelegramNotifier {
     retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
     retry_key: Uuid,
     retryable: RetryableMessage,
+    /// Retry policy. Terminal stages (Done/Failed) use `cfg.retries * 2`.
+    cfg: NotifyConfig,
 }
 
 impl TelegramNotifier {
@@ -33,6 +41,7 @@ impl TelegramNotifier {
         retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
         retry_key: Uuid,
         retryable: RetryableMessage,
+        cfg: NotifyConfig,
     ) -> Self {
         Self {
             bot,
@@ -41,6 +50,7 @@ impl TelegramNotifier {
             retry_store,
             retry_key,
             retryable,
+            cfg,
         }
     }
 }
@@ -68,9 +78,9 @@ impl StatusNotifier for TelegramNotifier {
     async fn advance(&mut self, stage: ProcessingStage) {
         let text = stage_text(&stage);
         let retries = if is_terminal(&stage) {
-            TERMINAL_NOTIFY_RETRIES
+            self.cfg.retries * 2
         } else {
-            MAX_NOTIFY_RETRIES
+            self.cfg.retries
         };
 
         let is_failed = matches!(stage, ProcessingStage::Failed { .. });
@@ -93,8 +103,8 @@ impl StatusNotifier for TelegramNotifier {
         let mut edited = false;
         for attempt in 0..retries {
             if attempt > 0 {
-                let backoff = Duration::from_millis(NOTIFY_RETRY_BASE_MS * 2u64.pow(attempt - 1));
-                tokio::time::sleep(backoff).await;
+                let delay_ms = (self.cfg.retry_base_ms * 2u64.pow(attempt - 1)).min(MAX_BACKOFF_MS);
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
             let req = self
                 .bot
@@ -136,17 +146,18 @@ impl StatusNotifier for TelegramNotifier {
 
 /// Send an initial "⏳ Processing…" reply and return the sent message ID.
 ///
-/// Retries up to `MAX_NOTIFY_RETRIES` times with exponential backoff on transient failures.
+/// Retries up to `retries` times with exponential backoff (capped at 30 s) on transient failures.
 /// Returns `None` if all attempts fail (e.g. bot lacks permission).
 pub async fn send_status_reply(
     bot: &teloxide::Bot,
     chat_id: teloxide::types::ChatId,
     reply_to: Option<teloxide::types::MessageId>,
+    cfg: NotifyConfig,
 ) -> Option<teloxide::types::MessageId> {
-    for attempt in 0..MAX_NOTIFY_RETRIES {
+    for attempt in 0..cfg.retries {
         if attempt > 0 {
-            let backoff = Duration::from_millis(NOTIFY_RETRY_BASE_MS * 2u64.pow(attempt - 1));
-            tokio::time::sleep(backoff).await;
+            let delay_ms = (cfg.retry_base_ms * 2u64.pow(attempt - 1)).min(MAX_BACKOFF_MS);
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
         let req = bot.send_message(chat_id, "⏳ Processing…");
         let req = if let Some(id) = reply_to {
@@ -160,7 +171,7 @@ pub async fn send_status_reply(
                 warn!(
                     ?e,
                     attempt = attempt + 1,
-                    MAX_NOTIFY_RETRIES,
+                    retries = cfg.retries,
                     "Failed to send initial Telegram status message"
                 );
             }
@@ -171,7 +182,8 @@ pub async fn send_status_reply(
 
 /// Send an initial "⏳ Processing…" reply and return a fully-initialised notifier.
 ///
-/// Retries sending up to `MAX_NOTIFY_RETRIES` times. Returns `None` if all attempts fail.
+/// Uses `cfg` for both the initial send and subsequent status edits.
+/// Returns `None` if all send attempts fail.
 pub async fn build_telegram_notifier(
     bot: &teloxide::Bot,
     chat_id: teloxide::types::ChatId,
@@ -179,8 +191,9 @@ pub async fn build_telegram_notifier(
     retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
     retry_key: Uuid,
     retryable: RetryableMessage,
+    cfg: NotifyConfig,
 ) -> Option<TelegramNotifier> {
-    let sent_msg_id = send_status_reply(bot, chat_id, reply_to).await?;
+    let sent_msg_id = send_status_reply(bot, chat_id, reply_to, cfg).await?;
     Some(TelegramNotifier::new(
         bot.clone(),
         chat_id,
@@ -188,6 +201,7 @@ pub async fn build_telegram_notifier(
         retry_store,
         retry_key,
         retryable,
+        cfg,
     ))
 }
 

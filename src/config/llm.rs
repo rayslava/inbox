@@ -113,6 +113,14 @@ pub struct LlmBackendConfig {
     /// extended thinking/reasoning mode. `null` / omitted = model default.
     #[serde(default)]
     pub think: Option<bool>,
+    /// Extended timeout used when thinking mode is active (Ollama only).
+    /// Should be significantly longer than `timeout_secs`. `None` = use `timeout_secs`.
+    pub think_timeout_secs: Option<u64>,
+    /// Whether this backend supports the `think` field and the `activate_thinking` tool.
+    /// Set to `true` for Ollama models that have a built-in reasoning mode (e.g. qwq, deepseek-r1).
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub thinking_supported: bool,
     /// Maximum number of concurrent in-flight requests to this backend.
     /// `None` means unlimited. Set to `1` for local Ollama instances.
     pub max_concurrent: Option<usize>,
