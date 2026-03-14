@@ -60,3 +60,4 @@ cargo run -- hash-password
 - Always run tests after all the issues reported are fixed
 - No `#[allow]` tags must be used, fix issues, not mask them
 - After the change is prepared, update the config.example.toml correspondingly
+- Use `cargo tarpaulin` to validate that code coverage is not reduced after fix

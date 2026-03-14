@@ -148,3 +148,29 @@ pub fn from_tooling(tooling: &ToolingConfig, fetcher: UrlFetcher) -> ToolExecuto
     ];
     ToolExecutor::new(tools, fetcher)
 }
+
+/// Register the `memory_save` and `memory_recall` tools on an existing executor.
+pub fn add_memory_tools(
+    executor: &mut ToolExecutor,
+    store: std::sync::Arc<crate::memory::MemoryStore>,
+) {
+    executor.memory_store = Some(store);
+    executor.tools.push(Tool {
+        name: "memory_save".into(),
+        description: "Save a fact or note as a persistent memory with a short key. \
+                      The value can be any text."
+            .into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Memory,
+    });
+    executor.tools.push(Tool {
+        name: "memory_recall".into(),
+        description: "Search persistent memories for information related to a query. \
+                      Returns matching key-value entries."
+            .into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Memory,
+    });
+}

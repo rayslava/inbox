@@ -19,7 +19,7 @@ use runners::{
 mod builders;
 mod runners;
 
-pub use builders::{default_tools, from_tooling};
+pub use builders::{add_memory_tools, default_tools, from_tooling};
 
 #[cfg(test)]
 mod tests;
@@ -82,6 +82,21 @@ fn tool_parameters(name: &str) -> serde_json::Value {
             },
             "required": ["query"]
         }),
+        "memory_save" => serde_json::json!({
+            "type": "object",
+            "properties": {
+                "key": { "type": "string", "description": "Short identifier for the memory" },
+                "value": { "type": "string", "description": "Content to remember" }
+            },
+            "required": ["key", "value"]
+        }),
+        "memory_recall" => serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Search query to find relevant memories" }
+            },
+            "required": ["query"]
+        }),
         _ => serde_json::json!({ "type": "object", "properties": {} }),
     }
 }
@@ -93,6 +108,7 @@ pub struct ToolExecutor {
     tools: Vec<Tool>,
     fetcher: UrlFetcher,
     http_client: reqwest::Client,
+    pub(super) memory_store: Option<std::sync::Arc<crate::memory::MemoryStore>>,
 }
 
 impl ToolExecutor {
@@ -111,6 +127,7 @@ impl ToolExecutor {
             tools,
             fetcher,
             http_client,
+            memory_store: None,
         }
     }
 
@@ -173,6 +190,46 @@ impl ToolExecutor {
         attachments_dir: &Path,
     ) -> Result<ToolResult, InboxError> {
         match name {
+            "memory_save" => {
+                let key = args["key"]
+                    .as_str()
+                    .ok_or_else(|| InboxError::LlmTool("memory_save missing 'key'".into()))?;
+                let value = args["value"]
+                    .as_str()
+                    .ok_or_else(|| InboxError::LlmTool("memory_save missing 'value'".into()))?;
+                let store = self
+                    .memory_store
+                    .as_ref()
+                    .ok_or_else(|| InboxError::LlmTool("memory_save: no memory store".into()))?;
+                store
+                    .save(key, value)
+                    .await
+                    .map_err(|e| InboxError::LlmTool(e.to_string()))?;
+                Ok(ToolResult::Text(format!("Saved memory: {key}")))
+            }
+            "memory_recall" => {
+                let query = args["query"]
+                    .as_str()
+                    .ok_or_else(|| InboxError::LlmTool("memory_recall missing 'query'".into()))?;
+                let store = self
+                    .memory_store
+                    .as_ref()
+                    .ok_or_else(|| InboxError::LlmTool("memory_recall: no memory store".into()))?;
+                let entries = store
+                    .recall(query, 10)
+                    .await
+                    .map_err(|e| InboxError::LlmTool(e.to_string()))?;
+                let text = if entries.is_empty() {
+                    "No memories found.".to_owned()
+                } else {
+                    entries
+                        .iter()
+                        .map(|e| format!("{}: {}", e.key, e.value))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                Ok(ToolResult::Text(text))
+            }
             "scrape_page" => {
                 let url_str = args["url"]
                     .as_str()
@@ -247,11 +304,11 @@ impl ToolExecutor {
             ToolBackendConfig::Crawler { .. } => Err(InboxError::LlmTool(
                 "scrape_page does not support crawler backend".into(),
             )),
-            ToolBackendConfig::KagiSearch { .. } | ToolBackendConfig::DuckDuckGoSearch { .. } => {
-                Err(InboxError::LlmTool(
-                    "scrape_page does not support search backends".into(),
-                ))
-            }
+            ToolBackendConfig::KagiSearch { .. }
+            | ToolBackendConfig::DuckDuckGoSearch { .. }
+            | ToolBackendConfig::Memory => Err(InboxError::LlmTool(
+                "scrape_page does not support this backend".into(),
+            )),
         }
     }
 
@@ -316,11 +373,11 @@ impl ToolExecutor {
             ToolBackendConfig::Crawler { .. } => Err(InboxError::LlmTool(
                 "download_file does not support crawler backend".into(),
             )),
-            ToolBackendConfig::KagiSearch { .. } | ToolBackendConfig::DuckDuckGoSearch { .. } => {
-                Err(InboxError::LlmTool(
-                    "download_file does not support search backends".into(),
-                ))
-            }
+            ToolBackendConfig::KagiSearch { .. }
+            | ToolBackendConfig::DuckDuckGoSearch { .. }
+            | ToolBackendConfig::Memory => Err(InboxError::LlmTool(
+                "download_file does not support this backend".into(),
+            )),
         }
     }
 

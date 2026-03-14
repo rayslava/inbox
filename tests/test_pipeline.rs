@@ -33,6 +33,7 @@ fn minimal_config(attachments_dir: std::path::PathBuf, output_file: std::path::P
         },
         syncthing: SyncthingConfig::default(),
         tooling: ToolingConfig::default(),
+        memory: inbox::config::MemoryConfig::default(),
     }
 }
 

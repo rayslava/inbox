@@ -2,16 +2,20 @@ use std::path::{Path, PathBuf};
 
 use anodized::spec;
 use async_trait::async_trait;
-use tracing::{debug, info, warn};
+use tracing::warn;
 
 use crate::config::{FallbackMode, LlmConfig};
 use crate::error::InboxError;
 use crate::message::{EnrichedMessage, LlmResponse};
-use crate::pipeline::url_extractor::extract_http_url_strings;
 
 pub mod ollama;
 pub mod openrouter;
 pub mod tools;
+
+mod chain;
+pub use chain::LlmChain;
+#[cfg(test)]
+use chain::append_missing_source_links;
 
 // ── Public request / response types ──────────────────────────────────────────
 
@@ -30,6 +34,8 @@ pub struct LlmRequest {
     /// Set to `Some(true)` by the chain when `activate_thinking` tool is called.
     /// `None` = use backend default.
     pub think: Option<bool>,
+    /// Recursive depth of `llm_call` tool invocations. `0` = top-level request.
+    pub llm_depth: u32,
 }
 
 impl LlmRequest {
@@ -42,6 +48,8 @@ impl LlmRequest {
         guidance_block: &str,
         require_initial_tool_call: bool,
     ) -> Self {
+        use std::fmt::Write as _;
+
         use crate::message::{MediaKind, SourceMetadata};
 
         // Prepend forwarded attribution so the LLM has attribution context.
@@ -56,7 +64,6 @@ impl LlmRequest {
         };
 
         for uc in &enriched.url_contents {
-            use std::fmt::Write as _;
             let _ = write!(user_content, "\n\n--- Page: {} ---", uc.url);
             if let Some(title) = &uc.page_title {
                 let _ = write!(user_content, "\nTitle: {title}");
@@ -117,6 +124,7 @@ impl LlmRequest {
             require_initial_tool_call,
             images,
             think: None,
+            llm_depth: 0,
         }
     }
 
@@ -131,6 +139,7 @@ impl LlmRequest {
             require_initial_tool_call: false,
             images: Vec::new(),
             think: None,
+            llm_depth: 0,
         }
     }
 }
@@ -167,9 +176,24 @@ pub trait LlmClient: Send + Sync {
         false
     }
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError>;
+    /// Call the backend and return the plain-text result (no JSON parsing).
+    ///
+    /// Default implementation wraps the system prompt to elicit a JSON
+    /// `{"summary": "..."}` response and extracts the `summary` field.
+    async fn complete_raw(&self, mut req: LlmRequest) -> Result<String, InboxError> {
+        req.system_prompt.push_str(
+            "\n\nRespond ONLY with a JSON object: {\"summary\": \"<your complete answer here>\"}",
+        );
+        match self.complete(req).await? {
+            LlmCompletion::Message(resp) => Ok(resp.summary),
+            LlmCompletion::ToolCalls(_) => Err(InboxError::Llm(
+                "llm_call: unexpected tool calls in sub-request".into(),
+            )),
+        }
+    }
 }
 
-fn activate_thinking_tool_def() -> serde_json::Value {
+pub(crate) fn activate_thinking_tool_def() -> serde_json::Value {
     serde_json::json!({
         "type": "function",
         "function": {
@@ -182,301 +206,30 @@ fn activate_thinking_tool_def() -> serde_json::Value {
     })
 }
 
-// ── LlmChain ─────────────────────────────────────────────────────────────────
-
-pub struct LlmChain {
-    backends: Vec<Box<dyn LlmClient>>,
-    fallback: FallbackMode,
-    max_tool_turns: usize,
-    tool_executor: Option<tools::ToolExecutor>,
-}
-
-impl LlmChain {
-    #[must_use]
-    #[spec(requires: max_tool_turns > 0)]
-    pub fn new(
-        backends: Vec<Box<dyn LlmClient>>,
-        fallback: FallbackMode,
-        max_tool_turns: usize,
-        tool_executor: Option<tools::ToolExecutor>,
-    ) -> Self {
-        Self {
-            backends,
-            fallback,
-            max_tool_turns,
-            tool_executor,
-        }
-    }
-
-    /// Try each backend in order with retries. On exhaustion, apply fallback policy.
-    #[spec(requires: self.max_tool_turns > 0)]
-    pub async fn complete(&self, req: LlmRequest) -> LlmOutcome {
-        let thinking_supported = self.backends.iter().any(|b| b.thinking_supported());
-        let mut tool_defs = self
-            .tool_executor
-            .as_ref()
-            .map_or_else(Vec::new, tools::ToolExecutor::active_tool_definitions);
-        if thinking_supported && !tool_defs.is_empty() {
-            tool_defs.push(activate_thinking_tool_def());
-        }
-
-        for backend in &self.backends {
-            for attempt in 0..backend.retries() {
-                let start = std::time::Instant::now();
-                let mut req_attempt = req.clone();
-                req_attempt.tool_definitions = tool_defs.clone();
-                let mut turns = 0usize;
-                let mut required_tool_prompts = 0usize;
-                let mut tool_source_url_set: std::collections::HashSet<String> =
-                    std::collections::HashSet::new();
-                let mut tool_source_urls: Vec<String> = Vec::new();
-
-                loop {
-                    let tool_names: Vec<&str> = req_attempt
-                        .tool_definitions
-                        .iter()
-                        .filter_map(|d| d["function"]["name"].as_str())
-                        .collect();
-                    let system_preview: String =
-                        req_attempt.system_prompt.chars().take(300).collect();
-                    let content_preview: String =
-                        req_attempt.user_content.chars().take(600).collect();
-                    debug!(
-                        backend = backend.name(),
-                        model = backend.model(),
-                        turn = turns + 1,
-                        tools = ?tool_names,
-                        system_len = req_attempt.system_prompt.len(),
-                        content_len = req_attempt.user_content.len(),
-                        system_preview = %system_preview,
-                        content_preview = %content_preview,
-                        "LLM request"
-                    );
-
-                    match backend.complete(req_attempt.clone()).await {
-                        Ok(LlmCompletion::Message(resp)) => {
-                            if req_attempt.require_initial_tool_call
-                                && turns == 0
-                                && !tool_defs.is_empty()
-                            {
-                                if required_tool_prompts < 3 {
-                                    debug!(
-                                        backend = backend.name(),
-                                        prompt_attempt = required_tool_prompts + 1,
-                                        "Re-prompting model to make required initial tool call"
-                                    );
-                                    req_attempt.user_content.push_str(
-                                        "\n\nA tool call is required before final JSON because URLs are present. First analyze and call exactly one best retrieval tool, then continue.",
-                                    );
-                                    required_tool_prompts += 1;
-                                    continue;
-                                }
-                                warn!(
-                                    backend = backend.name(),
-                                    "Required initial tool call was not produced"
-                                );
-                                break;
-                            }
-                            metrics::counter!(
-                                crate::telemetry::LLM_REQUESTS,
-                                "backend" => backend.name().to_owned(),
-                                "status" => "success"
-                            )
-                            .increment(1);
-                            metrics::histogram!(
-                                crate::telemetry::LLM_DURATION,
-                                "backend" => backend.name().to_owned()
-                            )
-                            .record(start.elapsed().as_secs_f64());
-                            return LlmOutcome::Success(append_missing_source_links(
-                                resp,
-                                &tool_source_urls,
-                            ));
-                        }
-                        Ok(LlmCompletion::ToolCalls(calls)) => {
-                            // Partition: activate_thinking is handled internally
-                            let (thinking_calls, calls): (Vec<_>, Vec<_>) = calls
-                                .into_iter()
-                                .partition(|c| c.name == "activate_thinking");
-
-                            if !thinking_calls.is_empty() && req_attempt.think.is_none() {
-                                info!(backend = backend.name(), "LLM activated thinking mode");
-                                req_attempt.think = Some(true);
-                                if calls.is_empty() {
-                                    // Only activate_thinking — retry without consuming a turn
-                                    continue;
-                                }
-                            }
-
-                            if calls.is_empty() {
-                                warn!(
-                                    backend = backend.name(),
-                                    "LLM returned empty tool call list"
-                                );
-                                break;
-                            }
-
-                            if turns >= self.max_tool_turns {
-                                warn!(
-                                    backend = backend.name(),
-                                    max_turns = self.max_tool_turns,
-                                    "Max tool turns reached"
-                                );
-                                break;
-                            }
-                            let Some(executor) = &self.tool_executor else {
-                                warn!(
-                                    backend = backend.name(),
-                                    "Tool call requested but no executor configured"
-                                );
-                                break;
-                            };
-
-                            let output = execute_tool_calls(executor, &calls, &req_attempt).await;
-                            for url in output.source_urls {
-                                if tool_source_url_set.insert(url.clone()) {
-                                    tool_source_urls.push(url);
-                                }
-                            }
-                            req_attempt
-                                .user_content
-                                .push_str("\n\n--- Tool execution results ---\n");
-                            req_attempt.user_content.push_str(&output.text);
-                            req_attempt.require_initial_tool_call = false;
-                            turns += 1;
-                        }
-                        Err(e) => {
-                            let elapsed_ms = start.elapsed().as_millis();
-                            warn!(
-                                ?e,
-                                backend = backend.name(),
-                                model = backend.model(),
-                                attempt = attempt + 1,
-                                total_attempts = backend.retries(),
-                                elapsed_ms,
-                                "LLM attempt failed"
-                            );
-                            break;
-                        }
+pub(crate) fn llm_call_tool_def() -> serde_json::Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "llm_call",
+            "description": "Invoke the LLM with a custom system prompt and content. \
+                            Returns the model's plain-text response. Use for sub-tasks: \
+                            summarization, extraction, translation, analysis, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "System prompt for the sub-call"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "User content to process"
                     }
-                }
-                metrics::counter!(
-                    crate::telemetry::LLM_REQUESTS,
-                    "backend" => backend.name().to_owned(),
-                    "status" => "failure"
-                )
-                .increment(1);
-            }
-            warn!(
-                backend = backend.name(),
-                model = backend.model(),
-                retries = backend.retries(),
-                "LLM backend exhausted all retries"
-            );
-        }
-
-        warn!(
-            backend_count = self.backends.len(),
-            "All LLM backends failed, applying fallback"
-        );
-        match self.fallback {
-            FallbackMode::Raw => LlmOutcome::RawFallback,
-            FallbackMode::Discard => LlmOutcome::Discard,
-        }
-    }
-
-    #[must_use]
-    pub fn max_tool_turns(&self) -> usize {
-        self.max_tool_turns
-    }
-}
-
-#[spec(requires: !calls.is_empty())]
-async fn execute_tool_calls(
-    executor: &tools::ToolExecutor,
-    calls: &[ToolCall],
-    req: &LlmRequest,
-) -> ToolExecutionOutput {
-    let results = futures::future::join_all(calls.iter().map(|call| {
-        executor.execute(
-            &call.name,
-            &call.arguments,
-            req.msg_id,
-            req.attachments_dir.as_path(),
-        )
-    }))
-    .await;
-
-    let mut outputs = Vec::with_capacity(calls.len());
-    let mut source_url_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut source_urls: Vec<String> = Vec::new();
-
-    for (call, result) in calls.iter().zip(results) {
-        info!(tool = %call.name, "Executing LLM tool call");
-        match result {
-            Ok(tools::ToolResult::Text(text) | tools::ToolResult::Attachment { text, .. }) => {
-                let result_preview: String = text.chars().take(120).collect();
-                info!(
-                    tool = %call.name,
-                    result_len = text.len(),
-                    result_preview = %result_preview,
-                    "Tool call result"
-                );
-                for url in extract_http_url_strings(&text) {
-                    if source_url_set.insert(url.clone()) {
-                        source_urls.push(url);
-                    }
-                }
-                outputs.push(format!("tool `{}`: {text}", call.name));
-            }
-            Err(e) => {
-                warn!(tool = %call.name, ?e, "Tool call failed");
-                outputs.push(format!("tool `{}` error: {e}", call.name));
+                },
+                "required": ["system_prompt", "content"]
             }
         }
-    }
-
-    ToolExecutionOutput {
-        text: outputs.join("\n"),
-        source_urls,
-    }
-}
-
-struct ToolExecutionOutput {
-    text: String,
-    source_urls: Vec<String>,
-}
-
-fn append_missing_source_links(mut resp: LlmResponse, tool_source_urls: &[String]) -> LlmResponse {
-    if tool_source_urls.is_empty() {
-        return resp;
-    }
-
-    let mut already_present: std::collections::HashSet<String> =
-        extract_http_url_strings(&resp.summary)
-            .into_iter()
-            .collect();
-    if let Some(excerpt) = &resp.excerpt {
-        already_present.extend(extract_http_url_strings(excerpt));
-    }
-
-    let missing: Vec<&str> = tool_source_urls
-        .iter()
-        .filter(|url| !already_present.contains(*url))
-        .map(String::as_str)
-        .collect();
-
-    if missing.is_empty() {
-        return resp;
-    }
-
-    resp.summary.push_str("\n\nSources:");
-    for url in missing {
-        resp.summary.push_str("\n- ");
-        resp.summary.push_str(url);
-    }
-
-    resp
+    })
 }
 
 // ── Builder ───────────────────────────────────────────────────────────────────

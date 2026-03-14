@@ -12,6 +12,9 @@ pub struct LlmConfig {
     pub url_content_max_chars: usize,
     #[serde(default = "default_max_tool_turns")]
     pub max_tool_turns: usize,
+    /// Max depth for recursive `llm_call` tool invocations. Default: 1.
+    #[serde(default = "default_max_llm_tool_depth")]
+    pub max_llm_tool_depth: u32,
     /// Maximum image file size (bytes) to send to the LLM for vision analysis.
     /// Images larger than this are silently skipped.
     #[serde(default = "default_vision_max_bytes")]
@@ -27,6 +30,9 @@ fn default_url_content_max_chars() -> usize {
 }
 fn default_max_tool_turns() -> usize {
     5
+}
+fn default_max_llm_tool_depth() -> u32 {
+    1
 }
 fn default_vision_max_bytes() -> usize {
     5 * 1024 * 1024
@@ -124,6 +130,10 @@ pub struct LlmBackendConfig {
     /// Maximum number of concurrent in-flight requests to this backend.
     /// `None` means unlimited. Set to `1` for local Ollama instances.
     pub max_concurrent: Option<usize>,
+    /// Context window size in tokens. For Ollama, sent as `options.num_ctx`.
+    /// Not used for `OpenRouter` (cloud manages context).
+    #[serde(default)]
+    pub context_size: Option<usize>,
 }
 
 fn default_openrouter_base_url() -> String {

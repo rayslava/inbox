@@ -40,4 +40,7 @@ pub enum InboxError {
 
     #[error("Output error: {0}")]
     Output(String),
+
+    #[error("Memory error: {0}")]
+    Memory(String),
 }

@@ -29,6 +29,7 @@ fn test_config(policy: crate::config::JsShellPolicy) -> Config {
         url_fetch: UrlFetchConfig::default(),
         syncthing: SyncthingConfig::default(),
         tooling: ToolingConfig::default(),
+        memory: crate::config::MemoryConfig::default(),
     }
 }
 

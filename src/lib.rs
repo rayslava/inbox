@@ -7,6 +7,7 @@ pub mod error;
 pub mod health;
 pub mod llm;
 pub mod log_capture;
+pub mod memory;
 pub mod message;
 pub mod output;
 pub mod pipeline;

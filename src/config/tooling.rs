@@ -252,6 +252,8 @@ pub enum ToolBackendConfig {
         #[serde(default = "default_web_search_max_snippet_chars")]
         max_snippet_chars: usize,
     },
+    /// Internal memory store backend (`memory_save` / `memory_recall` tools).
+    Memory,
 }
 
 impl Default for ToolBackendConfig {

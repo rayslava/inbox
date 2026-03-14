@@ -26,6 +26,7 @@ fn test_state(ready: bool) -> AdminState {
             fallback: FallbackMode::default(),
             url_content_max_chars: 4000,
             max_tool_turns: 5,
+            max_llm_tool_depth: 1,
             vision_max_bytes: 5 * 1024 * 1024,
             prompts: LlmPromptsConfig::default(),
             backends: vec![],
@@ -34,6 +35,7 @@ fn test_state(ready: bool) -> AdminState {
         url_fetch: UrlFetchConfig::default(),
         syncthing: SyncthingConfig::default(),
         tooling: ToolingConfig::default(),
+        memory: crate::config::MemoryConfig::default(),
     });
     let readiness = ReadinessState::new(ready);
     let sessions = auth::new_session_store();

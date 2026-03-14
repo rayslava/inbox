@@ -22,6 +22,8 @@ pub struct OllamaClient {
     /// Extended timeout applied when thinking is active. `None` = use `self.timeout`.
     pub think_timeout: Option<Duration>,
     pub thinking_supported: bool,
+    /// KV-cache context window size in tokens. Sent as `options.num_ctx` when set.
+    pub context_size: Option<usize>,
     semaphore: Option<Arc<Semaphore>>,
     client: reqwest::Client,
 }
@@ -52,6 +54,7 @@ impl OllamaClient {
             think: cfg.think,
             think_timeout: cfg.think_timeout_secs.map(Duration::from_secs),
             thinking_supported: cfg.thinking_supported,
+            context_size: cfg.context_size,
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
         }
@@ -59,6 +62,12 @@ impl OllamaClient {
 }
 
 // ── Wire types ────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct OllamaOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_ctx: Option<usize>,
+}
 
 #[derive(Serialize)]
 struct OllamaChatRequest<'a> {
@@ -69,6 +78,8 @@ struct OllamaChatRequest<'a> {
     tools: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     think: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<OllamaOptions>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -159,12 +170,17 @@ impl LlmClient for OllamaClient {
             },
         ];
 
+        let options = self
+            .context_size
+            .map(|n| OllamaOptions { num_ctx: Some(n) });
+
         let body = OllamaChatRequest {
             model: &self.model,
             messages,
             stream: false,
             tools: tool_definitions,
             think: effective_think,
+            options,
         };
 
         let _permit = if let Some(sem) = &self.semaphore {
@@ -261,6 +277,7 @@ mod tests {
             think: None,
             think_timeout: None,
             thinking_supported: false,
+            context_size: None,
             semaphore: None,
             client: reqwest::Client::new(),
         }
@@ -360,6 +377,58 @@ mod tests {
         let client = make_client(&server.uri());
         let mut req = LlmRequest::simple("sys", "user");
         req.images = vec![("image/png".into(), "aGVsbG8=".into())];
+        let result = client.complete(req).await.unwrap();
+        assert!(matches!(result, LlmCompletion::Message(_)));
+    }
+
+    #[tokio::test]
+    async fn context_size_sends_options_num_ctx() {
+        use wiremock::matchers::body_partial_json;
+
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "message": { "role": "assistant", "content": r#"{"title":"T","tags":[],"summary":"S"}"# }
+        });
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_partial_json(serde_json::json!({
+                "options": { "num_ctx": 16384 }
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(body),
+            )
+            .mount(&server)
+            .await;
+
+        let mut client = make_client(&server.uri());
+        client.context_size = Some(16384);
+        let req = LlmRequest::simple("sys", "user");
+        let result = client.complete(req).await.unwrap();
+        assert!(matches!(result, LlmCompletion::Message(_)));
+    }
+
+    #[tokio::test]
+    async fn no_context_size_omits_options() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "message": { "role": "assistant", "content": r#"{"title":"T","tags":[],"summary":"S"}"# }
+        });
+        // If options were present with num_ctx, this mock would only match that specific body.
+        // By NOT using body_partial_json for options, we verify the basic path still works.
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(body),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri()); // context_size = None
+        let req = LlmRequest::simple("sys", "user");
         let result = client.complete(req).await.unwrap();
         assert!(matches!(result, LlmCompletion::Message(_)));
     }

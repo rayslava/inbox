@@ -8,7 +8,7 @@ use super::runners::{
     run_crawler_tool, run_duckduckgo_search_tool, run_http_tool, run_kagi_search_tool,
     run_shell_tool,
 };
-use super::{Tool, ToolExecutor, ToolResult, default_tools, from_tooling};
+use super::{Tool, ToolExecutor, ToolResult, add_memory_tools, default_tools, from_tooling};
 
 fn test_fetcher() -> UrlFetcher {
     UrlFetcher::new(&UrlFetchConfig {
@@ -747,6 +747,156 @@ async fn execute_duckduckgo_search_with_wrong_backend_errors() {
             "duckduckgo_search",
             &serde_json::json!({"query":"rust async"}),
             id,
+            std::path::Path::new("/tmp"),
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+// ── Memory tool tests ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn execute_memory_save_and_recall() {
+    use std::sync::Arc;
+    let store = Arc::new(crate::memory::MemoryStore::new_in_memory().unwrap());
+    let mut executor = default_tools(test_fetcher());
+    add_memory_tools(&mut executor, store);
+
+    let id = uuid::Uuid::new_v4();
+    let dir = std::path::Path::new("/tmp");
+
+    // Save a memory
+    let save_result = executor
+        .execute(
+            "memory_save",
+            &serde_json::json!({"key": "user_name", "value": "Alice"}),
+            id,
+            dir,
+        )
+        .await
+        .unwrap();
+    assert!(save_result.text().contains("user_name"));
+
+    // Recall it back
+    let recall_result = executor
+        .execute(
+            "memory_recall",
+            &serde_json::json!({"query": "user_name"}),
+            id,
+            dir,
+        )
+        .await
+        .unwrap();
+    assert!(recall_result.text().contains("Alice"));
+}
+
+#[tokio::test]
+async fn execute_memory_save_missing_key_errors() {
+    use std::sync::Arc;
+    let store = Arc::new(crate::memory::MemoryStore::new_in_memory().unwrap());
+    let mut executor = default_tools(test_fetcher());
+    add_memory_tools(&mut executor, store);
+
+    let id = uuid::Uuid::new_v4();
+    let result = executor
+        .execute(
+            "memory_save",
+            &serde_json::json!({"value": "no key provided"}),
+            id,
+            std::path::Path::new("/tmp"),
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn execute_memory_recall_missing_query_errors() {
+    use std::sync::Arc;
+    let store = Arc::new(crate::memory::MemoryStore::new_in_memory().unwrap());
+    let mut executor = default_tools(test_fetcher());
+    add_memory_tools(&mut executor, store);
+
+    let id = uuid::Uuid::new_v4();
+    let result = executor
+        .execute(
+            "memory_recall",
+            &serde_json::json!({}),
+            id,
+            std::path::Path::new("/tmp"),
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn execute_memory_recall_no_results_returns_text() {
+    use std::sync::Arc;
+    let store = Arc::new(crate::memory::MemoryStore::new_in_memory().unwrap());
+    let mut executor = default_tools(test_fetcher());
+    add_memory_tools(&mut executor, store);
+
+    let id = uuid::Uuid::new_v4();
+    let result = executor
+        .execute(
+            "memory_recall",
+            &serde_json::json!({"query": "xyzzy_nonexistent_42"}),
+            id,
+            std::path::Path::new("/tmp"),
+        )
+        .await
+        .unwrap();
+    assert!(result.text().contains("No memories found"));
+}
+
+#[test]
+fn add_memory_tools_registers_two_tools() {
+    use std::sync::Arc;
+    let store = Arc::new(crate::memory::MemoryStore::new_in_memory().unwrap());
+    let mut executor = default_tools(test_fetcher());
+    let before = executor.active_tool_definitions().len();
+    add_memory_tools(&mut executor, store);
+    let after = executor.active_tool_definitions().len();
+    assert_eq!(after, before + 2);
+}
+
+#[tokio::test]
+async fn execute_memory_save_without_store_errors() {
+    let tools = vec![
+        Tool {
+            name: "memory_save".into(),
+            description: "save".into(),
+            enabled: true,
+            retries: 0,
+            backend: crate::config::ToolBackendConfig::Memory,
+        },
+    ];
+    let executor = ToolExecutor::new(tools, test_fetcher());
+    let result = executor
+        .execute(
+            "memory_save",
+            &serde_json::json!({"key": "k", "value": "v"}),
+            uuid::Uuid::new_v4(),
+            std::path::Path::new("/tmp"),
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn execute_scrape_page_with_memory_backend_errors() {
+    let tools = vec![Tool {
+        name: "scrape_page".into(),
+        description: "scrape".into(),
+        enabled: true,
+        retries: 0,
+        backend: crate::config::ToolBackendConfig::Memory,
+    }];
+    let executor = ToolExecutor::new(tools, test_fetcher());
+    let result = executor
+        .execute(
+            "scrape_page",
+            &serde_json::json!({"url": "https://example.com"}),
+            uuid::Uuid::new_v4(),
             std::path::Path::new("/tmp"),
         )
         .await;

@@ -5,6 +5,7 @@ use crate::error::InboxError;
 pub mod adapters;
 pub mod infra;
 pub mod llm;
+pub mod memory;
 pub mod pipeline;
 pub mod tooling;
 
@@ -12,6 +13,7 @@ pub mod tooling;
 pub use adapters::{AdaptersConfig, EmailConfig, HttpAdapterConfig, TelegramConfig};
 pub use infra::{AdminConfig, GeneralConfig, SyncthingConfig, UrlFetchConfig, WebUiConfig};
 pub use llm::{FallbackMode, LlmBackendConfig, LlmBackendType, LlmConfig, LlmPromptsConfig};
+pub use memory::MemoryConfig;
 pub use pipeline::{
     JsShellPolicy, PipelineConfig, PreprocessingConfig, PreprocessingRule, RuleAction,
     RuleCondition, WebContentConfig,
@@ -41,6 +43,8 @@ pub struct Config {
     pub syncthing: SyncthingConfig,
     #[serde(default)]
     pub tooling: ToolingConfig,
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 // ── Loading ───────────────────────────────────────────────────────────────────
