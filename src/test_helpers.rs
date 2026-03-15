@@ -14,7 +14,14 @@ use crate::{
 #[must_use]
 pub fn mock_llm_chain(response: LlmResponse) -> Arc<LlmChain> {
     let client = Box::new(MockLlm::new(response)) as Box<dyn LlmClient>;
-    Arc::new(LlmChain::new(vec![client], FallbackMode::Raw, 3, None, 1))
+    Arc::new(LlmChain::new(
+        vec![client],
+        FallbackMode::Raw,
+        3,
+        None,
+        1,
+        0,
+    ))
 }
 
 /// Build a `LlmChain` backed by a `MockLlm` that always returns `InboxError::Llm`,
@@ -28,6 +35,7 @@ pub fn failing_llm_chain(message: impl Into<String>) -> Arc<LlmChain> {
         3,
         None,
         1,
+        0,
     ))
 }
 
@@ -62,6 +70,7 @@ pub fn no_llm_config() -> LlmConfig {
         url_content_max_chars: 4000,
         max_tool_turns: 3,
         max_llm_tool_depth: 1,
+        inner_retries: 0,
         vision_max_bytes: 5 * 1024 * 1024,
         prompts: crate::config::LlmPromptsConfig::default(),
         backends: vec![],

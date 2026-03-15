@@ -861,15 +861,13 @@ fn add_memory_tools_registers_two_tools() {
 
 #[tokio::test]
 async fn execute_memory_save_without_store_errors() {
-    let tools = vec![
-        Tool {
-            name: "memory_save".into(),
-            description: "save".into(),
-            enabled: true,
-            retries: 0,
-            backend: crate::config::ToolBackendConfig::Memory,
-        },
-    ];
+    let tools = vec![Tool {
+        name: "memory_save".into(),
+        description: "save".into(),
+        enabled: true,
+        retries: 0,
+        backend: crate::config::ToolBackendConfig::Memory,
+    }];
     let executor = ToolExecutor::new(tools, test_fetcher());
     let result = executor
         .execute(

@@ -15,10 +15,18 @@ pub(super) const DONE_RETAIN_SECS: i64 = 300;
 pub enum ProcessingStage {
     Received,
     Enriching,
-    RunningLlm,
+    RunningLlm {
+        turn: usize,
+        max_turns: usize,
+        last_tools: Vec<String>,
+    },
     Writing,
-    Done { title: String },
-    Failed { reason: String },
+    Done {
+        title: String,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 // ── In-flight entry ───────────────────────────────────────────────────────────

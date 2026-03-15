@@ -15,6 +15,10 @@ pub struct LlmConfig {
     /// Max depth for recursive `llm_call` tool invocations. Default: 1.
     #[serde(default = "default_max_llm_tool_depth")]
     pub max_llm_tool_depth: u32,
+    /// Retries for individual LLM API calls within a tool loop (e.g. on network blip).
+    /// Default: 2.
+    #[serde(default = "default_inner_retries")]
+    pub inner_retries: u32,
     /// Maximum image file size (bytes) to send to the LLM for vision analysis.
     /// Images larger than this are silently skipped.
     #[serde(default = "default_vision_max_bytes")]
@@ -33,6 +37,9 @@ fn default_max_tool_turns() -> usize {
 }
 fn default_max_llm_tool_depth() -> u32 {
     1
+}
+fn default_inner_retries() -> u32 {
+    2
 }
 fn default_vision_max_bytes() -> usize {
     5 * 1024 * 1024

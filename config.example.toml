@@ -59,6 +59,10 @@ url_content_max_chars = 4000
 # Maximum tool-call turns per message.
 max_tool_turns = 5
 
+# Retries for individual LLM API calls within a tool loop (e.g. on network blip).
+# Default: 2
+# inner_retries = 2
+
 # Max depth for recursive llm_call tool invocations (default: 1).
 # max_llm_tool_depth = 1
 

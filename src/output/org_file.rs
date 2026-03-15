@@ -109,6 +109,8 @@ mod tests {
                 url_contents: Vec::new(),
             },
             llm_response: None,
+            fallback_source_urls: vec![],
+            fallback_tool_content: String::new(),
         }
     }
 

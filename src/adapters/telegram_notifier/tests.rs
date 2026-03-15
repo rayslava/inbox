@@ -18,7 +18,22 @@ async fn stage_text_formats_correctly() {
         stage_text(&ProcessingStage::Enriching),
         "🔍 Fetching content…"
     );
-    assert_eq!(stage_text(&ProcessingStage::RunningLlm), "🤖 Analysing…");
+    assert_eq!(
+        stage_text(&ProcessingStage::RunningLlm {
+            turn: 0,
+            max_turns: 5,
+            last_tools: vec![],
+        }),
+        "🤖 Analysing…"
+    );
+    assert_eq!(
+        stage_text(&ProcessingStage::RunningLlm {
+            turn: 2,
+            max_turns: 5,
+            last_tools: vec!["web_search".into()],
+        }),
+        "🤖 Analysing… (turn 2/5 · web_search)"
+    );
     assert_eq!(stage_text(&ProcessingStage::Writing), "✍️ Saving…");
     assert_eq!(
         stage_text(&ProcessingStage::Done {
@@ -40,7 +55,11 @@ fn is_terminal_done_and_failed() {
     assert!(is_terminal(&ProcessingStage::Failed { reason: "y".into() }));
     assert!(!is_terminal(&ProcessingStage::Received));
     assert!(!is_terminal(&ProcessingStage::Enriching));
-    assert!(!is_terminal(&ProcessingStage::RunningLlm));
+    assert!(!is_terminal(&ProcessingStage::RunningLlm {
+        turn: 0,
+        max_turns: 5,
+        last_tools: vec![]
+    }));
     assert!(!is_terminal(&ProcessingStage::Writing));
 }
 

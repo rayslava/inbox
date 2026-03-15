@@ -27,6 +27,7 @@ fn test_state(ready: bool) -> AdminState {
             url_content_max_chars: 4000,
             max_tool_turns: 5,
             max_llm_tool_depth: 1,
+            inner_retries: 0,
             vision_max_bytes: 5 * 1024 * 1024,
             prompts: LlmPromptsConfig::default(),
             backends: vec![],

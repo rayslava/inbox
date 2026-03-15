@@ -23,6 +23,7 @@ pub fn build_chain(cfg: &Config) -> LlmChain {
         cfg.llm.max_tool_turns,
         Some(tool_executor),
         cfg.llm.max_llm_tool_depth,
+        cfg.llm.inner_retries,
     )
 }
 

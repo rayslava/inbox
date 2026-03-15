@@ -47,5 +47,11 @@ fn snapshot_prunes_old_done_entries() {
 async fn noop_notifier_does_nothing() {
     let mut n = NoopNotifier;
     n.advance(ProcessingStage::Enriching).await;
+    n.advance(ProcessingStage::RunningLlm {
+        turn: 0,
+        max_turns: 5,
+        last_tools: vec![],
+    })
+    .await;
     n.advance(ProcessingStage::Done { title: "x".into() }).await;
 }

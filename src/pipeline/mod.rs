@@ -145,9 +145,21 @@ impl Pipeline {
         };
 
         // RunningLlm
-        self.tracker.advance(id, ProcessingStage::RunningLlm);
+        self.tracker.advance(
+            id,
+            ProcessingStage::RunningLlm {
+                turn: 0,
+                max_turns: self.llm.max_tool_turns(),
+                last_tools: vec![],
+            },
+        );
         if let Some(n) = &mut notifier {
-            n.advance(ProcessingStage::RunningLlm).await;
+            n.advance(ProcessingStage::RunningLlm {
+                turn: 0,
+                max_turns: self.llm.max_tool_turns(),
+                last_tools: vec![],
+            })
+            .await;
         }
         let processed = match self.run_llm(enriched).await {
             Ok(p) => p,
@@ -322,7 +334,7 @@ impl Pipeline {
         content_count = enriched.url_contents.len(),
     ))]
     async fn run_llm(&self, enriched: EnrichedMessage) -> Result<ProcessedMessage, InboxError> {
-        use crate::llm::{LlmOutcome, LlmRequest};
+        use crate::llm::{LlmOutcome, LlmRequest, LlmTurnProgress};
 
         let text_preview: String = enriched.original.text.chars().take(120).collect();
         info!(
@@ -332,7 +344,10 @@ impl Pipeline {
             "Starting LLM processing"
         );
 
-        let req = LlmRequest::from_enriched(
+        let (progress_tx, mut progress_rx) =
+            tokio::sync::mpsc::unbounded_channel::<LlmTurnProgress>();
+
+        let mut req = LlmRequest::from_enriched(
             &enriched,
             &self.config.llm,
             &self.config.general.attachments_dir,
@@ -344,7 +359,27 @@ impl Pipeline {
                 && !enriched.urls.is_empty()
                 && enriched.url_contents.is_empty(),
         );
-        match self.llm.complete(req).await {
+        req.progress_tx = Some(progress_tx);
+
+        let tracker = Arc::clone(&self.tracker);
+        let id = enriched.original.id;
+
+        let progress_future = async move {
+            while let Some(evt) = progress_rx.recv().await {
+                tracker.advance(
+                    id,
+                    ProcessingStage::RunningLlm {
+                        turn: evt.turn,
+                        max_turns: evt.max_turns,
+                        last_tools: evt.tools_called,
+                    },
+                );
+            }
+        };
+
+        let (outcome, ()) = tokio::join!(self.llm.complete(req), progress_future);
+
+        match outcome {
             LlmOutcome::Success(resp) => {
                 info!(
                     id = %enriched.original.id,
@@ -356,9 +391,14 @@ impl Pipeline {
                 Ok(ProcessedMessage {
                     enriched,
                     llm_response: Some(resp),
+                    fallback_source_urls: vec![],
+                    fallback_tool_content: String::new(),
                 })
             }
-            LlmOutcome::RawFallback => {
+            LlmOutcome::RawFallback {
+                source_urls,
+                tool_content,
+            } => {
                 let text_preview: String = enriched.original.text.chars().take(120).collect();
                 info!(
                     id = %enriched.original.id,
@@ -368,6 +408,8 @@ impl Pipeline {
                 Ok(ProcessedMessage {
                     enriched,
                     llm_response: None,
+                    fallback_source_urls: source_urls,
+                    fallback_tool_content: tool_content,
                 })
             }
             LlmOutcome::Discard => {

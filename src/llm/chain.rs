@@ -3,12 +3,13 @@ use std::fmt::Write as _;
 use anodized::spec;
 use tracing::{debug, info, warn};
 
+use crate::error::InboxError;
 use crate::message::LlmResponse;
 use crate::pipeline::url_extractor::extract_http_url_strings;
 
 use super::{
-    FallbackMode, LlmClient, LlmCompletion, LlmOutcome, LlmRequest, ToolCall, activate_thinking_tool_def,
-    llm_call_tool_def, tools,
+    FallbackMode, LlmClient, LlmCompletion, LlmOutcome, LlmRequest, LlmTurnProgress, ToolCall,
+    activate_thinking_tool_def, llm_call_tool_def, tools,
 };
 
 // ── LlmChain ─────────────────────────────────────────────────────────────────
@@ -19,6 +20,7 @@ pub struct LlmChain {
     max_tool_turns: usize,
     max_llm_tool_depth: u32,
     tool_executor: Option<tools::ToolExecutor>,
+    inner_retries: u32,
 }
 
 impl LlmChain {
@@ -30,6 +32,7 @@ impl LlmChain {
         max_tool_turns: usize,
         tool_executor: Option<tools::ToolExecutor>,
         max_llm_tool_depth: u32,
+        inner_retries: u32,
     ) -> Self {
         Self {
             backends,
@@ -37,6 +40,7 @@ impl LlmChain {
             max_tool_turns,
             max_llm_tool_depth,
             tool_executor,
+            inner_retries,
         }
     }
 
@@ -55,6 +59,10 @@ impl LlmChain {
             tool_defs.push(llm_call_tool_def());
         }
 
+        // Fallback state persists across all backend+attempt loops.
+        let mut fallback_source_urls: Vec<String> = Vec::new();
+        let mut fallback_tool_content: String = String::new();
+
         for backend in &self.backends {
             for attempt in 0..backend.retries() {
                 let start = std::time::Instant::now();
@@ -66,9 +74,10 @@ impl LlmChain {
                 let mut tool_source_url_set: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
                 let mut tool_source_urls: Vec<String> = Vec::new();
+                let mut accumulated_tool_text: String = String::new();
 
                 loop {
-                    let tool_names: Vec<&str> = req_attempt
+                    let tool_names_debug: Vec<&str> = req_attempt
                         .tool_definitions
                         .iter()
                         .filter_map(|d| d["function"]["name"].as_str())
@@ -81,7 +90,7 @@ impl LlmChain {
                         backend = backend.name(),
                         model = backend.model(),
                         turn = turns + 1,
-                        tools = ?tool_names,
+                        tools = ?tool_names_debug,
                         system_len = req_attempt.system_prompt.len(),
                         content_len = req_attempt.user_content.len(),
                         system_preview = %system_preview,
@@ -89,7 +98,7 @@ impl LlmChain {
                         "LLM request"
                     );
 
-                    match backend.complete(req_attempt.clone()).await {
+                    match retry_inner(backend.as_ref(), &req_attempt, self.inner_retries).await {
                         Ok(LlmCompletion::Message(resp)) => {
                             if req_attempt.require_initial_tool_call
                                 && turns == 0
@@ -111,6 +120,8 @@ impl LlmChain {
                                     backend = backend.name(),
                                     "Required initial tool call was not produced"
                                 );
+                                fallback_source_urls.clone_from(&tool_source_urls);
+                                fallback_tool_content.clone_from(&accumulated_tool_text);
                                 break;
                             }
                             metrics::counter!(
@@ -148,6 +159,8 @@ impl LlmChain {
                                             max = self.max_tool_turns,
                                             "activate_thinking loop limit reached"
                                         );
+                                        fallback_source_urls.clone_from(&tool_source_urls);
+                                        fallback_tool_content.clone_from(&accumulated_tool_text);
                                         break;
                                     }
                                     continue;
@@ -165,8 +178,52 @@ impl LlmChain {
                                         max_turns = self.max_tool_turns,
                                         "Max tool turns reached during llm_call"
                                     );
+                                    warn!(
+                                        backend = backend.name(),
+                                        max_turns = self.max_tool_turns,
+                                        "Max tool turns reached, attempting forced summary"
+                                    );
+                                    let mut force_req = req_attempt.clone();
+                                    force_req.tool_definitions = vec![];
+                                    let _ = write!(
+                                        force_req.user_content,
+                                        "\n\n[Tool call limit reached. Based on all information gathered above, produce your final JSON response now without calling any more tools.]"
+                                    );
+                                    match retry_inner(
+                                        backend.as_ref(),
+                                        &force_req,
+                                        self.inner_retries,
+                                    )
+                                    .await
+                                    {
+                                        Ok(LlmCompletion::Message(resp)) => {
+                                            info!(
+                                                backend = backend.name(),
+                                                turns,
+                                                "Forced summary pass succeeded after max tool turns"
+                                            );
+                                            metrics::counter!(crate::telemetry::LLM_REQUESTS, "backend" => backend.name().to_owned(), "status" => "success").increment(1);
+                                            metrics::histogram!(crate::telemetry::LLM_DURATION, "backend" => backend.name().to_owned()).record(start.elapsed().as_secs_f64());
+                                            return LlmOutcome::Success(
+                                                append_missing_source_links(
+                                                    resp,
+                                                    &tool_source_urls,
+                                                ),
+                                            );
+                                        }
+                                        _ => {
+                                            warn!(
+                                                backend = backend.name(),
+                                                "Forced summary pass failed, falling through to next attempt"
+                                            );
+                                        }
+                                    }
+                                    fallback_source_urls.clone_from(&tool_source_urls);
+                                    fallback_tool_content.clone_from(&accumulated_tool_text);
                                     break;
                                 }
+                                let llm_call_names: Vec<String> =
+                                    llm_calls.iter().map(|c| c.name.clone()).collect();
                                 for llm_call in &llm_calls {
                                     let result =
                                         self.execute_llm_tool_call(llm_call, &req_attempt).await;
@@ -174,8 +231,26 @@ impl LlmChain {
                                         req_attempt.user_content,
                                         "\n\ntool `llm_call` result: {result}"
                                     );
+                                    let _ = write!(
+                                        accumulated_tool_text,
+                                        "\ntool `llm_call` result: {result}"
+                                    );
                                 }
                                 turns += 1;
+                                if let Some(tx) = &req_attempt.progress_tx {
+                                    let _ = tx.send(LlmTurnProgress {
+                                        turn: turns,
+                                        max_turns: self.max_tool_turns,
+                                        tools_called: llm_call_names,
+                                    });
+                                }
+                                let remaining = self.max_tool_turns.saturating_sub(turns);
+                                if remaining > 0 && remaining <= self.max_tool_turns / 2 {
+                                    let _ = write!(
+                                        req_attempt.user_content,
+                                        "\n\n[Tool budget: {remaining} turn(s) remaining. Prefer to consolidate and produce a final answer if you have enough information.]"
+                                    );
+                                }
                                 if calls.is_empty() {
                                     continue;
                                 }
@@ -186,6 +261,8 @@ impl LlmChain {
                                     backend = backend.name(),
                                     "LLM returned empty tool call list"
                                 );
+                                fallback_source_urls.clone_from(&tool_source_urls);
+                                fallback_tool_content.clone_from(&accumulated_tool_text);
                                 break;
                             }
 
@@ -193,8 +270,40 @@ impl LlmChain {
                                 warn!(
                                     backend = backend.name(),
                                     max_turns = self.max_tool_turns,
-                                    "Max tool turns reached"
+                                    "Max tool turns reached, attempting forced summary"
                                 );
+                                let mut force_req = req_attempt.clone();
+                                force_req.tool_definitions = vec![];
+                                let _ = write!(
+                                    force_req.user_content,
+                                    "\n\n[Tool call limit reached. Based on all information gathered above, produce your final JSON response now without calling any more tools.]"
+                                );
+                                match retry_inner(backend.as_ref(), &force_req, self.inner_retries)
+                                    .await
+                                {
+                                    Ok(LlmCompletion::Message(resp)) => {
+                                        info!(
+                                            backend = backend.name(),
+                                            turns,
+                                            "Forced summary pass succeeded after max tool turns"
+                                        );
+                                        metrics::counter!(crate::telemetry::LLM_REQUESTS, "backend" => backend.name().to_owned(), "status" => "success").increment(1);
+                                        metrics::histogram!(crate::telemetry::LLM_DURATION, "backend" => backend.name().to_owned()).record(start.elapsed().as_secs_f64());
+                                        return LlmOutcome::Success(append_missing_source_links(
+                                            resp,
+                                            &tool_source_urls,
+                                        ));
+                                    }
+                                    _ => {
+                                        warn!(
+                                            backend = backend.name(),
+                                            "Forced summary pass failed, falling through to next attempt"
+                                        );
+                                    }
+                                }
+                                // Update fallback before breaking
+                                fallback_source_urls.clone_from(&tool_source_urls);
+                                fallback_tool_content.clone_from(&accumulated_tool_text);
                                 break;
                             }
                             let Some(executor) = &self.tool_executor else {
@@ -202,11 +311,14 @@ impl LlmChain {
                                     backend = backend.name(),
                                     "Tool call requested but no executor configured"
                                 );
+                                fallback_source_urls.clone_from(&tool_source_urls);
+                                fallback_tool_content.clone_from(&accumulated_tool_text);
                                 break;
                             };
 
-                            let output =
-                                execute_tool_calls(executor, &calls, &req_attempt).await;
+                            let tool_names: Vec<String> =
+                                calls.iter().map(|c| c.name.clone()).collect();
+                            let output = execute_tool_calls(executor, &calls, &req_attempt).await;
                             for url in output.source_urls {
                                 if tool_source_url_set.insert(url.clone()) {
                                     tool_source_urls.push(url);
@@ -216,8 +328,24 @@ impl LlmChain {
                                 .user_content
                                 .push_str("\n\n--- Tool execution results ---\n");
                             req_attempt.user_content.push_str(&output.text);
+                            accumulated_tool_text.push_str("\n\n--- Tool execution results ---\n");
+                            accumulated_tool_text.push_str(&output.text);
                             req_attempt.require_initial_tool_call = false;
                             turns += 1;
+                            if let Some(tx) = &req_attempt.progress_tx {
+                                let _ = tx.send(LlmTurnProgress {
+                                    turn: turns,
+                                    max_turns: self.max_tool_turns,
+                                    tools_called: tool_names,
+                                });
+                            }
+                            let remaining = self.max_tool_turns.saturating_sub(turns);
+                            if remaining > 0 && remaining <= self.max_tool_turns / 2 {
+                                let _ = write!(
+                                    req_attempt.user_content,
+                                    "\n\n[Tool budget: {remaining} turn(s) remaining. Prefer to consolidate and produce a final answer if you have enough information.]"
+                                );
+                            }
                         }
                         Err(e) => {
                             let elapsed_ms = start.elapsed().as_millis();
@@ -230,6 +358,8 @@ impl LlmChain {
                                 elapsed_ms,
                                 "LLM attempt failed"
                             );
+                            fallback_source_urls.clone_from(&tool_source_urls);
+                            fallback_tool_content.clone_from(&accumulated_tool_text);
                             break;
                         }
                     }
@@ -254,7 +384,10 @@ impl LlmChain {
             "All LLM backends failed, applying fallback"
         );
         match self.fallback {
-            FallbackMode::Raw => LlmOutcome::RawFallback,
+            FallbackMode::Raw => LlmOutcome::RawFallback {
+                source_urls: fallback_source_urls,
+                tool_content: fallback_tool_content,
+            },
             FallbackMode::Discard => LlmOutcome::Discard,
         }
     }
@@ -281,19 +414,61 @@ impl LlmChain {
             images: vec![],
             think: None,
             llm_depth: parent_req.llm_depth + 1,
+            progress_tx: None,
         };
 
         for backend in &self.backends {
-            match backend.complete_raw(sub_req.clone()).await {
-                Ok(text) => return text,
-                Err(e) => {
-                    warn!(?e, backend = backend.name(), "llm_call sub-request failed");
+            for attempt in 0..=self.inner_retries {
+                if attempt > 0 {
+                    let delay_ms = 500u64.saturating_mul(2u64.pow(attempt - 1));
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+                match backend.complete_raw(sub_req.clone()).await {
+                    Ok(text) => return text,
+                    Err(e) => {
+                        warn!(
+                            ?e,
+                            backend = backend.name(),
+                            attempt,
+                            "llm_call sub-request retry"
+                        );
+                    }
                 }
             }
         }
 
         "llm_call failed: all backends exhausted".into()
     }
+}
+
+// ── Inner retry helper ────────────────────────────────────────────────────────
+
+async fn retry_inner(
+    backend: &(dyn LlmClient + 'static),
+    req: &LlmRequest,
+    retries: u32,
+) -> Result<LlmCompletion, InboxError> {
+    let mut last_err = InboxError::Llm("no attempts".into());
+    for attempt in 0..=retries {
+        if attempt > 0 {
+            let delay_ms = 500u64.saturating_mul(2u64.pow(attempt - 1));
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        match backend.complete(req.clone()).await {
+            Ok(c) => return Ok(c),
+            Err(e) => {
+                warn!(
+                    ?e,
+                    attempt,
+                    max_retries = retries,
+                    backend = backend.name(),
+                    "Inner LLM call retry"
+                );
+                last_err = e;
+            }
+        }
+    }
+    Err(last_err)
 }
 
 // ── Tool execution helpers ────────────────────────────────────────────────────

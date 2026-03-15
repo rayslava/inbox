@@ -59,7 +59,18 @@ pub(super) fn stage_text(stage: &ProcessingStage) -> String {
     match stage {
         ProcessingStage::Received => "⏳ Processing…".to_owned(),
         ProcessingStage::Enriching => "🔍 Fetching content…".to_owned(),
-        ProcessingStage::RunningLlm => "🤖 Analysing…".to_owned(),
+        ProcessingStage::RunningLlm {
+            turn,
+            max_turns,
+            last_tools,
+        } => {
+            if *turn == 0 || last_tools.is_empty() {
+                "🤖 Analysing…".to_owned()
+            } else {
+                let tools_str = last_tools.join(", ");
+                format!("🤖 Analysing… (turn {turn}/{max_turns} · {tools_str})")
+            }
+        }
         ProcessingStage::Writing => "✍️ Saving…".to_owned(),
         ProcessingStage::Done { title } => format!("✅ {title}"),
         ProcessingStage::Failed { reason } => format!("❌ Failed: {reason}"),

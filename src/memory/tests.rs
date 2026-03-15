@@ -149,7 +149,10 @@ async fn embed_client_returns_error_on_missing_embedding_field() {
 
     let client = EmbedClient::new(server.uri(), "test-model".into(), None);
     let result = client.embed("hello").await;
-    assert!(result.is_err(), "should fail when embedding field is missing");
+    assert!(
+        result.is_err(),
+        "should fail when embedding field is missing"
+    );
 }
 
 #[tokio::test]

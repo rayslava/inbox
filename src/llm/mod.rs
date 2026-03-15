@@ -36,6 +36,8 @@ pub struct LlmRequest {
     pub think: Option<bool>,
     /// Recursive depth of `llm_call` tool invocations. `0` = top-level request.
     pub llm_depth: u32,
+    /// Optional channel to report per-turn progress events back to the caller.
+    pub progress_tx: Option<tokio::sync::mpsc::UnboundedSender<LlmTurnProgress>>,
 }
 
 impl LlmRequest {
@@ -125,6 +127,7 @@ impl LlmRequest {
             images,
             think: None,
             llm_depth: 0,
+            progress_tx: None,
         }
     }
 
@@ -140,6 +143,7 @@ impl LlmRequest {
             images: Vec::new(),
             think: None,
             llm_depth: 0,
+            progress_tx: None,
         }
     }
 }
@@ -159,8 +163,19 @@ pub struct ToolCall {
 
 pub enum LlmOutcome {
     Success(LlmResponse),
-    RawFallback,
+    RawFallback {
+        source_urls: Vec<String>,
+        tool_content: String,
+    },
     Discard,
+}
+
+/// Progress event emitted after each tool-call turn by the LLM chain.
+#[derive(Debug)]
+pub struct LlmTurnProgress {
+    pub turn: usize,
+    pub max_turns: usize,
+    pub tools_called: Vec<String>,
 }
 
 // ── LlmClient trait ───────────────────────────────────────────────────────────

@@ -265,6 +265,10 @@ pub struct ProcessedMessage {
     pub enriched: EnrichedMessage,
     /// None means raw fallback (LLM unavailable or all backends failed).
     pub llm_response: Option<LlmResponse>,
+    /// URLs gathered by tools during LLM processing; populated when LLM falls back.
+    pub fallback_source_urls: Vec<String>,
+    /// Accumulated tool output text; used as summary in raw-fallback rendering.
+    pub fallback_tool_content: String,
 }
 
 #[derive(Debug, Clone)]

@@ -115,19 +115,25 @@ pub fn render_org_node(
         all
     };
 
-    let (title, summary, excerpt, backend) = match &msg.llm_response {
-        Some(r) => (
+    let (title, summary, excerpt, backend) = if let Some(r) = &msg.llm_response {
+        (
             r.title.as_str(),
             r.summary.as_str(),
             r.excerpt.as_deref(),
             r.produced_by.as_str(),
-        ),
-        None => (
+        )
+    } else {
+        let summary = if msg.fallback_tool_content.is_empty() {
+            original.text.as_str()
+        } else {
+            msg.fallback_tool_content.as_str()
+        };
+        (
             original.text.lines().next().unwrap_or("(untitled)"),
-            original.text.as_str(),
+            summary,
             None,
             "none",
-        ),
+        )
     };
 
     let summary_urls = extract_http_url_strings(summary);
@@ -137,6 +143,11 @@ pub fn render_org_node(
     for url in summary_urls.into_iter().chain(excerpt_urls) {
         if roam_ref_set.insert(url.clone()) {
             roam_refs.push(url);
+        }
+    }
+    for url in &msg.fallback_source_urls {
+        if roam_ref_set.insert(url.clone()) {
+            roam_refs.push(url.clone());
         }
     }
 
@@ -191,6 +202,8 @@ mod tests {
                 url_contents: vec![],
             },
             llm_response,
+            fallback_source_urls: vec![],
+            fallback_tool_content: String::new(),
         }
     }
 
@@ -276,6 +289,8 @@ mod tests {
                 url_contents: vec![],
             },
             llm_response: None,
+            fallback_source_urls: vec![],
+            fallback_tool_content: String::new(),
         };
         let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
         assert!(result.contains("https://example.com/page"));
@@ -334,6 +349,8 @@ mod tests {
                 url_contents: vec![],
             },
             llm_response: None,
+            fallback_source_urls: vec![],
+            fallback_tool_content: String::new(),
         };
         let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
         assert!(
@@ -382,6 +399,8 @@ mod tests {
                 url_contents: vec![],
             },
             llm_response: None,
+            fallback_source_urls: vec![],
+            fallback_tool_content: String::new(),
         };
         let result = render_org_node(&processed, tmp.path()).unwrap();
         assert!(
@@ -418,11 +437,79 @@ mod tests {
                 url_contents: vec![],
             },
             llm_response: None,
+            fallback_source_urls: vec![],
+            fallback_tool_content: String::new(),
         };
         let result = render_org_node(&processed, tmp.path()).unwrap();
         assert!(
             !result.contains("MEDIA_KIND"),
             "MEDIA_KIND should not appear for document attachments: {result}"
+        );
+    }
+
+    #[test]
+    fn render_fallback_uses_tool_content_as_summary() {
+        let msg = IncomingMessage::new(
+            MessageSource::Http,
+            "Original raw text".into(),
+            SourceMetadata::Http {
+                remote_addr: None,
+                user_agent: None,
+            },
+        );
+        let processed = ProcessedMessage {
+            enriched: EnrichedMessage {
+                original: msg,
+                urls: vec![],
+                url_contents: vec![],
+            },
+            llm_response: None,
+            fallback_source_urls: vec![],
+            fallback_tool_content: "Tool gathered summary content".into(),
+        };
+        let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
+        assert!(
+            result.contains("Tool gathered summary content"),
+            "fallback_tool_content should be used as summary: {result}"
+        );
+        assert!(
+            !result.contains("Original raw text")
+                || result.contains("Tool gathered summary content"),
+            "tool content should take precedence over raw text: {result}"
+        );
+    }
+
+    #[test]
+    fn render_fallback_source_urls_in_roam_refs() {
+        let msg = IncomingMessage::new(
+            MessageSource::Http,
+            "Some note".into(),
+            SourceMetadata::Http {
+                remote_addr: None,
+                user_agent: None,
+            },
+        );
+        let processed = ProcessedMessage {
+            enriched: EnrichedMessage {
+                original: msg,
+                urls: vec![],
+                url_contents: vec![],
+            },
+            llm_response: None,
+            fallback_source_urls: vec![
+                "https://tool-found.example.com/page1".into(),
+                "https://tool-found.example.com/page2".into(),
+            ],
+            fallback_tool_content: String::new(),
+        };
+        let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
+        assert!(
+            result.contains("https://tool-found.example.com/page1"),
+            "fallback_source_urls[0] should appear in ROAM_REFS: {result}"
+        );
+        assert!(
+            result.contains("https://tool-found.example.com/page2"),
+            "fallback_source_urls[1] should appear in ROAM_REFS: {result}"
         );
     }
 }
