@@ -70,6 +70,10 @@ max_tool_turns = 5
 # Images larger than this are silently skipped. Default: 5 MB.
 # vision_max_bytes = 5242880
 
+# Truncate individual tool results to this many characters before feeding back to LLM.
+# Prevents context overflow from large scraped pages. Set to null to disable. Default: 20000.
+# tool_result_max_chars = 20000
+
 [llm.prompts]
 base_system = """
 You are a personal inbox assistant. Given a captured note or web content, respond with a JSON object containing:
@@ -105,7 +109,7 @@ timeout_secs = 30
 # think_timeout_secs = 300    # timeout for thinking requests (default: timeout_secs)
 # thinking_supported = true   # allow model to call activate_thinking (Ollama only; default: false)
 # max_concurrent     = 1      # serialize requests to avoid overloading the local model (omit = unlimited)
-# context_size   = 16384      # num_ctx for Ollama (KV cache / context window size)
+# context_size   = 16384      # num_ctx for Ollama (KV cache / context window size); also used to truncate over-long requests
 
 # ── Adapters ──────────────────────────────────────────────────────────────────
 
@@ -157,7 +161,12 @@ max_redirects   = 5
 max_body_bytes  = 5242880   # 5 MiB
 user_agent      = "inbox/1.0 (personal capture daemon)"
 # Domains to skip when auto-fetching URLs (e.g. large media sites).
+# Note: if you configure nitter_base_url below, remove twitter.com and x.com from this list.
 skip_domains    = ["youtube.com", "twitter.com", "x.com"]
+
+# Optional: rewrite Twitter/X URLs to a Nitter instance (serves static HTML without JavaScript).
+# When set, remove twitter.com and x.com from skip_domains to allow fetching through Nitter.
+# nitter_base_url = "https://nitter.example.com"
 
 # ── Pipeline pre-processing rules ────────────────────────────────────────────
 #

@@ -18,6 +18,7 @@ fn test_fetcher() -> UrlFetcher {
         max_redirects: 3,
         max_body_bytes: 1024 * 1024,
         skip_domains: vec![],
+        nitter_base_url: None,
     })
 }
 

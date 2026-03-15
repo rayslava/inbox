@@ -114,10 +114,25 @@ impl UrlFetcher {
             .and_then(extract_ct)
     }
 
+    /// Return the configured Nitter base URL for Twitter/X rewriting, if any.
+    #[must_use]
+    pub fn nitter_base_url(&self) -> Option<&str> {
+        self.cfg.nitter_base_url.as_deref()
+    }
+
     /// Fetch a page and extract readable text.
     #[instrument(skip(self), fields(url = %url))]
     pub async fn fetch_page(&self, url: &Url) -> Option<UrlContent> {
-        let resp = self.get_with_fallback(url).await?;
+        let rewritten;
+        let effective_url = match rewrite_twitter_url(url, self.nitter_base_url()) {
+            Some(rw) => {
+                info!(%url, nitter_url = %rw, "Rewriting Twitter/X URL to Nitter");
+                rewritten = rw;
+                &rewritten
+            }
+            None => url,
+        };
+        let resp = self.get_with_fallback(effective_url).await?;
 
         if !resp.status().is_success() {
             warn!(status = %resp.status(), %url, "Page fetch non-200");
@@ -235,6 +250,25 @@ impl UrlFetcher {
     }
 }
 
+/// Rewrite a Twitter/X URL to a Nitter instance.
+/// Returns `None` if `nitter_base_url` is `None` or the URL is not a Twitter/X domain.
+#[must_use]
+pub fn rewrite_twitter_url(url: &Url, nitter_base_url: Option<&str>) -> Option<Url> {
+    let nitter = nitter_base_url?;
+    let host = url.host_str()?;
+    if !matches!(host, "twitter.com" | "x.com")
+        && !host.ends_with(".twitter.com")
+        && !host.ends_with(".x.com")
+    {
+        return None;
+    }
+    let mut rw = Url::parse(nitter).ok()?;
+    rw.set_path(url.path());
+    rw.set_query(url.query());
+    rw.set_fragment(url.fragment());
+    Some(rw)
+}
+
 /// Derive a filename from the URL path, falling back to "download".
 fn filename_from_url(url: &Url) -> String {
     url.path_segments()
@@ -298,5 +332,67 @@ mod tests {
                 .contains("/55/0e8400-e29b-41d4-a716-446655440000/")
         );
         assert!(path.ends_with("report.pdf"));
+    }
+
+    #[test]
+    fn rewrite_twitter_url_rewrites_twitter_com() {
+        let url = Url::parse("https://twitter.com/user/status/123").unwrap();
+        let rw = rewrite_twitter_url(&url, Some("https://nitter.example.com")).unwrap();
+        assert_eq!(rw.host_str(), Some("nitter.example.com"));
+        assert_eq!(rw.path(), "/user/status/123");
+    }
+
+    #[test]
+    fn rewrite_twitter_url_rewrites_x_com() {
+        let url = Url::parse("https://x.com/user/status/456").unwrap();
+        let rw = rewrite_twitter_url(&url, Some("https://nitter.example.com")).unwrap();
+        assert_eq!(rw.host_str(), Some("nitter.example.com"));
+        assert_eq!(rw.path(), "/user/status/456");
+    }
+
+    #[test]
+    fn rewrite_twitter_url_skips_non_twitter() {
+        let url = Url::parse("https://example.com/page").unwrap();
+        assert!(rewrite_twitter_url(&url, Some("https://nitter.example.com")).is_none());
+    }
+
+    #[test]
+    fn rewrite_twitter_url_skips_when_no_nitter() {
+        let url = Url::parse("https://twitter.com/user/status/123").unwrap();
+        assert!(rewrite_twitter_url(&url, None).is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_page_with_nitter_rewrites_url_but_returns_original() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/status/123"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html")
+                    .set_body_string("<html><body><p>Tweet content here</p></body></html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let nitter_base = server.uri();
+        let cfg = crate::config::UrlFetchConfig {
+            enabled: true,
+            user_agent: "test/1.0".into(),
+            timeout_secs: 5,
+            max_redirects: 3,
+            max_body_bytes: 1024 * 1024,
+            skip_domains: vec![],
+            nitter_base_url: Some(nitter_base),
+        };
+        let fetcher = UrlFetcher::new(&cfg);
+        let original_url = Url::parse("https://twitter.com/user/status/123").unwrap();
+        let content = fetcher.fetch_page(&original_url).await.unwrap();
+        // URL in result should be the original Twitter URL, not the Nitter URL
+        assert_eq!(content.url, "https://twitter.com/user/status/123");
+        assert!(content.text.contains("Tweet content here"));
     }
 }

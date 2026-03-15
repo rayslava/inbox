@@ -23,6 +23,10 @@ pub struct LlmConfig {
     /// Images larger than this are silently skipped.
     #[serde(default = "default_vision_max_bytes")]
     pub vision_max_bytes: usize,
+    /// Maximum characters of a single tool result appended to the LLM context.
+    /// Prevents context overflow from large scraped pages. `None` disables truncation.
+    #[serde(default = "default_tool_result_max_chars")]
+    pub tool_result_max_chars: Option<usize>,
     #[serde(default)]
     pub prompts: LlmPromptsConfig,
     #[serde(default)]
@@ -43,6 +47,9 @@ fn default_inner_retries() -> u32 {
 }
 fn default_vision_max_bytes() -> usize {
     5 * 1024 * 1024
+}
+fn default_tool_result_max_chars() -> Option<usize> {
+    Some(20_000)
 }
 
 #[derive(Debug, Clone, Deserialize)]

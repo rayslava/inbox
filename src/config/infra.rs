@@ -98,6 +98,11 @@ pub struct UrlFetchConfig {
     pub user_agent: String,
     #[serde(default)]
     pub skip_domains: Vec<String>,
+    /// Optional Nitter base URL for transparent Twitter/X URL rewriting.
+    /// When set, requests to twitter.com and x.com are transparently rewritten
+    /// to this Nitter instance, which serves static HTML without JavaScript.
+    #[serde(default)]
+    pub nitter_base_url: Option<String>,
 }
 
 impl Default for UrlFetchConfig {
@@ -109,6 +114,7 @@ impl Default for UrlFetchConfig {
             max_body_bytes: default_max_body_bytes(),
             user_agent: default_user_agent(),
             skip_domains: Vec::new(),
+            nitter_base_url: None,
         }
     }
 }

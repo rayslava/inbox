@@ -20,6 +20,7 @@ fn test_fetch_cfg() -> UrlFetchConfig {
         max_redirects: 3,
         max_body_bytes: 1024 * 1024,
         skip_domains: vec![],
+        nitter_base_url: None,
     }
 }
 
@@ -209,6 +210,7 @@ async fn fetcher_live_https_example_com() {
         max_redirects: 5,
         max_body_bytes: 1024 * 1024,
         skip_domains: vec![],
+        nitter_base_url: None,
     });
 
     let url = "https://example.com".parse().unwrap();

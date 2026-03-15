@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::config::FallbackMode;
@@ -129,7 +130,7 @@ async fn chain_returns_success() {
 
 #[tokio::test]
 async fn chain_raw_fallback_when_no_backends() {
-    let chain = LlmChain::new(vec![], FallbackMode::Raw, 5, None, 1, 0);
+    let chain = LlmChain::new(vec![], FallbackMode::Raw, 5, None, 1, 0, None);
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
     assert!(matches!(outcome, LlmOutcome::RawFallback { .. }));
@@ -137,7 +138,7 @@ async fn chain_raw_fallback_when_no_backends() {
 
 #[tokio::test]
 async fn chain_discard_fallback_when_no_backends() {
-    let chain = LlmChain::new(vec![], FallbackMode::Discard, 5, None, 1, 0);
+    let chain = LlmChain::new(vec![], FallbackMode::Discard, 5, None, 1, 0, None);
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
     assert!(matches!(outcome, LlmOutcome::Discard));
@@ -145,7 +146,7 @@ async fn chain_discard_fallback_when_no_backends() {
 
 #[test]
 fn max_tool_turns_accessor() {
-    let chain = LlmChain::new(vec![], FallbackMode::Raw, 7, None, 1, 0);
+    let chain = LlmChain::new(vec![], FallbackMode::Raw, 7, None, 1, 0, None);
     assert_eq!(chain.max_tool_turns(), 7);
 }
 
@@ -236,6 +237,7 @@ async fn chain_tool_calls_without_executor_falls_back() {
         None,
         1,
         0,
+        None,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -251,6 +253,7 @@ async fn chain_empty_tool_calls_falls_back() {
         None,
         1,
         0,
+        None,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -425,6 +428,7 @@ async fn chain_activate_thinking_retries_with_think_true() {
         None,
         1,
         0,
+        None,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -483,6 +487,7 @@ async fn chain_thinking_loop_terminates() {
         None,
         1,
         0,
+        None,
     );
     let req = LlmRequest::simple("s", "u");
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), chain.complete(req)).await;
@@ -544,6 +549,7 @@ async fn llm_call_executes_sub_call() {
         None,
         1,
         0,
+        None,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -577,6 +583,7 @@ async fn llm_call_not_offered_when_depth_zero() {
         None,
         0, // max_llm_tool_depth = 0
         0,
+        None,
     );
     // With depth=0 and no tool executor, tool_defs is empty, so llm_call is NOT offered.
     // The LLM returns an llm_call tool call anyway (models can do that).
@@ -646,6 +653,7 @@ async fn chain_max_tool_turns_attempts_forced_summary() {
         None,
         1,
         0,
+        None,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -668,6 +676,7 @@ async fn chain_raw_fallback_carries_source_urls() {
         None,
         1,
         0,
+        None,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -746,6 +755,7 @@ async fn chain_budget_hint_injected_at_half_budget() {
         None,
         1,
         0,
+        None,
     );
     let req = LlmRequest::simple("s", "u");
     let _outcome = chain.complete(req).await;
@@ -806,6 +816,7 @@ async fn chain_inner_retry_succeeds_after_transient_failure() {
         None,
         1,
         1, // inner_retries = 1
+        None,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -854,6 +865,7 @@ async fn chain_forced_summary_fail_falls_back() {
         None,
         1,
         0,
+        None,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -916,6 +928,7 @@ async fn chain_sends_progress_events_via_channel() {
         None,
         1,
         0,
+        None,
     );
 
     let (progress_tx, mut progress_rx) =
@@ -934,4 +947,115 @@ async fn chain_sends_progress_events_via_channel() {
     // The test verifies the channel mechanism works without panicking.
     // If tools ran, events would be present; if forced-summary fired first, none.
     drop(received);
+}
+
+// ── Tool result truncation ────────────────────────────────────────────────────
+
+struct CaptureTurn2Llm {
+    turn: Arc<AtomicUsize>,
+    scrape_url: String,
+    captured: Arc<Mutex<Option<String>>>,
+    response: crate::message::LlmResponse,
+}
+
+#[async_trait]
+impl LlmClient for CaptureTurn2Llm {
+    fn name(&self) -> &'static str {
+        "capture_turn2"
+    }
+    fn model(&self) -> &'static str {
+        "test"
+    }
+    fn retries(&self) -> u32 {
+        1
+    }
+    async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
+        let n = self.turn.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            Ok(LlmCompletion::ToolCalls(vec![ToolCall {
+                id: "t1".into(),
+                name: "scrape_page".into(),
+                arguments: serde_json::json!({"url": self.scrape_url}),
+            }]))
+        } else {
+            *self.captured.lock().unwrap() = Some(req.user_content.clone());
+            Ok(LlmCompletion::Message(self.response.clone()))
+        }
+    }
+}
+
+/// Verifies that oversized tool results are truncated before being appended to context.
+#[tokio::test]
+async fn tool_result_truncated_in_chain() {
+    use crate::config::{ToolBackendConfig, UrlFetchConfig};
+    use crate::llm::tools::{Tool, ToolExecutor};
+    use crate::pipeline::url_fetcher::UrlFetcher;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let content_server = MockServer::start().await;
+    // Serve HTML with 200 x-chars of body text (well above 50 char limit)
+    Mock::given(method("GET"))
+        .and(path("/page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string(&format!(
+                    "<html><body><p>{}</p></body></html>",
+                    "x".repeat(200)
+                )),
+        )
+        .mount(&content_server)
+        .await;
+
+    let scrape_url = format!("{}/page", content_server.uri());
+    let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    let turn_count = Arc::new(AtomicUsize::new(0));
+    let llm = CaptureTurn2Llm {
+        turn: Arc::clone(&turn_count),
+        scrape_url,
+        captured: Arc::clone(&captured),
+        response: crate::test_helpers::default_llm_response(),
+    };
+
+    let fetcher = UrlFetcher::new(&UrlFetchConfig {
+        enabled: true,
+        user_agent: "test/1.0".into(),
+        timeout_secs: 5,
+        max_redirects: 3,
+        max_body_bytes: 1024 * 1024,
+        skip_domains: vec![],
+        nitter_base_url: None,
+    });
+
+    let tools = vec![Tool {
+        name: "scrape_page".into(),
+        description: "scrape".into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Internal { timeout_secs: 5 },
+    }];
+    let executor = ToolExecutor::new(tools, fetcher);
+
+    let chain = LlmChain::new(
+        vec![Box::new(llm) as Box<dyn LlmClient>],
+        FallbackMode::Raw,
+        5,
+        Some(executor),
+        1,
+        0,
+        Some(50), // truncate to 50 chars
+    );
+
+    let req = LlmRequest::simple("s", "u");
+    let outcome = chain.complete(req).await;
+    assert!(matches!(outcome, LlmOutcome::Success(_)));
+
+    let guard = captured.lock().unwrap();
+    let content = guard.as_deref().unwrap_or("");
+    assert!(
+        content.contains("[truncated to 50 chars]"),
+        "expected truncation notice in turn-2 content, got: {content}"
+    );
 }

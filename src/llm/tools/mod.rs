@@ -268,10 +268,19 @@ impl ToolExecutor {
         backend: &ToolBackendConfig,
         url: &Url,
     ) -> Result<ToolResult, InboxError> {
+        use crate::pipeline::url_fetcher::rewrite_twitter_url;
+        let rewritten;
+        let effective_url = match rewrite_twitter_url(url, self.fetcher.nitter_base_url()) {
+            Some(rw) => {
+                rewritten = rw;
+                &rewritten
+            }
+            None => url,
+        };
         match backend {
             ToolBackendConfig::Internal { timeout_secs } => {
                 let timeout = Duration::from_secs(u64::from(*timeout_secs));
-                let content = tokio::time::timeout(timeout, self.fetcher.fetch_page(url))
+                let content = tokio::time::timeout(timeout, self.fetcher.fetch_page(effective_url))
                     .await
                     .map_err(|_| {
                         InboxError::LlmTool(format!("scrape_page timed out after {timeout_secs}s"))
@@ -281,7 +290,7 @@ impl ToolExecutor {
                 ))
             }
             ToolBackendConfig::Shell { argv, timeout_secs } => {
-                run_shell_tool(argv, url.as_str(), "", *timeout_secs).await
+                run_shell_tool(argv, effective_url.as_str(), "", *timeout_secs).await
             }
             ToolBackendConfig::Http {
                 endpoint,
@@ -299,7 +308,7 @@ impl ToolExecutor {
                     response_path,
                     timeout_secs: *timeout_secs,
                 };
-                run_http_tool(&self.http_client, cfg, url.as_str(), "").await
+                run_http_tool(&self.http_client, cfg, effective_url.as_str(), "").await
             }
             ToolBackendConfig::Crawler { .. } => Err(InboxError::LlmTool(
                 "scrape_page does not support crawler backend".into(),

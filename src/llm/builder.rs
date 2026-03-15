@@ -24,6 +24,7 @@ pub fn build_chain(cfg: &Config) -> LlmChain {
         Some(tool_executor),
         cfg.llm.max_llm_tool_depth,
         cfg.llm.inner_retries,
+        cfg.llm.tool_result_max_chars,
     )
 }
 

@@ -21,6 +21,7 @@ pub struct LlmChain {
     max_llm_tool_depth: u32,
     tool_executor: Option<tools::ToolExecutor>,
     inner_retries: u32,
+    tool_result_max_chars: Option<usize>,
 }
 
 impl LlmChain {
@@ -33,6 +34,7 @@ impl LlmChain {
         tool_executor: Option<tools::ToolExecutor>,
         max_llm_tool_depth: u32,
         inner_retries: u32,
+        tool_result_max_chars: Option<usize>,
     ) -> Self {
         Self {
             backends,
@@ -41,6 +43,7 @@ impl LlmChain {
             max_llm_tool_depth,
             tool_executor,
             inner_retries,
+            tool_result_max_chars,
         }
     }
 
@@ -318,7 +321,13 @@ impl LlmChain {
 
                             let tool_names: Vec<String> =
                                 calls.iter().map(|c| c.name.clone()).collect();
-                            let output = execute_tool_calls(executor, &calls, &req_attempt).await;
+                            let output = execute_tool_calls(
+                                executor,
+                                &calls,
+                                &req_attempt,
+                                self.tool_result_max_chars,
+                            )
+                            .await;
                             for url in output.source_urls {
                                 if tool_source_url_set.insert(url.clone()) {
                                     tool_source_urls.push(url);
@@ -473,11 +482,22 @@ async fn retry_inner(
 
 // ── Tool execution helpers ────────────────────────────────────────────────────
 
+#[spec(requires: max_chars > 0)]
+fn truncate_tool_result(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        text.to_owned()
+    } else {
+        let t: String = text.chars().take(max_chars).collect();
+        format!("{t}\n... [truncated to {max_chars} chars]")
+    }
+}
+
 #[spec(requires: !calls.is_empty())]
 async fn execute_tool_calls(
     executor: &tools::ToolExecutor,
     calls: &[ToolCall],
     req: &LlmRequest,
+    tool_result_max_chars: Option<usize>,
 ) -> ToolExecutionOutput {
     let results = futures::future::join_all(calls.iter().map(|call| {
         executor.execute(
@@ -509,6 +529,23 @@ async fn execute_tool_calls(
                         source_urls.push(url);
                     }
                 }
+                let text = match tool_result_max_chars {
+                    Some(n) => {
+                        let orig_len = text.len();
+                        let truncated = truncate_tool_result(&text, n);
+                        if truncated.len() < orig_len {
+                            info!(
+                                tool = %call.name,
+                                orig_len,
+                                effective_len = truncated.len(),
+                                max_chars = n,
+                                "Tool result truncated"
+                            );
+                        }
+                        truncated
+                    }
+                    None => text,
+                };
                 outputs.push(format!("tool `{}`: {text}", call.name));
             }
             Err(e) => {
@@ -562,4 +599,31 @@ pub(super) fn append_missing_source_links(
     }
 
     resp
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::truncate_tool_result;
+
+    #[test]
+    fn truncate_short_text_passes_through() {
+        let text = "hello world";
+        assert_eq!(truncate_tool_result(text, 100), text);
+    }
+
+    #[test]
+    fn truncate_long_text_appends_notice() {
+        let text = "a".repeat(30);
+        let result = truncate_tool_result(&text, 20);
+        assert!(result.starts_with(&"a".repeat(20)));
+        assert!(result.contains("[truncated to 20 chars]"));
+        assert!(!result.contains(&"a".repeat(21)));
+    }
+
+    #[test]
+    fn truncate_exact_length_passes_through() {
+        let text = "x".repeat(50);
+        let result = truncate_tool_result(&text, 50);
+        assert_eq!(result, text);
+    }
 }

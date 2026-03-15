@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::config::LlmBackendConfig;
 use crate::error::InboxError;
@@ -29,6 +29,18 @@ pub struct OllamaClient {
 }
 
 impl OllamaClient {
+    /// Query the Ollama `/api/ps` endpoint to get currently loaded models.
+    /// Returns `None` if the request fails (always non-fatal).
+    async fn query_ps(&self) -> Option<Vec<OllamaPsModel>> {
+        let resp = self
+            .client
+            .get(format!("{}/api/ps", self.base_url))
+            .send()
+            .await
+            .ok()?;
+        resp.json::<OllamaPsResponse>().await.ok().map(|r| r.models)
+    }
+
     /// Create an `OllamaClient` from backend config.
     ///
     /// # Panics
@@ -110,6 +122,17 @@ struct OllamaChatResponse {
 }
 
 #[derive(Deserialize)]
+struct OllamaPsResponse {
+    models: Vec<OllamaPsModel>,
+}
+
+#[derive(Deserialize)]
+struct OllamaPsModel {
+    name: String,
+    size_vram: Option<u64>,
+}
+
+#[derive(Deserialize)]
 struct OllamaResponseMessage {
     content: String,
     #[serde(default)]
@@ -139,12 +162,39 @@ impl LlmClient for OllamaClient {
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
         let LlmRequest {
             system_prompt,
-            user_content,
+            mut user_content,
             tool_definitions,
             images,
             think: req_think,
             ..
         } = req;
+
+        // Pre-flight: log model load status from Ollama /api/ps.
+        if let Some(models) = self.query_ps().await {
+            let loaded = models.iter().any(|m| m.name.contains(self.model.as_str()));
+            let vram_mb = models
+                .iter()
+                .find(|m| m.name.contains(self.model.as_str()))
+                .and_then(|m| m.size_vram.map(|b| b / (1024 * 1024)));
+            info!(model = %self.model, loaded, vram_mb, "Ollama model load status");
+        }
+
+        // Guard: truncate user_content if estimated tokens exceed the configured context window.
+        let estimated_tokens = user_content.len() / 4;
+        if let Some(ctx) = self.context_size {
+            if estimated_tokens > ctx {
+                warn!(
+                    estimated_tokens,
+                    context_size = ctx,
+                    "Content exceeds context window — truncating"
+                );
+                let char_limit = ctx.saturating_mul(4);
+                let truncated: String = user_content.chars().take(char_limit).collect();
+                user_content = format!(
+                    "{truncated}\n... [context truncated: ~{estimated_tokens} tokens > context_size {ctx}]"
+                );
+            }
+        }
 
         // Per-request think flag takes precedence over backend default.
         let effective_think = req_think.or(self.think);
@@ -431,5 +481,125 @@ mod tests {
         let req = LlmRequest::simple("sys", "user");
         let result = client.complete(req).await.unwrap();
         assert!(matches!(result, LlmCompletion::Message(_)));
+    }
+
+    fn chat_response_body() -> serde_json::Value {
+        serde_json::json!({
+            "message": { "role": "assistant", "content": r#"{"title":"T","tags":[],"summary":"S"}"# }
+        })
+    }
+
+    #[tokio::test]
+    async fn preflight_model_loaded_proceeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(serde_json::json!({
+                        "models": [{"name": "llama3", "size_vram": 4294967296u64}]
+                    })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(chat_response_body()),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri());
+        let req = LlmRequest::simple("sys", "user");
+        let result = client.complete(req).await.unwrap();
+        assert!(matches!(result, LlmCompletion::Message(_)));
+    }
+
+    #[tokio::test]
+    async fn preflight_empty_models_proceeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(serde_json::json!({"models": []})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(chat_response_body()),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri());
+        let req = LlmRequest::simple("sys", "user");
+        let result = client.complete(req).await.unwrap();
+        assert!(matches!(result, LlmCompletion::Message(_)));
+    }
+
+    #[tokio::test]
+    async fn preflight_error_ignored_proceeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(chat_response_body()),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri());
+        let req = LlmRequest::simple("sys", "user");
+        let result = client.complete(req).await.unwrap();
+        assert!(matches!(result, LlmCompletion::Message(_)));
+    }
+
+    #[tokio::test]
+    async fn context_overflow_truncates_content() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(serde_json::json!({"models": []})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(chat_response_body()),
+            )
+            .mount(&server)
+            .await;
+
+        let mut client = make_client(&server.uri());
+        // context_size = 1 token → char_limit = 4 chars; content of 100 chars triggers truncation
+        client.context_size = Some(1);
+        let long_content = "a".repeat(100);
+        let req = LlmRequest::simple("sys", &long_content);
+        let result = client.complete(req).await;
+        // Truncation fires but request still completes normally
+        assert!(result.is_ok());
     }
 }
