@@ -165,7 +165,7 @@ pub enum LlmOutcome {
     Success(LlmResponse),
     RawFallback {
         source_urls: Vec<String>,
-        tool_content: String,
+        tool_results: Vec<(String, String)>,
     },
     Discard,
 }

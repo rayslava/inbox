@@ -130,7 +130,7 @@ async fn chain_returns_success() {
 
 #[tokio::test]
 async fn chain_raw_fallback_when_no_backends() {
-    let chain = LlmChain::new(vec![], FallbackMode::Raw, 5, None, 1, 0, None);
+    let chain = LlmChain::new(vec![], FallbackMode::Raw, 5, None, 1, 0, 0);
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
     assert!(matches!(outcome, LlmOutcome::RawFallback { .. }));
@@ -138,7 +138,7 @@ async fn chain_raw_fallback_when_no_backends() {
 
 #[tokio::test]
 async fn chain_discard_fallback_when_no_backends() {
-    let chain = LlmChain::new(vec![], FallbackMode::Discard, 5, None, 1, 0, None);
+    let chain = LlmChain::new(vec![], FallbackMode::Discard, 5, None, 1, 0, 0);
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
     assert!(matches!(outcome, LlmOutcome::Discard));
@@ -146,7 +146,7 @@ async fn chain_discard_fallback_when_no_backends() {
 
 #[test]
 fn max_tool_turns_accessor() {
-    let chain = LlmChain::new(vec![], FallbackMode::Raw, 7, None, 1, 0, None);
+    let chain = LlmChain::new(vec![], FallbackMode::Raw, 7, None, 1, 0, 0);
     assert_eq!(chain.max_tool_turns(), 7);
 }
 
@@ -237,7 +237,7 @@ async fn chain_tool_calls_without_executor_falls_back() {
         None,
         1,
         0,
-        None,
+        0,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -253,7 +253,7 @@ async fn chain_empty_tool_calls_falls_back() {
         None,
         1,
         0,
-        None,
+        0,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -428,7 +428,7 @@ async fn chain_activate_thinking_retries_with_think_true() {
         None,
         1,
         0,
-        None,
+        0,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -487,7 +487,7 @@ async fn chain_thinking_loop_terminates() {
         None,
         1,
         0,
-        None,
+        0,
     );
     let req = LlmRequest::simple("s", "u");
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), chain.complete(req)).await;
@@ -549,7 +549,7 @@ async fn llm_call_executes_sub_call() {
         None,
         1,
         0,
-        None,
+        0,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -583,7 +583,7 @@ async fn llm_call_not_offered_when_depth_zero() {
         None,
         0, // max_llm_tool_depth = 0
         0,
-        None,
+        0,
     );
     // With depth=0 and no tool executor, tool_defs is empty, so llm_call is NOT offered.
     // The LLM returns an llm_call tool call anyway (models can do that).
@@ -653,7 +653,7 @@ async fn chain_max_tool_turns_attempts_forced_summary() {
         None,
         1,
         0,
-        None,
+        0,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -676,18 +676,18 @@ async fn chain_raw_fallback_carries_source_urls() {
         None,
         1,
         0,
-        None,
+        0,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
     match outcome {
         LlmOutcome::RawFallback {
             source_urls,
-            tool_content,
+            tool_results,
         } => {
             // source_urls may be empty since no tools ran, but the fields must exist
             let _ = source_urls;
-            let _ = tool_content;
+            let _ = tool_results;
         }
         other => panic!(
             "expected RawFallback, got something else: {:?}",
@@ -755,7 +755,7 @@ async fn chain_budget_hint_injected_at_half_budget() {
         None,
         1,
         0,
-        None,
+        0,
     );
     let req = LlmRequest::simple("s", "u");
     let _outcome = chain.complete(req).await;
@@ -816,7 +816,7 @@ async fn chain_inner_retry_succeeds_after_transient_failure() {
         None,
         1,
         1, // inner_retries = 1
-        None,
+        0,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -865,7 +865,7 @@ async fn chain_forced_summary_fail_falls_back() {
         None,
         1,
         0,
-        None,
+        0,
     );
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
@@ -928,7 +928,7 @@ async fn chain_sends_progress_events_via_channel() {
         None,
         1,
         0,
-        None,
+        0,
     );
 
     let (progress_tx, mut progress_rx) =
@@ -1045,7 +1045,7 @@ async fn tool_result_truncated_in_chain() {
         Some(executor),
         1,
         0,
-        Some(50), // truncate to 50 chars
+        50, // truncate to 50 chars
     );
 
     let req = LlmRequest::simple("s", "u");

@@ -110,7 +110,8 @@ mod tests {
             },
             llm_response: None,
             fallback_source_urls: vec![],
-            fallback_tool_content: String::new(),
+            fallback_tool_results: vec![],
+            fallback_title: None,
         }
     }
 

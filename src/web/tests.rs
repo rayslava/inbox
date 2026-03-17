@@ -29,7 +29,7 @@ fn test_state(ready: bool) -> AdminState {
             max_llm_tool_depth: 1,
             inner_retries: 0,
             vision_max_bytes: 5 * 1024 * 1024,
-            tool_result_max_chars: None,
+            tool_result_max_chars: 0,
             prompts: LlmPromptsConfig::default(),
             backends: vec![],
         },

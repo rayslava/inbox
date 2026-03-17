@@ -99,7 +99,6 @@ impl Pipeline {
         let id = msg.id;
         let mut notifier = msg.status_notifier.take();
 
-        // Extract user-supplied #hashtags before any other processing.
         let (cleaned_text, user_tags) = tags::extract_user_tags(&msg.text);
         if !user_tags.is_empty() {
             info!(id = %id, tags = ?user_tags, "Extracted user tags from message");
@@ -107,15 +106,10 @@ impl Pipeline {
             msg.user_tags = user_tags;
         }
 
-        // Run pre-processing rules to build hints for later stages.
         let hints = preprocess::run_preprocessing(&msg, &self.config.pipeline.preprocessing);
         if hints.force_web_search || !hints.suggested_tags.is_empty() {
-            info!(
-                id = %id,
-                force_web_search = hints.force_web_search,
-                suggested_tags = ?hints.suggested_tags,
-                "Pre-processing hints computed"
-            );
+            info!(id = %id, force_web_search = hints.force_web_search,
+                suggested_tags = ?hints.suggested_tags, "Pre-processing hints computed");
         }
         msg.preprocessing_hints = hints;
 
@@ -125,71 +119,31 @@ impl Pipeline {
             msg.text.chars().take(80).collect(),
         );
 
-        // Enriching
-        self.tracker.advance(id, ProcessingStage::Enriching);
-        if let Some(n) = &mut notifier {
-            n.advance(ProcessingStage::Enriching).await;
-        }
-        let enriched = match self.enrich(msg).await {
-            Ok(e) => e,
-            Err(e) => {
-                let stage = ProcessingStage::Failed {
-                    reason: e.to_string(),
-                };
-                self.tracker.advance(id, stage.clone());
-                if let Some(n) = &mut notifier {
-                    n.advance(stage).await;
-                }
-                return Err(e);
-            }
-        };
+        let enriched = self
+            .run_stage(
+                id,
+                &mut notifier,
+                ProcessingStage::Enriching,
+                self.enrich(msg),
+            )
+            .await?;
 
-        // RunningLlm
-        self.tracker.advance(
+        let llm_initial = ProcessingStage::RunningLlm {
+            turn: 0,
+            max_turns: self.llm.max_tool_turns(),
+            last_tools: vec![],
+        };
+        let processed = self
+            .run_stage(id, &mut notifier, llm_initial, self.run_llm(enriched))
+            .await?;
+
+        self.run_stage(
             id,
-            ProcessingStage::RunningLlm {
-                turn: 0,
-                max_turns: self.llm.max_tool_turns(),
-                last_tools: vec![],
-            },
-        );
-        if let Some(n) = &mut notifier {
-            n.advance(ProcessingStage::RunningLlm {
-                turn: 0,
-                max_turns: self.llm.max_tool_turns(),
-                last_tools: vec![],
-            })
-            .await;
-        }
-        let processed = match self.run_llm(enriched).await {
-            Ok(p) => p,
-            Err(e) => {
-                let stage = ProcessingStage::Failed {
-                    reason: e.to_string(),
-                };
-                self.tracker.advance(id, stage.clone());
-                if let Some(n) = &mut notifier {
-                    n.advance(stage).await;
-                }
-                return Err(e);
-            }
-        };
-
-        // Writing
-        self.tracker.advance(id, ProcessingStage::Writing);
-        if let Some(n) = &mut notifier {
-            n.advance(ProcessingStage::Writing).await;
-        }
-        if let Err(e) = self.writer.write(&processed, &self.config).await {
-            let stage = ProcessingStage::Failed {
-                reason: e.to_string(),
-            };
-            self.tracker.advance(id, stage.clone());
-            if let Some(n) = &mut notifier {
-                n.advance(stage).await;
-            }
-            return Err(e);
-        }
+            &mut notifier,
+            ProcessingStage::Writing,
+            self.writer.write(&processed, &self.config),
+        )
+        .await?;
 
         let title = processed.llm_response.as_ref().map_or_else(
             || {
@@ -209,8 +163,33 @@ impl Pipeline {
         if let Some(n) = &mut notifier {
             n.advance(done).await;
         }
-
         Ok(())
+    }
+
+    async fn run_stage<T>(
+        &self,
+        id: uuid::Uuid,
+        notifier: &mut Option<Box<dyn crate::processing_status::StatusNotifier>>,
+        stage: ProcessingStage,
+        fut: impl std::future::Future<Output = Result<T, InboxError>>,
+    ) -> Result<T, InboxError> {
+        self.tracker.advance(id, stage.clone());
+        if let Some(n) = notifier {
+            n.advance(stage).await;
+        }
+        match fut.await {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                let failed = ProcessingStage::Failed {
+                    reason: e.to_string(),
+                };
+                self.tracker.advance(id, failed.clone());
+                if let Some(n) = notifier {
+                    n.advance(failed).await;
+                }
+                Err(e)
+            }
+        }
     }
 
     #[instrument(skip(self, msg), fields(id = %msg.id))]
@@ -392,12 +371,13 @@ impl Pipeline {
                     enriched,
                     llm_response: Some(resp),
                     fallback_source_urls: vec![],
-                    fallback_tool_content: String::new(),
+                    fallback_tool_results: vec![],
+                    fallback_title: None,
                 })
             }
             LlmOutcome::RawFallback {
                 source_urls,
-                tool_content,
+                tool_results,
             } => {
                 let text_preview: String = enriched.original.text.chars().take(120).collect();
                 info!(
@@ -405,11 +385,29 @@ impl Pipeline {
                     text_preview = %text_preview,
                     "LLM unavailable, using raw fallback"
                 );
+                let fallback_title =
+                    if enriched.original.text.is_empty() && !tool_results.is_empty() {
+                        let context = tool_results
+                            .iter()
+                            .map(|(_, t)| t.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        self.llm
+                            .complete_text(
+                                "Generate a concise 5-word title for this content. \
+                                 Reply with only the title, no punctuation.",
+                                &context,
+                            )
+                            .await
+                    } else {
+                        None
+                    };
                 Ok(ProcessedMessage {
                     enriched,
                     llm_response: None,
                     fallback_source_urls: source_urls,
-                    fallback_tool_content: tool_content,
+                    fallback_tool_results: tool_results,
+                    fallback_title,
                 })
             }
             LlmOutcome::Discard => {

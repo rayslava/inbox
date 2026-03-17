@@ -71,7 +71,7 @@ max_tool_turns = 5
 # vision_max_bytes = 5242880
 
 # Truncate individual tool results to this many characters before feeding back to LLM.
-# Prevents context overflow from large scraped pages. Set to null to disable. Default: 20000.
+# Prevents context overflow from large scraped pages. Set to 0 to disable truncation. Default: 20000.
 # tool_result_max_chars = 20000
 
 [llm.prompts]

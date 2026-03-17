@@ -46,6 +46,77 @@ impl OrgNodeTemplate<'_> {
     }
 }
 
+/// Merge user tags, pre-processing suggested tags, and LLM tags in priority order,
+/// deduplicating case-insensitively.
+fn merge_tags(msg: &ProcessedMessage) -> Vec<String> {
+    let original = &msg.enriched.original;
+    let mut all = original.user_tags.clone();
+    for t in &original.preprocessing_hints.suggested_tags {
+        if !all.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+            all.push(t.clone());
+        }
+    }
+    if let Some(r) = &msg.llm_response {
+        for t in &r.tags {
+            if !all.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                all.push(t.clone());
+            }
+        }
+    }
+    all
+}
+
+/// Resolve the fallback heading title using a 4-level priority chain.
+fn fallback_title<'a>(
+    msg: &'a ProcessedMessage,
+    original: &'a crate::message::IncomingMessage,
+) -> &'a str {
+    use crate::message::MediaKind;
+    msg.fallback_title
+        .as_deref()
+        .or_else(|| original.text.lines().find(|l| !l.trim().is_empty()))
+        .or_else(|| {
+            original
+                .attachments
+                .first()
+                .and_then(|a| match a.media_kind {
+                    MediaKind::Image => Some("Image"),
+                    MediaKind::Audio => Some("Audio"),
+                    MediaKind::Video => Some("Video"),
+                    MediaKind::VoiceMessage => Some("Voice Message"),
+                    MediaKind::Sticker => Some("Sticker"),
+                    MediaKind::Animation => Some("Animation"),
+                    _ => None,
+                })
+        })
+        .unwrap_or("(untitled)")
+}
+
+/// Collect all URLs for the `:ROAM_REFS:` property from multiple sources,
+/// deduplicating across the set.
+fn build_roam_refs(
+    urls: &[String],
+    summary: &str,
+    excerpt: Option<&str>,
+    fallback_source_urls: &[String],
+) -> Vec<String> {
+    let mut roam_refs = urls.to_vec();
+    let mut seen: std::collections::HashSet<String> = urls.iter().cloned().collect();
+    let summary_urls = extract_http_url_strings(summary);
+    let excerpt_urls = excerpt.map(extract_http_url_strings).unwrap_or_default();
+    for url in summary_urls.into_iter().chain(excerpt_urls) {
+        if seen.insert(url.clone()) {
+            roam_refs.push(url);
+        }
+    }
+    for url in fallback_source_urls {
+        if seen.insert(url.clone()) {
+            roam_refs.push(url.clone());
+        }
+    }
+    roam_refs
+}
+
 /// Render a `ProcessedMessage` to an org-mode node string.
 ///
 /// # Errors
@@ -96,25 +167,9 @@ pub fn render_org_node(
         })
         .collect();
 
-    // Merge user-supplied tags, pre-processing suggested tags, and LLM tags (in that
-    // priority order) into a single deduplicated list.
-    let merged_tags: Vec<String> = {
-        let mut all = original.user_tags.clone();
-        for t in &original.preprocessing_hints.suggested_tags {
-            if !all.iter().any(|x| x.eq_ignore_ascii_case(t)) {
-                all.push(t.clone());
-            }
-        }
-        if let Some(r) = &msg.llm_response {
-            for t in &r.tags {
-                if !all.iter().any(|x| x.eq_ignore_ascii_case(t)) {
-                    all.push(t.clone());
-                }
-            }
-        }
-        all
-    };
+    let merged_tags = merge_tags(msg);
 
+    let summary_owned: String;
     let (title, summary, excerpt, backend) = if let Some(r) = &msg.llm_response {
         (
             r.title.as_str(),
@@ -123,33 +178,22 @@ pub fn render_org_node(
             r.produced_by.as_str(),
         )
     } else {
-        let summary = if msg.fallback_tool_content.is_empty() {
+        let summary = if msg.fallback_tool_results.is_empty() {
             original.text.as_str()
         } else {
-            msg.fallback_tool_content.as_str()
+            summary_owned = msg
+                .fallback_tool_results
+                .iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            &summary_owned
         };
-        (
-            original.text.lines().next().unwrap_or("(untitled)"),
-            summary,
-            None,
-            "none",
-        )
+        let title = fallback_title(msg, original);
+        (title, summary, None, "none")
     };
 
-    let summary_urls = extract_http_url_strings(summary);
-    let excerpt_urls = excerpt.map(extract_http_url_strings).unwrap_or_default();
-    let mut roam_refs = urls.clone();
-    let mut roam_ref_set: std::collections::HashSet<String> = urls.iter().cloned().collect();
-    for url in summary_urls.into_iter().chain(excerpt_urls) {
-        if roam_ref_set.insert(url.clone()) {
-            roam_refs.push(url);
-        }
-    }
-    for url in &msg.fallback_source_urls {
-        if roam_ref_set.insert(url.clone()) {
-            roam_refs.push(url.clone());
-        }
-    }
+    let roam_refs = build_roam_refs(&urls, summary, excerpt, &msg.fallback_source_urls);
 
     let tmpl = OrgNodeTemplate {
         title,
@@ -179,337 +223,4 @@ fn relative_path(path: &std::path::Path, base: &std::path::Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::message::{
-        EnrichedMessage, IncomingMessage, LlmResponse, MessageSource, ProcessedMessage,
-        SourceMetadata,
-    };
-
-    fn make_processed(text: &str, llm_response: Option<LlmResponse>) -> ProcessedMessage {
-        let msg = IncomingMessage::new(
-            MessageSource::Http,
-            text.into(),
-            SourceMetadata::Http {
-                remote_addr: None,
-                user_agent: None,
-            },
-        );
-        ProcessedMessage {
-            enriched: EnrichedMessage {
-                original: msg,
-                urls: vec![],
-                url_contents: vec![],
-            },
-            llm_response,
-            fallback_source_urls: vec![],
-            fallback_tool_content: String::new(),
-        }
-    }
-
-    #[test]
-    fn render_with_llm_response() {
-        let resp = LlmResponse {
-            title: "My Title".into(),
-            tags: vec!["rust".into(), "test".into()],
-            summary: "A summary.".into(),
-            excerpt: Some("Key quote".into()),
-            produced_by: "mock".into(),
-        };
-        let msg = make_processed("raw text", Some(resp));
-        let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
-        assert!(result.contains("* My Title"));
-        assert!(result.contains(":rust:test:"));
-        assert!(result.contains("A summary."));
-        assert!(result.contains("Key quote"));
-        assert!(result.contains(":ENRICHED_BY: mock"));
-    }
-
-    #[test]
-    fn render_without_llm_response_raw_fallback() {
-        let msg = make_processed("First line\nSecond line", None);
-        let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
-        assert!(result.contains("* First line"));
-        assert!(result.contains(":ENRICHED_BY: none"));
-        assert!(result.contains("First line"));
-    }
-
-    #[test]
-    fn render_empty_text_untitled() {
-        let msg = make_processed("", None);
-        let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
-        assert!(result.contains("(untitled)"));
-    }
-
-    #[test]
-    fn attachment_names_joined() {
-        let tmpl = OrgNodeTemplate {
-            title: "t",
-            tags: &[],
-            id: "id",
-            created: "now",
-            source: "http",
-            urls: &[],
-            roam_refs: &[],
-            attachments: &[
-                AttachmentRef {
-                    name: "a.pdf",
-                    path_rel: "a.pdf".to_owned(),
-                },
-                AttachmentRef {
-                    name: "b.jpg",
-                    path_rel: "b.jpg".to_owned(),
-                },
-            ],
-            llm_backend: "mock",
-            summary: "s",
-            excerpt: None,
-            raw_text: "",
-            forwarded_from: None,
-            media_kinds: &[],
-        };
-        assert_eq!(tmpl.attachment_names(), "a.pdf b.jpg");
-    }
-
-    #[test]
-    fn render_with_url_in_enriched() {
-        let msg_inner = IncomingMessage::new(
-            MessageSource::Http,
-            "text".into(),
-            SourceMetadata::Http {
-                remote_addr: None,
-                user_agent: None,
-            },
-        );
-        let url: url::Url = "https://example.com/page".parse().unwrap();
-        let msg = ProcessedMessage {
-            enriched: EnrichedMessage {
-                original: msg_inner,
-                urls: vec![url],
-                url_contents: vec![],
-            },
-            llm_response: None,
-            fallback_source_urls: vec![],
-            fallback_tool_content: String::new(),
-        };
-        let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
-        assert!(result.contains("https://example.com/page"));
-    }
-
-    #[test]
-    fn render_roam_refs_collects_links_from_summary_and_excerpt() {
-        let resp = LlmResponse {
-            title: "My Title".into(),
-            tags: vec![],
-            summary: "See https://a.example/path and https://b.example/.".into(),
-            excerpt: Some("Quote from https://c.example/info".into()),
-            produced_by: "mock".into(),
-        };
-        let msg = make_processed("raw text", Some(resp));
-        let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
-        assert!(result.contains(":ROAM_REFS:"));
-        assert!(result.contains("https://a.example/path"));
-        assert!(result.contains("https://b.example/"));
-        assert!(result.contains("https://c.example/info"));
-    }
-
-    #[test]
-    fn render_heading_is_immediately_followed_by_properties_drawer() {
-        let resp = LlmResponse {
-            title: "My Title".into(),
-            tags: vec![],
-            summary: "A summary.".into(),
-            excerpt: None,
-            produced_by: "mock".into(),
-        };
-        let msg = make_processed("raw text", Some(resp));
-        let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
-        assert!(
-            result.starts_with("* My Title\n:PROPERTIES:\n"),
-            "expected heading directly followed by drawer, got:\n{result}"
-        );
-    }
-
-    #[test]
-    fn render_forwarded_from_appears_in_drawer() {
-        let msg = IncomingMessage::new(
-            MessageSource::Telegram,
-            "forwarded content".into(),
-            SourceMetadata::Telegram {
-                chat_id: 1,
-                message_id: 1,
-                username: None,
-                forwarded_from: Some("@bob".into()),
-            },
-        );
-        let processed = ProcessedMessage {
-            enriched: EnrichedMessage {
-                original: msg,
-                urls: vec![],
-                url_contents: vec![],
-            },
-            llm_response: None,
-            fallback_source_urls: vec![],
-            fallback_tool_content: String::new(),
-        };
-        let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
-        assert!(
-            result.contains(":FORWARDED_FROM: @bob"),
-            "drawer should contain FORWARDED_FROM: {result}"
-        );
-    }
-
-    #[test]
-    fn render_no_forwarded_property_when_absent() {
-        let msg = make_processed("plain", None);
-        let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
-        assert!(
-            !result.contains("FORWARDED_FROM"),
-            "FORWARDED_FROM should not appear when absent: {result}"
-        );
-    }
-
-    #[test]
-    fn render_voice_message_media_kind_in_drawer() {
-        use crate::message::Attachment;
-
-        let mut msg = IncomingMessage::new(
-            MessageSource::Telegram,
-            "voice note".into(),
-            SourceMetadata::Telegram {
-                chat_id: 1,
-                message_id: 2,
-                username: None,
-                forwarded_from: None,
-            },
-        );
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("voice.ogg");
-        std::fs::write(&path, b"ogg").unwrap();
-        msg.attachments.push(Attachment {
-            original_name: "voice.ogg".into(),
-            saved_path: path,
-            mime_type: Some("audio/ogg".into()),
-            media_kind: crate::message::MediaKind::VoiceMessage,
-        });
-        let processed = ProcessedMessage {
-            enriched: EnrichedMessage {
-                original: msg,
-                urls: vec![],
-                url_contents: vec![],
-            },
-            llm_response: None,
-            fallback_source_urls: vec![],
-            fallback_tool_content: String::new(),
-        };
-        let result = render_org_node(&processed, tmp.path()).unwrap();
-        assert!(
-            result.contains(":MEDIA_KIND: voice_message"),
-            "drawer should contain MEDIA_KIND: {result}"
-        );
-    }
-
-    #[test]
-    fn render_no_media_kind_for_documents() {
-        use crate::message::Attachment;
-
-        let mut msg = IncomingMessage::new(
-            MessageSource::Http,
-            "doc".into(),
-            SourceMetadata::Http {
-                remote_addr: None,
-                user_agent: None,
-            },
-        );
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("file.pdf");
-        std::fs::write(&path, b"pdf").unwrap();
-        msg.attachments.push(Attachment {
-            original_name: "file.pdf".into(),
-            saved_path: path,
-            mime_type: Some("application/pdf".into()),
-            media_kind: crate::message::MediaKind::Document,
-        });
-        let processed = ProcessedMessage {
-            enriched: EnrichedMessage {
-                original: msg,
-                urls: vec![],
-                url_contents: vec![],
-            },
-            llm_response: None,
-            fallback_source_urls: vec![],
-            fallback_tool_content: String::new(),
-        };
-        let result = render_org_node(&processed, tmp.path()).unwrap();
-        assert!(
-            !result.contains("MEDIA_KIND"),
-            "MEDIA_KIND should not appear for document attachments: {result}"
-        );
-    }
-
-    #[test]
-    fn render_fallback_uses_tool_content_as_summary() {
-        let msg = IncomingMessage::new(
-            MessageSource::Http,
-            "Original raw text".into(),
-            SourceMetadata::Http {
-                remote_addr: None,
-                user_agent: None,
-            },
-        );
-        let processed = ProcessedMessage {
-            enriched: EnrichedMessage {
-                original: msg,
-                urls: vec![],
-                url_contents: vec![],
-            },
-            llm_response: None,
-            fallback_source_urls: vec![],
-            fallback_tool_content: "Tool gathered summary content".into(),
-        };
-        let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
-        assert!(
-            result.contains("Tool gathered summary content"),
-            "fallback_tool_content should be used as summary: {result}"
-        );
-        assert!(
-            !result.contains("Original raw text")
-                || result.contains("Tool gathered summary content"),
-            "tool content should take precedence over raw text: {result}"
-        );
-    }
-
-    #[test]
-    fn render_fallback_source_urls_in_roam_refs() {
-        let msg = IncomingMessage::new(
-            MessageSource::Http,
-            "Some note".into(),
-            SourceMetadata::Http {
-                remote_addr: None,
-                user_agent: None,
-            },
-        );
-        let processed = ProcessedMessage {
-            enriched: EnrichedMessage {
-                original: msg,
-                urls: vec![],
-                url_contents: vec![],
-            },
-            llm_response: None,
-            fallback_source_urls: vec![
-                "https://tool-found.example.com/page1".into(),
-                "https://tool-found.example.com/page2".into(),
-            ],
-            fallback_tool_content: String::new(),
-        };
-        let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
-        assert!(
-            result.contains("https://tool-found.example.com/page1"),
-            "fallback_source_urls[0] should appear in ROAM_REFS: {result}"
-        );
-        assert!(
-            result.contains("https://tool-found.example.com/page2"),
-            "fallback_source_urls[1] should appear in ROAM_REFS: {result}"
-        );
-    }
-}
+mod tests;

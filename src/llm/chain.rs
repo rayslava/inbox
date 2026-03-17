@@ -21,7 +21,7 @@ pub struct LlmChain {
     max_llm_tool_depth: u32,
     tool_executor: Option<tools::ToolExecutor>,
     inner_retries: u32,
-    tool_result_max_chars: Option<usize>,
+    tool_result_max_chars: usize,
 }
 
 impl LlmChain {
@@ -34,7 +34,7 @@ impl LlmChain {
         tool_executor: Option<tools::ToolExecutor>,
         max_llm_tool_depth: u32,
         inner_retries: u32,
-        tool_result_max_chars: Option<usize>,
+        tool_result_max_chars: usize,
     ) -> Self {
         Self {
             backends,
@@ -64,7 +64,7 @@ impl LlmChain {
 
         // Fallback state persists across all backend+attempt loops.
         let mut fallback_source_urls: Vec<String> = Vec::new();
-        let mut fallback_tool_content: String = String::new();
+        let mut fallback_tool_results: Vec<(String, String)> = Vec::new();
 
         for backend in &self.backends {
             for attempt in 0..backend.retries() {
@@ -77,7 +77,7 @@ impl LlmChain {
                 let mut tool_source_url_set: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
                 let mut tool_source_urls: Vec<String> = Vec::new();
-                let mut accumulated_tool_text: String = String::new();
+                let mut accumulated_tool_results: Vec<(String, String)> = Vec::new();
 
                 loop {
                     let tool_names_debug: Vec<&str> = req_attempt
@@ -124,7 +124,7 @@ impl LlmChain {
                                     "Required initial tool call was not produced"
                                 );
                                 fallback_source_urls.clone_from(&tool_source_urls);
-                                fallback_tool_content.clone_from(&accumulated_tool_text);
+                                fallback_tool_results.clone_from(&accumulated_tool_results);
                                 break;
                             }
                             metrics::counter!(
@@ -163,7 +163,7 @@ impl LlmChain {
                                             "activate_thinking loop limit reached"
                                         );
                                         fallback_source_urls.clone_from(&tool_source_urls);
-                                        fallback_tool_content.clone_from(&accumulated_tool_text);
+                                        fallback_tool_results.clone_from(&accumulated_tool_results);
                                         break;
                                     }
                                     continue;
@@ -222,7 +222,7 @@ impl LlmChain {
                                         }
                                     }
                                     fallback_source_urls.clone_from(&tool_source_urls);
-                                    fallback_tool_content.clone_from(&accumulated_tool_text);
+                                    fallback_tool_results.clone_from(&accumulated_tool_results);
                                     break;
                                 }
                                 let llm_call_names: Vec<String> =
@@ -234,10 +234,7 @@ impl LlmChain {
                                         req_attempt.user_content,
                                         "\n\ntool `llm_call` result: {result}"
                                     );
-                                    let _ = write!(
-                                        accumulated_tool_text,
-                                        "\ntool `llm_call` result: {result}"
-                                    );
+                                    accumulated_tool_results.push(("llm_call".to_owned(), result));
                                 }
                                 turns += 1;
                                 if let Some(tx) = &req_attempt.progress_tx {
@@ -265,7 +262,7 @@ impl LlmChain {
                                     "LLM returned empty tool call list"
                                 );
                                 fallback_source_urls.clone_from(&tool_source_urls);
-                                fallback_tool_content.clone_from(&accumulated_tool_text);
+                                fallback_tool_results.clone_from(&accumulated_tool_results);
                                 break;
                             }
 
@@ -306,7 +303,7 @@ impl LlmChain {
                                 }
                                 // Update fallback before breaking
                                 fallback_source_urls.clone_from(&tool_source_urls);
-                                fallback_tool_content.clone_from(&accumulated_tool_text);
+                                fallback_tool_results.clone_from(&accumulated_tool_results);
                                 break;
                             }
                             let Some(executor) = &self.tool_executor else {
@@ -315,7 +312,7 @@ impl LlmChain {
                                     "Tool call requested but no executor configured"
                                 );
                                 fallback_source_urls.clone_from(&tool_source_urls);
-                                fallback_tool_content.clone_from(&accumulated_tool_text);
+                                fallback_tool_results.clone_from(&accumulated_tool_results);
                                 break;
                             };
 
@@ -337,8 +334,7 @@ impl LlmChain {
                                 .user_content
                                 .push_str("\n\n--- Tool execution results ---\n");
                             req_attempt.user_content.push_str(&output.text);
-                            accumulated_tool_text.push_str("\n\n--- Tool execution results ---\n");
-                            accumulated_tool_text.push_str(&output.text);
+                            accumulated_tool_results.extend(output.named_results);
                             req_attempt.require_initial_tool_call = false;
                             turns += 1;
                             if let Some(tx) = &req_attempt.progress_tx {
@@ -368,7 +364,7 @@ impl LlmChain {
                                 "LLM attempt failed"
                             );
                             fallback_source_urls.clone_from(&tool_source_urls);
-                            fallback_tool_content.clone_from(&accumulated_tool_text);
+                            fallback_tool_results.clone_from(&accumulated_tool_results);
                             break;
                         }
                     }
@@ -395,7 +391,7 @@ impl LlmChain {
         match self.fallback {
             FallbackMode::Raw => LlmOutcome::RawFallback {
                 source_urls: fallback_source_urls,
-                tool_content: fallback_tool_content,
+                tool_results: fallback_tool_results,
             },
             FallbackMode::Discard => LlmOutcome::Discard,
         }
@@ -404,6 +400,26 @@ impl LlmChain {
     #[must_use]
     pub fn max_tool_turns(&self) -> usize {
         self.max_tool_turns
+    }
+
+    /// One-shot text completion with no tools and no JSON structure.
+    /// Returns `None` if all backends fail or return empty text.
+    pub async fn complete_text(&self, system: &str, user: &str) -> Option<String> {
+        let req = LlmRequest::simple(system, user);
+        for backend in &self.backends {
+            match backend.complete_raw(req.clone()).await {
+                Ok(text) => {
+                    let trimmed = text.trim().to_owned();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed);
+                    }
+                }
+                Err(e) => {
+                    warn!(?e, backend = backend.name(), "complete_text backend failed");
+                }
+            }
+        }
+        None
     }
 
     async fn execute_llm_tool_call(&self, call: &ToolCall, parent_req: &LlmRequest) -> String {
@@ -497,7 +513,7 @@ async fn execute_tool_calls(
     executor: &tools::ToolExecutor,
     calls: &[ToolCall],
     req: &LlmRequest,
-    tool_result_max_chars: Option<usize>,
+    tool_result_max_chars: usize,
 ) -> ToolExecutionOutput {
     let results = futures::future::join_all(calls.iter().map(|call| {
         executor.execute(
@@ -510,6 +526,7 @@ async fn execute_tool_calls(
     .await;
 
     let mut outputs = Vec::with_capacity(calls.len());
+    let mut named_results: Vec<(String, String)> = Vec::with_capacity(calls.len());
     let mut source_url_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut source_urls: Vec<String> = Vec::new();
 
@@ -529,24 +546,24 @@ async fn execute_tool_calls(
                         source_urls.push(url);
                     }
                 }
-                let text = match tool_result_max_chars {
-                    Some(n) => {
-                        let orig_len = text.len();
-                        let truncated = truncate_tool_result(&text, n);
-                        if truncated.len() < orig_len {
-                            info!(
-                                tool = %call.name,
-                                orig_len,
-                                effective_len = truncated.len(),
-                                max_chars = n,
-                                "Tool result truncated"
-                            );
-                        }
-                        truncated
+                let text = if tool_result_max_chars > 0 {
+                    let orig_len = text.len();
+                    let truncated = truncate_tool_result(&text, tool_result_max_chars);
+                    if truncated.len() < orig_len {
+                        info!(
+                            tool = %call.name,
+                            orig_len,
+                            effective_len = truncated.len(),
+                            max_chars = tool_result_max_chars,
+                            "Tool result truncated"
+                        );
                     }
-                    None => text,
+                    truncated
+                } else {
+                    text
                 };
                 outputs.push(format!("tool `{}`: {text}", call.name));
+                named_results.push((call.name.clone(), text));
             }
             Err(e) => {
                 warn!(tool = %call.name, ?e, "Tool call failed");
@@ -557,12 +574,14 @@ async fn execute_tool_calls(
 
     ToolExecutionOutput {
         text: outputs.join("\n"),
+        named_results,
         source_urls,
     }
 }
 
 struct ToolExecutionOutput {
     text: String,
+    named_results: Vec<(String, String)>,
     source_urls: Vec<String>,
 }
 
