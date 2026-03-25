@@ -22,6 +22,9 @@ pub const WRITE_ERRORS: &str = "inbox_write_errors_total";
 /// Labels: adapter = "telegram" | "email"
 pub const ADAPTER_RECONNECTS: &str = "inbox_adapter_reconnects_total";
 
+/// Labels: op = "save" | "recall" | "link" | "context" | "sources", status = "success" | "failure"
+pub const MEMORY_OPS: &str = "inbox_memory_ops_total";
+
 // ── Histograms ────────────────────────────────────────────────────────────────
 
 /// Labels: source
@@ -29,6 +32,9 @@ pub const PROCESSING_DURATION: &str = "inbox_processing_duration_seconds";
 
 /// Labels: backend
 pub const LLM_DURATION: &str = "inbox_llm_duration_seconds";
+
+/// Labels: op
+pub const MEMORY_DURATION: &str = "inbox_memory_duration_seconds";
 
 // ── Gauges ────────────────────────────────────────────────────────────────────
 
@@ -66,6 +72,16 @@ pub fn describe_metrics() {
         "End-to-end pipeline processing time per message"
     );
     describe_histogram!(LLM_DURATION, Unit::Seconds, "LLM request duration");
+    describe_counter!(
+        MEMORY_OPS,
+        Unit::Count,
+        "Total memory store operations (save, recall, link, context, sources)"
+    );
+    describe_histogram!(
+        MEMORY_DURATION,
+        Unit::Seconds,
+        "Memory store operation duration"
+    );
     describe_gauge!(
         QUEUE_DEPTH,
         Unit::Count,
@@ -88,6 +104,8 @@ mod tests {
         assert!(!LLM_DURATION.is_empty());
         assert!(!QUEUE_DEPTH.is_empty());
         assert!(!ADAPTER_RECONNECTS.is_empty());
+        assert!(!MEMORY_OPS.is_empty());
+        assert!(!MEMORY_DURATION.is_empty());
     }
 
     #[test]

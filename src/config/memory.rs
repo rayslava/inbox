@@ -1,12 +1,12 @@
 use serde::Deserialize;
 
-/// Configuration for the persistent LLM memory store.
+/// Configuration for the persistent LLM memory store (Grafeo graph database).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct MemoryConfig {
-    /// Enable the memory tool (`memory_save` / `memory_recall`).
+    /// Enable the memory tools (`memory_save` / `memory_recall` / `memory_link` / `memory_context`).
     #[serde(default)]
     pub enabled: bool,
-    /// `SQLite` database path. Defaults to `{attachments_dir}/memory.db`.
+    /// Grafeo database path. Defaults to `{attachments_dir}/memory.grafeo`.
     pub db_path: Option<String>,
     /// OpenAI-compatible embeddings endpoint base URL
     /// (e.g. `http://localhost:11434/v1` for Ollama).

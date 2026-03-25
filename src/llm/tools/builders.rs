@@ -149,7 +149,7 @@ pub fn from_tooling(tooling: &ToolingConfig, fetcher: UrlFetcher) -> ToolExecuto
     ToolExecutor::new(tools, fetcher)
 }
 
-/// Register the `memory_save` and `memory_recall` tools on an existing executor.
+/// Register the memory tools on an existing executor.
 pub fn add_memory_tools(
     executor: &mut ToolExecutor,
     store: std::sync::Arc<crate::memory::MemoryStore>,
@@ -168,6 +168,24 @@ pub fn add_memory_tools(
         name: "memory_recall".into(),
         description: "Search persistent memories for information related to a query. \
                       Returns matching key-value entries."
+            .into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Memory,
+    });
+    executor.tools.push(Tool {
+        name: "memory_link".into(),
+        description: "Create a relationship between two memories. Use this to connect \
+                      related facts, topics, or concepts."
+            .into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Memory,
+    });
+    executor.tools.push(Tool {
+        name: "memory_context".into(),
+        description: "Find memories connected to a given memory key via graph traversal. \
+                      Returns related memories within the specified number of hops."
             .into(),
         enabled: true,
         retries: 0,

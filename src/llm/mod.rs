@@ -38,6 +38,8 @@ pub struct LlmRequest {
     pub llm_depth: u32,
     /// Optional channel to report per-turn progress events back to the caller.
     pub progress_tx: Option<tokio::sync::mpsc::UnboundedSender<LlmTurnProgress>>,
+    /// Source adapter name (e.g. "telegram", "email", "http") for memory linking.
+    pub source_name: String,
 }
 
 impl LlmRequest {
@@ -128,6 +130,7 @@ impl LlmRequest {
             think: None,
             llm_depth: 0,
             progress_tx: None,
+            source_name: enriched.original.source_name().to_owned(),
         }
     }
 
@@ -144,6 +147,7 @@ impl LlmRequest {
             think: None,
             llm_depth: 0,
             progress_tx: None,
+            source_name: String::new(),
         }
     }
 }

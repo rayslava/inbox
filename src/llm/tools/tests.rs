@@ -99,6 +99,7 @@ async fn execute_unknown_tool_errors() {
             &serde_json::json!({}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -114,6 +115,7 @@ async fn execute_scrape_page_missing_url_arg_errors() {
             &serde_json::json!({}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -129,6 +131,7 @@ async fn execute_download_file_missing_url_arg_errors() {
             &serde_json::json!({}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -156,6 +159,7 @@ async fn execute_crawl_url_missing_url_arg_errors() {
             &serde_json::json!({}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -184,6 +188,7 @@ async fn execute_web_search_missing_query_arg_errors() {
             &serde_json::json!({}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -206,6 +211,7 @@ async fn execute_crawl_url_with_wrong_backend_errors() {
             &serde_json::json!({"url":"https://example.com"}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -228,6 +234,7 @@ async fn execute_web_search_with_wrong_backend_errors() {
             &serde_json::json!({"query":"rust async"}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -255,6 +262,7 @@ async fn execute_scrape_page_with_crawler_backend_errors() {
             &serde_json::json!({"url":"https://example.com"}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -282,6 +290,7 @@ async fn execute_download_file_with_crawler_backend_errors() {
             &serde_json::json!({"url":"https://example.com"}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -600,6 +609,7 @@ async fn internal_scrape_respects_timeout() {
             &serde_json::json!({"url": format!("{}/slow", server.uri())}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -639,6 +649,7 @@ async fn exponential_backoff_increases_delay() {
             &serde_json::json!({"url": format!("{}/slow", server.uri())}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     let elapsed = start.elapsed();
@@ -727,6 +738,7 @@ async fn execute_duckduckgo_search_missing_query_arg_errors() {
             &serde_json::json!({}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -749,6 +761,7 @@ async fn execute_duckduckgo_search_with_wrong_backend_errors() {
             &serde_json::json!({"query":"rust async"}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -773,6 +786,7 @@ async fn execute_memory_save_and_recall() {
             &serde_json::json!({"key": "user_name", "value": "Alice"}),
             id,
             dir,
+            "",
         )
         .await
         .unwrap();
@@ -785,6 +799,7 @@ async fn execute_memory_save_and_recall() {
             &serde_json::json!({"query": "user_name"}),
             id,
             dir,
+            "",
         )
         .await
         .unwrap();
@@ -805,6 +820,7 @@ async fn execute_memory_save_missing_key_errors() {
             &serde_json::json!({"value": "no key provided"}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -824,6 +840,7 @@ async fn execute_memory_recall_missing_query_errors() {
             &serde_json::json!({}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -843,6 +860,7 @@ async fn execute_memory_recall_no_results_returns_text() {
             &serde_json::json!({"query": "xyzzy_nonexistent_42"}),
             id,
             std::path::Path::new("/tmp"),
+            "",
         )
         .await
         .unwrap();
@@ -850,14 +868,14 @@ async fn execute_memory_recall_no_results_returns_text() {
 }
 
 #[test]
-fn add_memory_tools_registers_two_tools() {
+fn add_memory_tools_registers_four_tools() {
     use std::sync::Arc;
     let store = Arc::new(crate::memory::MemoryStore::new_in_memory().unwrap());
     let mut executor = default_tools(test_fetcher());
     let before = executor.active_tool_definitions().len();
     add_memory_tools(&mut executor, store);
     let after = executor.active_tool_definitions().len();
-    assert_eq!(after, before + 2);
+    assert_eq!(after, before + 4);
 }
 
 #[tokio::test]
@@ -876,6 +894,7 @@ async fn execute_memory_save_without_store_errors() {
             &serde_json::json!({"key": "k", "value": "v"}),
             uuid::Uuid::new_v4(),
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());
@@ -897,6 +916,7 @@ async fn execute_scrape_page_with_memory_backend_errors() {
             &serde_json::json!({"url": "https://example.com"}),
             uuid::Uuid::new_v4(),
             std::path::Path::new("/tmp"),
+            "",
         )
         .await;
     assert!(result.is_err());

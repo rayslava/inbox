@@ -440,6 +440,7 @@ impl LlmChain {
             think: None,
             llm_depth: parent_req.llm_depth + 1,
             progress_tx: None,
+            source_name: parent_req.source_name.clone(),
         };
 
         for backend in &self.backends {
@@ -521,6 +522,7 @@ async fn execute_tool_calls(
             &call.arguments,
             req.msg_id,
             req.attachments_dir.as_path(),
+            &req.source_name,
         )
     }))
     .await;

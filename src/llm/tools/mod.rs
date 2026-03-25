@@ -97,6 +97,23 @@ fn tool_parameters(name: &str) -> serde_json::Value {
             },
             "required": ["query"]
         }),
+        "memory_link" => serde_json::json!({
+            "type": "object",
+            "properties": {
+                "from_key": { "type": "string", "description": "Key of the source memory" },
+                "to_key": { "type": "string", "description": "Key of the target memory" },
+                "relation": { "type": "string", "description": "Relationship type (e.g. 'related_to', 'depends_on')" }
+            },
+            "required": ["from_key", "to_key", "relation"]
+        }),
+        "memory_context" => serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Memory key to find connected memories for" },
+                "hops": { "type": "integer", "description": "Number of graph traversal hops (default 1, max 3)" }
+            },
+            "required": ["query"]
+        }),
         _ => serde_json::json!({ "type": "object", "properties": {} }),
     }
 }
@@ -151,6 +168,7 @@ impl ToolExecutor {
         args: &serde_json::Value,
         msg_id: Uuid,
         attachments_dir: &Path,
+        source_name: &str,
     ) -> Result<ToolResult, InboxError> {
         let tool = self
             .tools
@@ -167,7 +185,7 @@ impl ToolExecutor {
                 tokio::time::sleep(backoff).await;
             }
             match self
-                .dispatch_once(tool, name, args, msg_id, attachments_dir)
+                .dispatch_once(tool, name, args, msg_id, attachments_dir, source_name)
                 .await
             {
                 Ok(result) => return Ok(result),
@@ -188,6 +206,7 @@ impl ToolExecutor {
         args: &serde_json::Value,
         msg_id: Uuid,
         attachments_dir: &Path,
+        source_name: &str,
     ) -> Result<ToolResult, InboxError> {
         match name {
             "memory_save" => {
@@ -205,6 +224,12 @@ impl ToolExecutor {
                     .save(key, value)
                     .await
                     .map_err(|e| InboxError::LlmTool(e.to_string()))?;
+                // Auto-link memory to the originating source.
+                if !source_name.is_empty() {
+                    let _ = store
+                        .link_source(key, source_name, &msg_id.to_string(), "")
+                        .await;
+                }
                 Ok(ToolResult::Text(format!("Saved memory: {key}")))
             }
             "memory_recall" => {
@@ -221,6 +246,52 @@ impl ToolExecutor {
                     .map_err(|e| InboxError::LlmTool(e.to_string()))?;
                 let text = if entries.is_empty() {
                     "No memories found.".to_owned()
+                } else {
+                    entries
+                        .iter()
+                        .map(|e| format!("{}: {}", e.key, e.value))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                Ok(ToolResult::Text(text))
+            }
+            "memory_link" => {
+                let from_key = args["from_key"]
+                    .as_str()
+                    .ok_or_else(|| InboxError::LlmTool("memory_link missing 'from_key'".into()))?;
+                let to_key = args["to_key"]
+                    .as_str()
+                    .ok_or_else(|| InboxError::LlmTool("memory_link missing 'to_key'".into()))?;
+                let relation = args["relation"]
+                    .as_str()
+                    .ok_or_else(|| InboxError::LlmTool("memory_link missing 'relation'".into()))?;
+                let store = self
+                    .memory_store
+                    .as_ref()
+                    .ok_or_else(|| InboxError::LlmTool("memory_link: no memory store".into()))?;
+                store
+                    .link_memories(from_key, to_key, relation)
+                    .await
+                    .map_err(|e| InboxError::LlmTool(e.to_string()))?;
+                Ok(ToolResult::Text(format!(
+                    "Linked {from_key} -> {to_key} ({relation})"
+                )))
+            }
+            "memory_context" => {
+                let query = args["query"]
+                    .as_str()
+                    .ok_or_else(|| InboxError::LlmTool("memory_context missing 'query'".into()))?;
+                let hops = args["hops"].as_u64().unwrap_or(1).min(3) as u32;
+                let store = self
+                    .memory_store
+                    .as_ref()
+                    .ok_or_else(|| InboxError::LlmTool("memory_context: no memory store".into()))?;
+                let entries = store
+                    .context(query, hops)
+                    .await
+                    .map_err(|e| InboxError::LlmTool(e.to_string()))?;
+                let text = if entries.is_empty() {
+                    "No connected memories found.".to_owned()
                 } else {
                     entries
                         .iter()

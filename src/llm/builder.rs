@@ -30,7 +30,7 @@ pub fn build_chain(cfg: &Config) -> LlmChain {
 
 fn wire_memory(cfg: &Config, executor: &mut tools::ToolExecutor) {
     let db_path = cfg.memory.db_path.as_deref().map_or_else(
-        || cfg.general.attachments_dir.join("memory.db"),
+        || cfg.general.attachments_dir.join("memory.grafeo"),
         std::path::PathBuf::from,
     );
 

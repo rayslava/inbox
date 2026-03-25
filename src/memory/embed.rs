@@ -79,17 +79,3 @@ impl EmbedClient {
         Ok(embedding)
     }
 }
-
-/// Serialize an `f32` slice to a little-endian byte blob.
-#[must_use]
-pub fn vec_to_blob(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|f| f.to_le_bytes()).collect()
-}
-
-/// Deserialize a little-endian byte blob back to `Vec<f32>`.
-#[must_use]
-pub fn blob_to_vec(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
-}
