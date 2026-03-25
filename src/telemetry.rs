@@ -14,15 +14,22 @@ pub const MESSAGES_PROCESSED: &str = "inbox_messages_processed_total";
 /// Labels: backend = "openrouter" | "ollama" | "mock", status = "success" | "failure"
 pub const LLM_REQUESTS: &str = "inbox_llm_requests_total";
 
+/// Labels: tool, status = "success" | "failure"
+pub const TOOL_CALLS: &str = "inbox_tool_calls_total";
+
 /// Labels: status = "success" | "failure"
 pub const URL_FETCHES: &str = "inbox_url_fetches_total";
+
+/// Labels: status = "success" | "failure"
+pub const WRITES_TOTAL: &str = "inbox_writes_total";
 
 pub const WRITE_ERRORS: &str = "inbox_write_errors_total";
 
 /// Labels: adapter = "telegram" | "email"
 pub const ADAPTER_RECONNECTS: &str = "inbox_adapter_reconnects_total";
 
-/// Labels: op = "save" | "recall" | "link" | "context" | "sources", status = "success" | "failure"
+/// Labels: op = "save" | "recall" | "link_source" | "link_memories" | "context" | "sources",
+///         status = "success" | "failure"
 pub const MEMORY_OPS: &str = "inbox_memory_ops_total";
 
 // ── Histograms ────────────────────────────────────────────────────────────────
@@ -32,6 +39,15 @@ pub const PROCESSING_DURATION: &str = "inbox_processing_duration_seconds";
 
 /// Labels: backend
 pub const LLM_DURATION: &str = "inbox_llm_duration_seconds";
+
+/// Labels: tool
+pub const TOOL_DURATION: &str = "inbox_tool_duration_seconds";
+
+/// Labels: kind = "page" | "file"
+pub const URL_FETCH_DURATION: &str = "inbox_url_fetch_duration_seconds";
+
+/// Labels: (none)
+pub const WRITE_DURATION: &str = "inbox_write_duration_seconds";
 
 /// Labels: op
 pub const MEMORY_DURATION: &str = "inbox_memory_duration_seconds";
@@ -55,7 +71,13 @@ pub fn describe_metrics() {
         "Total messages through the pipeline (success or failure)"
     );
     describe_counter!(LLM_REQUESTS, Unit::Count, "Total LLM API requests");
+    describe_counter!(TOOL_CALLS, Unit::Count, "Total LLM tool call executions");
     describe_counter!(URL_FETCHES, Unit::Count, "Total URL fetch attempts");
+    describe_counter!(
+        WRITES_TOTAL,
+        Unit::Count,
+        "Total output writes (success or failure)"
+    );
     describe_counter!(
         WRITE_ERRORS,
         Unit::Count,
@@ -72,11 +94,18 @@ pub fn describe_metrics() {
         "End-to-end pipeline processing time per message"
     );
     describe_histogram!(LLM_DURATION, Unit::Seconds, "LLM request duration");
-    describe_counter!(
-        MEMORY_OPS,
-        Unit::Count,
-        "Total memory store operations (save, recall, link, context, sources)"
+    describe_histogram!(
+        TOOL_DURATION,
+        Unit::Seconds,
+        "LLM tool call execution duration"
     );
+    describe_histogram!(
+        URL_FETCH_DURATION,
+        Unit::Seconds,
+        "URL fetch duration by kind"
+    );
+    describe_histogram!(WRITE_DURATION, Unit::Seconds, "Output write duration");
+    describe_counter!(MEMORY_OPS, Unit::Count, "Total memory store operations");
     describe_histogram!(
         MEMORY_DURATION,
         Unit::Seconds,
@@ -98,8 +127,13 @@ mod tests {
         assert!(!MESSAGES_RECEIVED.is_empty());
         assert!(!MESSAGES_PROCESSED.is_empty());
         assert!(!LLM_REQUESTS.is_empty());
+        assert!(!TOOL_CALLS.is_empty());
+        assert!(!TOOL_DURATION.is_empty());
         assert!(!URL_FETCHES.is_empty());
+        assert!(!URL_FETCH_DURATION.is_empty());
+        assert!(!WRITES_TOTAL.is_empty());
         assert!(!WRITE_ERRORS.is_empty());
+        assert!(!WRITE_DURATION.is_empty());
         assert!(!PROCESSING_DURATION.is_empty());
         assert!(!LLM_DURATION.is_empty());
         assert!(!QUEUE_DEPTH.is_empty());

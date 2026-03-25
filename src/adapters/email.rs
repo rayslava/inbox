@@ -27,6 +27,7 @@ impl InputAdapter for EmailAdapter {
     ) -> Result<(), InboxError> {
         info!("Email adapter starting (IMAP IDLE)");
 
+        let mut first = true;
         loop {
             tokio::select! {
                 () = shutdown.cancelled() => {
@@ -34,6 +35,14 @@ impl InputAdapter for EmailAdapter {
                     return Ok(());
                 }
                 () = run_imap_session(&self.cfg, &self.attachments_dir, &tx) => {
+                    if !first {
+                        metrics::counter!(
+                            crate::telemetry::ADAPTER_RECONNECTS,
+                            "adapter" => "email"
+                        )
+                        .increment(1);
+                    }
+                    first = false;
                     // Reconnect after session ends
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }

@@ -176,6 +176,7 @@ impl ToolExecutor {
             .find(|t| t.name == name && t.enabled)
             .ok_or_else(|| InboxError::LlmTool(format!("Unknown tool: {name}")))?;
 
+        let start = std::time::Instant::now();
         let attempts = tool.retries + 1;
         let mut last_err = InboxError::LlmTool(format!("tool {name} never attempted"));
         for attempt in 0..attempts {
@@ -188,13 +189,23 @@ impl ToolExecutor {
                 .dispatch_once(tool, name, args, msg_id, attachments_dir, source_name)
                 .await
             {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    metrics::counter!(crate::telemetry::TOOL_CALLS, "tool" => name.to_owned(), "status" => "success")
+                        .increment(1);
+                    metrics::histogram!(crate::telemetry::TOOL_DURATION, "tool" => name.to_owned())
+                        .record(start.elapsed().as_secs_f64());
+                    return Ok(result);
+                }
                 Err(e) => {
                     tracing::warn!(tool = %name, attempt = attempt + 1, ?e, "Tool attempt failed");
                     last_err = e;
                 }
             }
         }
+        metrics::counter!(crate::telemetry::TOOL_CALLS, "tool" => name.to_owned(), "status" => "failure")
+            .increment(1);
+        metrics::histogram!(crate::telemetry::TOOL_DURATION, "tool" => name.to_owned())
+            .record(start.elapsed().as_secs_f64());
         Err(last_err)
     }
 

@@ -123,6 +123,7 @@ impl UrlFetcher {
     /// Fetch a page and extract readable text.
     #[instrument(skip(self), fields(url = %url))]
     pub async fn fetch_page(&self, url: &Url) -> Option<UrlContent> {
+        let start = std::time::Instant::now();
         let rewritten;
         let effective_url = match rewrite_twitter_url(url, self.nitter_base_url()) {
             Some(rw) => {
@@ -171,6 +172,8 @@ impl UrlFetcher {
             "Page content extracted"
         );
         metrics::counter!(crate::telemetry::URL_FETCHES, "status" => "success").increment(1);
+        metrics::histogram!(crate::telemetry::URL_FETCH_DURATION, "kind" => "page")
+            .record(start.elapsed().as_secs_f64());
 
         Some(UrlContent {
             url: url.to_string(),
@@ -189,6 +192,7 @@ impl UrlFetcher {
         msg_id: Uuid,
         attachments_dir: &Path,
     ) -> Option<Attachment> {
+        let start = std::time::Instant::now();
         let resp = self.get_with_fallback(url).await?;
 
         if !resp.status().is_success() {
@@ -240,6 +244,8 @@ impl UrlFetcher {
             "File attachment downloaded"
         );
         metrics::counter!(crate::telemetry::URL_FETCHES, "status" => "success").increment(1);
+        metrics::histogram!(crate::telemetry::URL_FETCH_DURATION, "kind" => "file")
+            .record(start.elapsed().as_secs_f64());
 
         Some(Attachment {
             original_name: filename,

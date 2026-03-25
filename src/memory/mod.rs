@@ -145,9 +145,9 @@ impl MemoryStore {
         .map_err(|e| InboxError::Memory(e.to_string()))?;
 
         let status = if result.is_ok() { "success" } else { "failure" };
-        metrics::counter!(crate::telemetry::MEMORY_OPS, "op" => "link", "status" => status)
+        metrics::counter!(crate::telemetry::MEMORY_OPS, "op" => "link_source", "status" => status)
             .increment(1);
-        metrics::histogram!(crate::telemetry::MEMORY_DURATION, "op" => "link")
+        metrics::histogram!(crate::telemetry::MEMORY_DURATION, "op" => "link_source")
             .record(start.elapsed().as_secs_f64());
         result
     }
@@ -175,9 +175,9 @@ impl MemoryStore {
         .map_err(|e| InboxError::Memory(e.to_string()))?;
 
         let status = if result.is_ok() { "success" } else { "failure" };
-        metrics::counter!(crate::telemetry::MEMORY_OPS, "op" => "link", "status" => status)
+        metrics::counter!(crate::telemetry::MEMORY_OPS, "op" => "link_memories", "status" => status)
             .increment(1);
-        metrics::histogram!(crate::telemetry::MEMORY_DURATION, "op" => "link")
+        metrics::histogram!(crate::telemetry::MEMORY_DURATION, "op" => "link_memories")
             .record(start.elapsed().as_secs_f64());
         result
     }

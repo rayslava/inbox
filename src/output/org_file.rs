@@ -18,12 +18,15 @@ pub struct OrgFileWriter;
 impl OutputWriter for OrgFileWriter {
     #[instrument(skip(self, msg, cfg))]
     async fn write(&self, msg: &ProcessedMessage, cfg: &Config) -> Result<(), InboxError> {
+        let start = std::time::Instant::now();
         let node = render::render_org_node(msg, &cfg.general.attachments_dir)?;
 
         append_to_file(&cfg.general.output_file, &node)
             .await
             .map_err(|e| {
                 metrics::counter!(crate::telemetry::WRITE_ERRORS).increment(1);
+                metrics::counter!(crate::telemetry::WRITES_TOTAL, "status" => "failure")
+                    .increment(1);
                 InboxError::Output(format!("Failed to append org node: {e}"))
             })?;
 
@@ -31,6 +34,8 @@ impl OutputWriter for OrgFileWriter {
             trigger_syncthing_rescans(&cfg.syncthing).await;
         }
 
+        metrics::counter!(crate::telemetry::WRITES_TOTAL, "status" => "success").increment(1);
+        metrics::histogram!(crate::telemetry::WRITE_DURATION).record(start.elapsed().as_secs_f64());
         Ok(())
     }
 }
