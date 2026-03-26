@@ -54,7 +54,8 @@ pub struct Config {
 /// # Errors
 /// Returns an error if the file cannot be read or the TOML is invalid.
 pub fn load(path: &std::path::Path) -> Result<Config, InboxError> {
-    let raw = std::fs::read_to_string(path).map_err(InboxError::Io)?;
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| InboxError::Config(format!("{}: {e}", path.display())))?;
     let interpolated = interpolate_env(&raw);
     toml::from_str(&interpolated).map_err(|e| InboxError::Config(e.to_string()))
 }

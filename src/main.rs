@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use color_eyre::eyre::{Context, Result};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -40,6 +40,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    color_eyre::install()?;
     let cli = Cli::parse();
 
     if let Some(Commands::HashPassword) = cli.command {
@@ -246,7 +247,7 @@ fn hash_password_cmd() -> Result<()> {
     // argon2 0.6+ with `getrandom` feature generates salt automatically
     let hash = Argon2::default()
         .hash_password(password.as_bytes())
-        .map_err(|e| anyhow::anyhow!("Hash error: {e}"))?
+        .map_err(|e| color_eyre::eyre::eyre!("Hash error: {e}"))?
         .to_string();
 
     println!("{hash}");
