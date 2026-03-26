@@ -85,6 +85,7 @@ async fn main() -> Result<()> {
         llm_chain,
         writer,
         Arc::clone(&tracker),
+        memory_store.clone(),
     ));
 
     let (tx, rx) = mpsc::channel::<inbox::message::IncomingMessage>(256);

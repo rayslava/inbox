@@ -30,6 +30,22 @@ pub struct SourceEntry {
     pub title: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct RelatedMemory {
+    pub key: String,
+    pub value: String,
+    pub relation: String,
+    pub direction: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecallOutcome {
+    pub memory_key: String,
+    pub times_recalled: u32,
+    pub avg_rating: f64,
+    pub sample_comments: Vec<String>,
+}
+
 // ── MemoryStore ───────────────────────────────────────────────────────────────
 
 pub struct MemoryStore {
@@ -397,6 +413,106 @@ impl MemoryStore {
             .record(start.elapsed().as_secs_f64());
         result
     }
+
+    // ── Pre-load methods ─────────────────────────────────────────────────
+
+    /// Find memories related to a given key via graph edges, returning relation types.
+    ///
+    /// # Errors
+    /// Returns an error if the graph query fails.
+    pub async fn related_memories(
+        &self,
+        memory_key: &str,
+        hops: u32,
+    ) -> Result<Vec<RelatedMemory>, InboxError> {
+        let start = std::time::Instant::now();
+        let key = memory_key.to_owned();
+        let db = Arc::clone(&self.db);
+
+        let result = tokio::task::spawn_blocking(move || graph_related_memories(&db, &key, hops))
+            .await
+            .map_err(|e| InboxError::Memory(e.to_string()))?;
+
+        let status = if result.is_ok() { "success" } else { "failure" };
+        metrics::counter!(crate::telemetry::MEMORY_OPS, "op" => "related_memories", "status" => status)
+            .increment(1);
+        metrics::histogram!(crate::telemetry::MEMORY_DURATION, "op" => "related_memories")
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
+
+    /// Fetch recent feedback entries with rating at or below `max_rating`.
+    ///
+    /// # Errors
+    /// Returns an error if the database query fails.
+    pub async fn recent_feedback(
+        &self,
+        max_rating: u8,
+        limit: usize,
+    ) -> Result<Vec<crate::feedback::FeedbackEntry>, InboxError> {
+        let start = std::time::Instant::now();
+        let db = Arc::clone(&self.db);
+
+        let result = tokio::task::spawn_blocking(move || {
+            feedback::get_recent_feedback(&db, max_rating, limit)
+        })
+        .await
+        .map_err(|e| InboxError::Memory(e.to_string()))?;
+
+        let status = if result.is_ok() { "success" } else { "failure" };
+        metrics::counter!(crate::telemetry::MEMORY_OPS, "op" => "recent_feedback", "status" => status)
+            .increment(1);
+        metrics::histogram!(crate::telemetry::FEEDBACK_DURATION, "op" => "recent")
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
+
+    /// Log which memories were recalled for a given message, creating a `:RecallEvent` node.
+    ///
+    /// # Errors
+    /// Returns an error if the database write fails.
+    pub async fn log_recall_event(
+        &self,
+        message_id: &str,
+        recalled_keys: &[String],
+        source_name: &str,
+    ) -> Result<(), InboxError> {
+        let start = std::time::Instant::now();
+        let mid = message_id.to_owned();
+        let keys = recalled_keys.to_vec();
+        let src = source_name.to_owned();
+        let db = Arc::clone(&self.db);
+
+        let result =
+            tokio::task::spawn_blocking(move || insert_recall_event(&db, &mid, &keys, &src))
+                .await
+                .map_err(|e| InboxError::Memory(e.to_string()))?;
+
+        let status = if result.is_ok() { "success" } else { "failure" };
+        metrics::counter!(crate::telemetry::MEMORY_OPS, "op" => "log_recall", "status" => status)
+            .increment(1);
+        metrics::histogram!(crate::telemetry::MEMORY_DURATION, "op" => "log_recall")
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
+
+    /// Find historical recall outcomes for a set of memory keys by correlating
+    /// recall events with feedback.
+    pub async fn recall_outcomes(&self, memory_keys: &[String]) -> Vec<RecallOutcome> {
+        let start = std::time::Instant::now();
+        let keys = memory_keys.to_vec();
+        let db = Arc::clone(&self.db);
+
+        let result = tokio::task::spawn_blocking(move || query_recall_outcomes(&db, &keys))
+            .await
+            .unwrap_or_default();
+
+        metrics::counter!(crate::telemetry::MEMORY_OPS, "op" => "recall_outcomes", "status" => "success")
+            .increment(1);
+        metrics::histogram!(crate::telemetry::MEMORY_DURATION, "op" => "recall_outcomes")
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -655,6 +771,199 @@ fn find_sources(db: &GrafeoDB, memory_key: &str) -> Result<Vec<SourceEntry>, Inb
     Ok(entries)
 }
 
+fn graph_related_memories(
+    db: &GrafeoDB,
+    memory_key: &str,
+    hops: u32,
+) -> Result<Vec<RelatedMemory>, InboxError> {
+    let session = db.session();
+    let key = gql_escape(memory_key);
+    let hops = hops.clamp(1, 3);
+    let mut entries = Vec::new();
+
+    // Outgoing edges.
+    let hop_pat = format!("-[*1..{hops}]->");
+    let out = session
+        .execute(&format!(
+            "MATCH (m:Memory {{key: '{key}'}}){hop_pat}(n:Memory) \
+             RETURN n.key, n.value"
+        ))
+        .map_err(|e| InboxError::Memory(format!("related out: {e}")))?;
+
+    for row in out.iter() {
+        if row.len() >= 2 {
+            entries.push(RelatedMemory {
+                key: value_to_string(&row[0]),
+                value: value_to_string(&row[1]),
+                relation: String::new(),
+                direction: "outgoing".into(),
+            });
+        }
+    }
+
+    // Incoming edges.
+    let hop_pat = format!("<-[*1..{hops}]-");
+    let inc = session
+        .execute(&format!(
+            "MATCH (m:Memory {{key: '{key}'}}){hop_pat}(n:Memory) \
+             RETURN n.key, n.value"
+        ))
+        .map_err(|e| InboxError::Memory(format!("related in: {e}")))?;
+
+    for row in inc.iter() {
+        if row.len() >= 2 {
+            let related_key = value_to_string(&row[0]);
+            // Avoid duplicates from bidirectional traversal.
+            if !entries.iter().any(|e| e.key == related_key) {
+                entries.push(RelatedMemory {
+                    key: related_key,
+                    value: value_to_string(&row[1]),
+                    relation: String::new(),
+                    direction: "incoming".into(),
+                });
+            }
+        }
+    }
+
+    // Try to resolve relation types for direct (1-hop) connections.
+    resolve_direct_relations(db, memory_key, &mut entries);
+
+    Ok(entries)
+}
+
+fn resolve_direct_relations(db: &GrafeoDB, memory_key: &str, entries: &mut [RelatedMemory]) {
+    let session = db.session();
+    let key = gql_escape(memory_key);
+
+    // Query direct outgoing edges with relation label.
+    // Grafeo variable-length paths don't expose edge labels, so we query 1-hop
+    // edges explicitly and attempt to infer the label from the result set.
+    for direction in &["out", "in"] {
+        let query = if *direction == "out" {
+            format!(
+                "MATCH (m:Memory {{key: '{key}'}})-[r]->(n:Memory) \
+                 RETURN n.key, labels(r)"
+            )
+        } else {
+            format!(
+                "MATCH (n:Memory)-[r]->(m:Memory {{key: '{key}'}}) \
+                 RETURN n.key, labels(r)"
+            )
+        };
+
+        if let Ok(rows) = session.execute(&query) {
+            for row in rows.iter() {
+                if row.len() >= 2 {
+                    let nk = value_to_string(&row[0]);
+                    let label = value_to_string(&row[1]);
+                    if let Some(entry) = entries.iter_mut().find(|e| e.key == nk) {
+                        if entry.relation.is_empty() {
+                            entry.relation = label;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn insert_recall_event(
+    db: &GrafeoDB,
+    message_id: &str,
+    recalled_keys: &[String],
+    source_name: &str,
+) -> Result<(), InboxError> {
+    let session = db.session();
+    let mid = gql_escape(message_id);
+    let src = gql_escape(source_name);
+    let ts = chrono::Utc::now().timestamp();
+
+    session
+        .execute(&format!(
+            "INSERT (:RecallEvent {{message_id: '{mid}', recalled_at: {ts}, source: '{src}'}})"
+        ))
+        .map_err(|e| InboxError::Memory(format!("recall event insert: {e}")))?;
+
+    for key in recalled_keys {
+        let k = gql_escape(key);
+        // Link to memory.
+        let _ = session.execute(&format!(
+            "MATCH (e:RecallEvent {{message_id: '{mid}'}}), (m:Memory {{key: '{k}'}}) \
+             INSERT (e)-[:RECALLED]->(m)"
+        ));
+    }
+
+    // Link to source if exists.
+    let _ = session.execute(&format!(
+        "MATCH (e:RecallEvent {{message_id: '{mid}'}}), (s:Source {{source_id: '{mid}'}}) \
+         INSERT (e)-[:FOR_MESSAGE]->(s)"
+    ));
+
+    Ok(())
+}
+
+fn query_recall_outcomes(db: &GrafeoDB, memory_keys: &[String]) -> Vec<RecallOutcome> {
+    let session = db.session();
+    let mut outcomes = Vec::new();
+
+    for key in memory_keys {
+        let k = gql_escape(key);
+
+        // Step 1: Find recall events that recalled this memory.
+        let Ok(event_rows) = session.execute(&format!(
+            "MATCH (m:Memory {{key: '{k}'}})<-[:RECALLED]-(e:RecallEvent) \
+             RETURN e.message_id"
+        )) else {
+            continue;
+        };
+
+        if event_rows.is_empty() {
+            continue;
+        }
+
+        // Step 2: For each recall event, find feedback via the shared message_id.
+        let mut total_rating = 0.0_f64;
+        let mut count = 0u32;
+        let mut comments = Vec::new();
+
+        for row in event_rows.iter() {
+            let Some(mid_val) = row.first() else {
+                continue;
+            };
+            let mid = gql_escape(&value_to_string(mid_val));
+
+            let Ok(fb_rows) = session.execute(&format!(
+                "MATCH (f:Feedback {{message_id: '{mid}'}}) \
+                 RETURN f.rating, f.comment"
+            )) else {
+                continue;
+            };
+
+            for fb_row in fb_rows.iter() {
+                if fb_row.len() >= 2 {
+                    total_rating += value_to_f64(&fb_row[0]);
+                    count += 1;
+                    let comment = value_to_string(&fb_row[1]);
+                    if !comment.is_empty() && comments.len() < 3 {
+                        comments.push(comment);
+                    }
+                }
+            }
+        }
+
+        if count > 0 {
+            outcomes.push(RecallOutcome {
+                memory_key: key.clone(),
+                times_recalled: count,
+                avg_rating: total_rating / f64::from(count),
+                sample_comments: comments,
+            });
+        }
+    }
+
+    outcomes
+}
+
 fn fallback_recent(db: &GrafeoDB, limit: usize) -> Result<Vec<MemoryEntry>, InboxError> {
     let session = db.session();
     let result = session
@@ -702,7 +1011,14 @@ fn value_to_string(v: &grafeo::Value) -> String {
 }
 
 fn value_to_f64(v: &grafeo::Value) -> f64 {
-    v.as_float64().unwrap_or(0.0)
+    if let Some(f) = v.as_float64() {
+        return f;
+    }
+    // Grafeo may store small numbers as integers; parse via string to avoid truncation.
+    if let Some(i) = v.as_int64() {
+        return f64::from(i32::try_from(i).unwrap_or(0));
+    }
+    0.0
 }
 
 fn strip_quotes(s: &str) -> String {

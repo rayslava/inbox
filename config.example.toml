@@ -234,6 +234,14 @@ enabled = false
 # embedding_dims = 768                  # optional: auto-detected from endpoint on startup
 # embedding_api_key = ""
 
+# When memory is enabled, relevant memories are always pre-loaded into the LLM
+# context before enrichment (no toggle — enabled = true means pre-load is active).
+# preload_max_memories = 5              # max recalled memories injected
+# preload_graph_hops = 2                # graph traversal depth for related memories
+# preload_feedback = true               # inject recent low-rated feedback as guidance
+# preload_max_feedback = 10
+# preload_feedback_max_rating = 2       # 1=bad, 2=ok, 3=good; at or below this rating
+
 # ── Tooling (dedicated sections + per-tool prompt) ───────────────────────────
 
 [tooling.scrape_page]

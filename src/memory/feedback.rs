@@ -173,6 +173,47 @@ pub(super) fn get_feedback_stats(db: &GrafeoDB) -> Result<FeedbackStats, InboxEr
     })
 }
 
+// ── Recent feedback ──────────────────────────────────────────────────
+
+pub(super) fn get_recent_feedback(
+    db: &GrafeoDB,
+    max_rating: u8,
+    limit: usize,
+) -> Result<Vec<FeedbackEntry>, InboxError> {
+    let session = db.session();
+
+    let result = session
+        .execute("MATCH (f:Feedback) RETURN f.message_id, f.rating, f.comment, f.created_at, f.source, f.title")
+        .map_err(|e| InboxError::Memory(format!("recent feedback: {e}")))?;
+
+    let mut entries = Vec::new();
+    for row in result.iter() {
+        if row.len() < 6 {
+            continue;
+        }
+        let rating = value_to_u8(&row[1]);
+        if rating > max_rating || rating == 0 {
+            continue;
+        }
+        let epoch = value_to_i64(&row[3]);
+        let created_at = DateTime::from_timestamp(epoch, 0).unwrap_or_default();
+        entries.push(FeedbackEntry {
+            message_id: value_to_string(&row[0]),
+            rating,
+            comment: value_to_string(&row[2]),
+            created_at,
+            source: value_to_string(&row[4]),
+            title: value_to_string(&row[5]),
+        });
+    }
+
+    // Sort by created_at descending (Grafeo may not support ORDER BY).
+    entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    entries.truncate(limit);
+
+    Ok(entries)
+}
+
 // ── Update comment ───────────────────────────────────────────────────────────
 
 pub(super) fn update_feedback_comment(

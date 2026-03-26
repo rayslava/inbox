@@ -10,6 +10,7 @@ use crate::output::OutputWriter;
 use crate::processing_status::{ProcessingStage, ProcessingTracker};
 
 pub mod content_extractor;
+pub mod context_preload;
 pub mod preprocess;
 pub mod tags;
 pub mod url_classifier;
@@ -26,6 +27,7 @@ pub struct Pipeline {
     pub writer: Arc<dyn OutputWriter>,
     pub fetcher: UrlFetcher,
     pub tracker: Arc<ProcessingTracker>,
+    pub memory_store: Option<Arc<crate::memory::MemoryStore>>,
     in_flight: Arc<tokio::sync::Semaphore>,
 }
 
@@ -35,6 +37,7 @@ impl Pipeline {
         llm: Arc<crate::llm::LlmChain>,
         writer: Arc<dyn OutputWriter>,
         tracker: Arc<ProcessingTracker>,
+        memory_store: Option<Arc<crate::memory::MemoryStore>>,
     ) -> Self {
         let fetcher = UrlFetcher::new(&config.url_fetch);
         let in_flight_limit =
@@ -45,6 +48,7 @@ impl Pipeline {
             writer,
             fetcher,
             tracker,
+            memory_store,
             in_flight: Arc::new(tokio::sync::Semaphore::new(in_flight_limit)),
         }
     }
@@ -323,6 +327,8 @@ impl Pipeline {
             "Starting LLM processing"
         );
 
+        let preloaded_text = self.preload_memory_context(&enriched).await;
+
         let (progress_tx, mut progress_rx) =
             tokio::sync::mpsc::unbounded_channel::<LlmTurnProgress>();
 
@@ -330,7 +336,7 @@ impl Pipeline {
             &enriched,
             &self.config.llm,
             &self.config.general.attachments_dir,
-            &self.build_llm_guidance(&enriched),
+            &self.build_llm_guidance(&enriched, &preloaded_text),
             // Only force a tool call if URLs are present but none were pre-fetched by
             // the pipeline. If url_contents is already populated the LLM prompt already
             // contains the page text — there is nothing for a tool call to add.
@@ -441,8 +447,37 @@ fn host_matches_skip_domain(host: &str, skip_domain: &str) -> bool {
 }
 
 impl Pipeline {
-    fn build_llm_guidance(&self, enriched: &EnrichedMessage) -> String {
+    async fn preload_memory_context(&self, enriched: &EnrichedMessage) -> String {
+        let Some(ref store) = self.memory_store else {
+            return String::new();
+        };
+
+        let ctx = context_preload::preload_context(
+            store,
+            &self.config.memory,
+            &enriched.original.text,
+            &enriched.urls,
+            &enriched.original.user_tags,
+        )
+        .await;
+
+        if !ctx.memories.is_empty() {
+            let keys: Vec<String> = ctx.memories.iter().map(|m| m.key.clone()).collect();
+            let source = enriched.original.source_name();
+            let _ = store
+                .log_recall_event(&enriched.original.id.to_string(), &keys, source)
+                .await;
+        }
+
+        context_preload::format_preloaded_context(&ctx)
+    }
+
+    fn build_llm_guidance(&self, enriched: &EnrichedMessage, preloaded_context: &str) -> String {
         let mut lines = Vec::new();
+
+        if !preloaded_context.is_empty() {
+            lines.push(preloaded_context.to_owned());
+        }
 
         if !enriched.original.user_tags.is_empty() {
             let tag_list = enriched
