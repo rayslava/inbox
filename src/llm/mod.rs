@@ -13,9 +13,10 @@ pub mod openrouter;
 pub mod tools;
 
 mod chain;
+mod chain_tools;
 pub use chain::LlmChain;
 #[cfg(test)]
-use chain::append_missing_source_links;
+use chain_tools::append_missing_source_links;
 
 // ── Public request / response types ──────────────────────────────────────────
 
@@ -258,6 +259,10 @@ pub use builder::{BuildResult, build_chain};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_resilience;
+#[cfg(test)]
+mod tests_thinking;
 
 // ── Test helpers (also used by integration tests) ─────────────────────────────
 

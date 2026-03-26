@@ -4,7 +4,7 @@ use grafeo::GrafeoDB;
 use crate::error::InboxError;
 use crate::feedback::{FeedbackEntry, FeedbackStats};
 
-use super::{gql_escape, value_to_string};
+use super::util::{gql_escape, value_to_string};
 
 /// Extract a numeric value from a Grafeo `Value`, handling both integers and floats.
 fn value_to_i64(v: &grafeo::Value) -> i64 {

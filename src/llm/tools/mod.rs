@@ -23,6 +23,10 @@ pub use builders::{add_memory_tools, default_tools, from_tooling};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_runners;
+#[cfg(test)]
+mod tests_search_memory;
 
 // ── Tool definition ───────────────────────────────────────────────────────────
 
