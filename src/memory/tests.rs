@@ -231,6 +231,144 @@ async fn embed_client_returns_error_on_missing_embedding_field() {
     );
 }
 
+// ── Feedback tests ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn save_and_query_feedback() {
+    use chrono::Utc;
+
+    let store = MemoryStore::new_in_memory().unwrap();
+    let entry = crate::feedback::FeedbackEntry {
+        message_id: "00000000-0000-0000-0000-000000000001".into(),
+        rating: 3,
+        comment: "great summary".into(),
+        created_at: Utc::now(),
+        source: "web_ui".into(),
+        title: "Test Article".into(),
+    };
+
+    store.save_feedback(&entry).await.unwrap();
+
+    let loaded = store
+        .query_feedback("00000000-0000-0000-0000-000000000001")
+        .await
+        .unwrap();
+    let loaded = loaded.expect("should find feedback");
+    assert_eq!(loaded.rating, 3);
+    assert_eq!(loaded.comment, "great summary");
+    assert_eq!(loaded.source, "web_ui");
+    assert_eq!(loaded.title, "Test Article");
+}
+
+#[tokio::test]
+async fn feedback_upsert_updates_existing() {
+    use chrono::Utc;
+
+    let store = MemoryStore::new_in_memory().unwrap();
+    let mid = "00000000-0000-0000-0000-000000000002";
+
+    let entry1 = crate::feedback::FeedbackEntry {
+        message_id: mid.into(),
+        rating: 1,
+        comment: String::new(),
+        created_at: Utc::now(),
+        source: "telegram".into(),
+        title: "Bad".into(),
+    };
+    store.save_feedback(&entry1).await.unwrap();
+
+    let entry2 = crate::feedback::FeedbackEntry {
+        message_id: mid.into(),
+        rating: 3,
+        comment: "actually good".into(),
+        created_at: Utc::now(),
+        source: "telegram".into(),
+        title: "Bad".into(),
+    };
+    store.save_feedback(&entry2).await.unwrap();
+
+    let loaded = store.query_feedback(mid).await.unwrap().unwrap();
+    assert_eq!(loaded.rating, 3);
+    assert_eq!(loaded.comment, "actually good");
+}
+
+#[tokio::test]
+async fn query_feedback_returns_none_for_unknown() {
+    let store = MemoryStore::new_in_memory().unwrap();
+    let result = store.query_feedback("nonexistent").await.unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn feedback_stats_empty() {
+    let store = MemoryStore::new_in_memory().unwrap();
+    let stats = store.feedback_stats().await.unwrap();
+    assert_eq!(stats.total, 0);
+    assert_eq!(stats.by_rating, [0, 0, 0]);
+    assert!((stats.average - 0.0).abs() < f64::EPSILON);
+}
+
+#[tokio::test]
+async fn feedback_stats_with_entries() {
+    use chrono::Utc;
+
+    let store = MemoryStore::new_in_memory().unwrap();
+    for (i, rating) in [1u8, 2, 3, 3].iter().enumerate() {
+        let entry = crate::feedback::FeedbackEntry {
+            message_id: format!("msg-{i}"),
+            rating: *rating,
+            comment: String::new(),
+            created_at: Utc::now(),
+            source: "test".into(),
+            title: format!("title {i}"),
+        };
+        store.save_feedback(&entry).await.unwrap();
+    }
+
+    let stats = store.feedback_stats().await.unwrap();
+    assert_eq!(stats.total, 4);
+    assert_eq!(stats.by_rating, [1, 1, 2]);
+    let expected_avg = (1.0 + 2.0 + 3.0 + 3.0) / 4.0;
+    assert!((stats.average - expected_avg).abs() < 1e-6);
+}
+
+#[tokio::test]
+async fn update_feedback_comment() {
+    use chrono::Utc;
+
+    let store = MemoryStore::new_in_memory().unwrap();
+    let mid = "msg-comment";
+
+    let entry = crate::feedback::FeedbackEntry {
+        message_id: mid.into(),
+        rating: 2,
+        comment: String::new(),
+        created_at: Utc::now(),
+        source: "telegram".into(),
+        title: "Test".into(),
+    };
+    store.save_feedback(&entry).await.unwrap();
+
+    let updated = store
+        .update_feedback_comment(mid, "needs better tags")
+        .await
+        .unwrap();
+    assert!(updated);
+
+    let loaded = store.query_feedback(mid).await.unwrap().unwrap();
+    assert_eq!(loaded.comment, "needs better tags");
+}
+
+#[tokio::test]
+async fn update_feedback_comment_returns_false_for_missing() {
+    let store = MemoryStore::new_in_memory().unwrap();
+    let updated = store
+        .update_feedback_comment("nonexistent", "hello")
+        .await
+        .unwrap();
+    assert!(!updated);
+}
+
 #[tokio::test]
 async fn embed_client_uses_api_key_when_set() {
     use wiremock::matchers::header;

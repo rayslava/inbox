@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use inbox::adapters::telegram::build_handler;
+use inbox::adapters::telegram::{HandlerConfig, build_handler};
 use inbox::adapters::telegram_notifier::NotifyConfig;
 use inbox::message::{IncomingMessage, MessageSource, RetryableMessage, SourceMetadata};
 use teloxide::dptree;
@@ -40,55 +40,59 @@ fn default_handler(
     allowed: Vec<i64>,
     dir: PathBuf,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
-    let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
-    build_handler(
-        allowed,
-        dir,
-        60,
-        3,
-        1500,
-        NotifyConfig {
+    build_handler(HandlerConfig {
+        allowed_user_ids: allowed,
+        attachments_dir: dir,
+        file_download_timeout_secs: 60,
+        file_download_retries: 3,
+        media_group_timeout_ms: 1500,
+        notify_cfg: NotifyConfig {
             retries: 3,
             retry_base_ms: 100,
         },
-        retry_store,
-    )
+        retry_store: Arc::new(DashMap::new()),
+        memory_store: None,
+        feedback_msg_map: Arc::new(DashMap::new()),
+    })
 }
 
 fn handler_with_short_media_group_timeout(
     dir: PathBuf,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
-    let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
-    build_handler(
-        vec![],
-        dir,
-        60,
-        3,
-        100,
-        NotifyConfig {
+    build_handler(HandlerConfig {
+        allowed_user_ids: vec![],
+        attachments_dir: dir,
+        file_download_timeout_secs: 60,
+        file_download_retries: 3,
+        media_group_timeout_ms: 100,
+        notify_cfg: NotifyConfig {
             retries: 3,
             retry_base_ms: 100,
         },
-        retry_store,
-    )
+        retry_store: Arc::new(DashMap::new()),
+        memory_store: None,
+        feedback_msg_map: Arc::new(DashMap::new()),
+    })
 }
 
 fn handler_with_store(
     dir: PathBuf,
     retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
-    build_handler(
-        vec![],
-        dir,
-        60,
-        3,
-        1500,
-        NotifyConfig {
+    build_handler(HandlerConfig {
+        allowed_user_ids: vec![],
+        attachments_dir: dir,
+        file_download_timeout_secs: 60,
+        file_download_retries: 3,
+        media_group_timeout_ms: 1500,
+        notify_cfg: NotifyConfig {
             retries: 3,
             retry_base_ms: 100,
         },
         retry_store,
-    )
+        memory_store: None,
+        feedback_msg_map: Arc::new(DashMap::new()),
+    })
 }
 
 fn make_retryable(text: &str) -> RetryableMessage {

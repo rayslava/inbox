@@ -4,6 +4,7 @@ pub mod test_helpers;
 pub mod adapters;
 pub mod config;
 pub mod error;
+pub mod feedback;
 pub mod health;
 pub mod llm;
 pub mod log_capture;

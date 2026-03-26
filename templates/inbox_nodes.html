@@ -19,6 +19,22 @@
         {% for att in node.attachments %}{{ att.html|safe }}{% endfor %}
       </div>
     {% endif %}
+    {% if !node.message_id.is_empty() %}
+      <div class="feedback" data-msg-id="{{ node.message_id }}">
+        <button class="fb-btn" hx-post="feedback" hx-headers='{"Content-Type":"application/json"}'
+          hx-vals='{"message_id":"{{ node.message_id }}","rating":1}'
+          hx-target="closest .feedback" hx-swap="innerHTML"
+          title="Bad">&#11088;</button>
+        <button class="fb-btn" hx-post="feedback" hx-headers='{"Content-Type":"application/json"}'
+          hx-vals='{"message_id":"{{ node.message_id }}","rating":2}'
+          hx-target="closest .feedback" hx-swap="innerHTML"
+          title="OK">&#11088;&#11088;</button>
+        <button class="fb-btn" hx-post="feedback" hx-headers='{"Content-Type":"application/json"}'
+          hx-vals='{"message_id":"{{ node.message_id }}","rating":3}'
+          hx-target="closest .feedback" hx-swap="innerHTML"
+          title="Good">&#11088;&#11088;&#11088;</button>
+      </div>
+    {% endif %}
   </article>
 {% endfor %}
 {% if nodes.is_empty() %}

@@ -73,7 +73,11 @@ async fn main() -> Result<()> {
     let cfg = Arc::new(cfg);
 
     // Build pipeline
-    let llm_chain = Arc::new(llm::build_chain(&cfg));
+    let llm::BuildResult {
+        chain: llm_chain,
+        memory_store,
+    } = llm::build_chain(&cfg);
+    let llm_chain = Arc::new(llm_chain);
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
     let pipeline = Arc::new(Pipeline::new(
@@ -90,7 +94,7 @@ async fn main() -> Result<()> {
     tokio::spawn(async move { pipeline_clone.run(rx).await });
 
     // Spawn adapters
-    spawn_adapters(&cfg, &tx, &shutdown);
+    spawn_adapters(&cfg, &tx, &shutdown, memory_store.as_ref());
 
     // Admin server
     {
@@ -104,6 +108,7 @@ async fn main() -> Result<()> {
             tracker: Arc::clone(&tracker),
             inbox_tx: Some(tx.clone()),
             attachments_dir: cfg.general.attachments_dir.clone(),
+            memory_store: memory_store.clone(),
         });
         tokio::spawn(async move {
             let listener = tokio::net::TcpListener::bind(admin_addr)
@@ -165,6 +170,7 @@ fn spawn_adapters(
     cfg: &Arc<config::Config>,
     tx: &mpsc::Sender<inbox::message::IncomingMessage>,
     shutdown: &CancellationToken,
+    memory_store: Option<&std::sync::Arc<inbox::memory::MemoryStore>>,
 ) {
     if cfg.adapters.http.enabled {
         let adapter = Box::new(HttpAdapter {
@@ -184,6 +190,7 @@ fn spawn_adapters(
         let adapter = Box::new(TelegramAdapter {
             cfg: cfg.adapters.telegram.clone(),
             attachments_dir: cfg.general.attachments_dir.clone(),
+            memory_store: memory_store.cloned(),
         });
         let tx2 = tx.clone();
         let sd = shutdown.clone();

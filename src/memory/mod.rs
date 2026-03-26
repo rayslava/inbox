@@ -9,6 +9,7 @@ use crate::config::MemoryConfig;
 use crate::error::InboxError;
 
 pub mod embed;
+pub(crate) mod feedback;
 
 #[cfg(test)]
 mod tests;
@@ -275,6 +276,126 @@ impl MemoryStore {
             db,
             embed_client: None,
         })
+    }
+
+    // ── Feedback methods ─────────────────────────────────────────────────────
+
+    /// Save (upsert) a feedback entry and link it to the source message.
+    ///
+    /// # Errors
+    /// Returns an error if the database write fails.
+    pub async fn save_feedback(
+        &self,
+        entry: &crate::feedback::FeedbackEntry,
+    ) -> Result<(), InboxError> {
+        let start = std::time::Instant::now();
+        let message_id = entry.message_id.clone();
+        let rating = entry.rating;
+        let comment = entry.comment.clone();
+        let created_at = entry.created_at.timestamp();
+        let source = entry.source.clone();
+        let title = entry.title.clone();
+        let db = Arc::clone(&self.db);
+
+        let rating_str = rating.to_string();
+        let source_label = source.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            feedback::insert_feedback(
+                &db,
+                &message_id,
+                rating,
+                &comment,
+                created_at,
+                &source,
+                &title,
+            )
+        })
+        .await
+        .map_err(|e| InboxError::Memory(e.to_string()))?;
+
+        let status = if result.is_ok() { "success" } else { "failure" };
+        metrics::counter!(crate::telemetry::FEEDBACK_TOTAL, "rating" => rating_str.clone(), "source" => source_label, "status" => status)
+            .increment(1);
+        metrics::histogram!(crate::telemetry::FEEDBACK_DURATION, "op" => "save")
+            .record(start.elapsed().as_secs_f64());
+        if result.is_ok() {
+            metrics::gauge!(crate::telemetry::FEEDBACK_RATING_DISTRIBUTION, "rating" => rating_str)
+                .increment(1.0);
+        }
+        result
+    }
+
+    /// Query feedback for a specific message.
+    ///
+    /// # Errors
+    /// Returns an error if the database query fails.
+    pub async fn query_feedback(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<crate::feedback::FeedbackEntry>, InboxError> {
+        let start = std::time::Instant::now();
+        let mid = message_id.to_owned();
+        let db = Arc::clone(&self.db);
+
+        let result = tokio::task::spawn_blocking(move || feedback::get_feedback(&db, &mid))
+            .await
+            .map_err(|e| InboxError::Memory(e.to_string()))?;
+
+        let status = if result.is_ok() { "success" } else { "failure" };
+        metrics::counter!(crate::telemetry::MEMORY_OPS, "op" => "feedback_query", "status" => status)
+            .increment(1);
+        metrics::histogram!(crate::telemetry::FEEDBACK_DURATION, "op" => "query")
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
+
+    /// Compute aggregate feedback statistics.
+    ///
+    /// # Errors
+    /// Returns an error if the database query fails.
+    pub async fn feedback_stats(&self) -> Result<crate::feedback::FeedbackStats, InboxError> {
+        let start = std::time::Instant::now();
+        let db = Arc::clone(&self.db);
+
+        let result = tokio::task::spawn_blocking(move || feedback::get_feedback_stats(&db))
+            .await
+            .map_err(|e| InboxError::Memory(e.to_string()))?;
+
+        let status = if result.is_ok() { "success" } else { "failure" };
+        metrics::counter!(crate::telemetry::MEMORY_OPS, "op" => "feedback_stats", "status" => status)
+            .increment(1);
+        metrics::histogram!(crate::telemetry::FEEDBACK_DURATION, "op" => "stats")
+            .record(start.elapsed().as_secs_f64());
+        result
+    }
+
+    /// Update the comment on an existing feedback entry.
+    /// Returns `true` if the feedback existed and was updated.
+    ///
+    /// # Errors
+    /// Returns an error if the database write fails.
+    pub async fn update_feedback_comment(
+        &self,
+        message_id: &str,
+        comment: &str,
+    ) -> Result<bool, InboxError> {
+        let start = std::time::Instant::now();
+        let mid = message_id.to_owned();
+        let cmt = comment.to_owned();
+        let db = Arc::clone(&self.db);
+
+        let result =
+            tokio::task::spawn_blocking(move || feedback::update_feedback_comment(&db, &mid, &cmt))
+                .await
+                .map_err(|e| InboxError::Memory(e.to_string()))?;
+
+        let status = if result.is_ok() { "success" } else { "failure" };
+        metrics::counter!(crate::telemetry::FEEDBACK_COMMENTS_TOTAL, "source" => "direct", "status" => status)
+            .increment(1);
+        metrics::histogram!(crate::telemetry::FEEDBACK_DURATION, "op" => "update_comment")
+            .record(start.elapsed().as_secs_f64());
+        result
     }
 }
 

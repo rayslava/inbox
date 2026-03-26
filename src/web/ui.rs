@@ -47,6 +47,7 @@ pub struct UiAttachment {
 }
 
 pub struct UiNode {
+    pub message_id: String,
     pub title: String,
     pub created: String,
     pub source: String,
@@ -118,6 +119,7 @@ fn parse_node(lines: &[&str], attachments_dir: &Path) -> Option<UiNode> {
     let search_text = format!("{title} {source} {tags:?} {summary}");
 
     Some(UiNode {
+        message_id: node_id,
         title,
         created,
         source,

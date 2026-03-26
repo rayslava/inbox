@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::adapters::telegram::FeedbackMessageMap;
 use crate::adapters::telegram_notifier;
 use crate::message::{
     Attachment, IncomingMessage, MessageSource, RetryableMessage, SourceMetadata,
@@ -99,6 +100,7 @@ pub(crate) struct FlushContext {
     pub bot: teloxide::Bot,
     pub retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
     pub notify_cfg: crate::adapters::telegram_notifier::NotifyConfig,
+    pub feedback_msg_map: FeedbackMessageMap,
 }
 
 /// Spawn the delayed flush task for a media group.
@@ -146,6 +148,7 @@ async fn flush(
         bot,
         retry_store,
         notify_cfg,
+        feedback_msg_map,
     } = ctx;
     let (incoming_base, sent_status_id, chat_id) = {
         let inner = state.inner.lock().expect("media group mutex poisoned");
@@ -179,15 +182,18 @@ async fn flush(
     if let Some(sent_msg_id) = sent_status_id {
         let retry_key = incoming.id;
         let retryable = RetryableMessage::from(&incoming);
-        incoming.status_notifier = Some(Box::new(telegram_notifier::TelegramNotifier::new(
-            bot,
-            chat_id,
-            sent_msg_id,
-            retry_store,
-            retry_key,
-            retryable,
-            notify_cfg,
-        )) as Box<dyn StatusNotifier>);
+        incoming.status_notifier = Some(Box::new(
+            telegram_notifier::TelegramNotifier::new(
+                bot,
+                chat_id,
+                sent_msg_id,
+                retry_store,
+                retry_key,
+                retryable,
+                notify_cfg,
+            )
+            .with_feedback_map(feedback_msg_map),
+        ) as Box<dyn StatusNotifier>);
     }
 
     metrics::counter!(

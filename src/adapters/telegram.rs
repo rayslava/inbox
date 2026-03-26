@@ -30,14 +30,19 @@ use crate::adapters::telegram_media_group::{self, MediaGroupMap};
 use crate::adapters::telegram_notifier::{build_telegram_notifier, send_status_reply};
 use crate::config::TelegramConfig;
 use crate::error::InboxError;
+use crate::memory::MemoryStore;
 use crate::message::{IncomingMessage, MessageSource, RetryableMessage, SourceMetadata};
 use crate::processing_status::StatusNotifier;
 
 use super::InputAdapter;
 
+/// Maps bot message IDs to inbox UUIDs so reply-as-comment can find the original message.
+pub(crate) type FeedbackMessageMap = Arc<DashMap<i32, Uuid>>;
+
 pub struct TelegramAdapter {
     pub cfg: TelegramConfig,
     pub attachments_dir: std::path::PathBuf,
+    pub memory_store: Option<Arc<MemoryStore>>,
 }
 
 #[async_trait::async_trait]
@@ -60,6 +65,7 @@ impl InputAdapter for TelegramAdapter {
         info!("Telegram adapter starting");
 
         let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
+        let feedback_msg_map: FeedbackMessageMap = Arc::new(DashMap::new());
         let mut backoff = RECONNECT_BACKOFF_INIT;
 
         loop {
@@ -68,18 +74,20 @@ impl InputAdapter for TelegramAdapter {
                 .build()
                 .expect("Failed to build IPv4-only Telegram client");
             let bot = Bot::with_client(&self.cfg.bot_token, client);
-            let handler = build_handler(
-                self.cfg.allowed_user_ids.clone(),
-                self.attachments_dir.clone(),
-                self.cfg.file_download_timeout_secs,
-                self.cfg.file_download_retries,
-                self.cfg.media_group_timeout_ms,
-                crate::adapters::telegram_notifier::NotifyConfig {
+            let handler = build_handler(HandlerConfig {
+                allowed_user_ids: self.cfg.allowed_user_ids.clone(),
+                attachments_dir: self.attachments_dir.clone(),
+                file_download_timeout_secs: self.cfg.file_download_timeout_secs,
+                file_download_retries: self.cfg.file_download_retries,
+                media_group_timeout_ms: self.cfg.media_group_timeout_ms,
+                notify_cfg: crate::adapters::telegram_notifier::NotifyConfig {
                     retries: self.cfg.status_notify_retries,
                     retry_base_ms: self.cfg.status_notify_retry_base_ms,
                 },
-                retry_store.clone(),
-            );
+                retry_store: retry_store.clone(),
+                memory_store: self.memory_store.clone(),
+                feedback_msg_map: feedback_msg_map.clone(),
+            });
 
             // Note: no enable_ctrlc_handler() — shutdown is handled via CancellationToken.
             let mut dispatcher = Dispatcher::builder(bot, handler)
@@ -136,29 +144,43 @@ impl InputAdapter for TelegramAdapter {
     }
 }
 
+/// Configuration for building the Telegram update handler.
+pub struct HandlerConfig {
+    pub allowed_user_ids: Vec<i64>,
+    pub attachments_dir: PathBuf,
+    pub file_download_timeout_secs: u64,
+    pub file_download_retries: u32,
+    pub media_group_timeout_ms: u64,
+    pub notify_cfg: crate::adapters::telegram_notifier::NotifyConfig,
+    pub retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
+    pub memory_store: Option<Arc<MemoryStore>>,
+    pub feedback_msg_map: FeedbackMessageMap,
+}
+
 /// Build the teloxide update handler tree. Exposed for integration tests.
 #[must_use]
 pub fn build_handler(
-    allowed_user_ids: Vec<i64>,
-    attachments_dir: PathBuf,
-    file_download_timeout_secs: u64,
-    file_download_retries: u32,
-    media_group_timeout_ms: u64,
-    notify_cfg: crate::adapters::telegram_notifier::NotifyConfig,
-    retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
+    hc: HandlerConfig,
 ) -> teloxide::dispatching::UpdateHandler<teloxide::RequestError> {
     use teloxide::prelude::*;
 
-    let retry_store_msg = retry_store.clone();
-    let retry_store_cb = retry_store;
+    let retry_store_msg = hc.retry_store.clone();
+    let retry_store_cb = hc.retry_store;
     let media_groups: MediaGroupMap = telegram_media_group::new_map();
+    let memory_store_msg = hc.memory_store.clone();
+    let memory_store_cb = hc.memory_store;
+    let feedback_msg_map_msg = hc.feedback_msg_map.clone();
+    let feedback_msg_map_cb = hc.feedback_msg_map;
+    let notify_cfg = hc.notify_cfg;
 
     let message_handler = Update::filter_message().endpoint(
         move |bot: Bot, msg: Message, tx: mpsc::Sender<IncomingMessage>| {
-            let allowed = allowed_user_ids.clone();
-            let attachments_dir = attachments_dir.clone();
+            let allowed = hc.allowed_user_ids.clone();
+            let attachments_dir = hc.attachments_dir.clone();
             let retry_store = retry_store_msg.clone();
             let media_groups = media_groups.clone();
+            let memory_store = memory_store_msg.clone();
+            let feedback_msg_map = feedback_msg_map_msg.clone();
             async move {
                 let user_id = msg
                     .from
@@ -176,13 +198,15 @@ pub fn build_handler(
                     MessageContext {
                         attachments_dir,
                         dl_cfg: DownloadConfig {
-                            timeout_secs: file_download_timeout_secs,
-                            retries: file_download_retries,
+                            timeout_secs: hc.file_download_timeout_secs,
+                            retries: hc.file_download_retries,
                         },
-                        media_group_timeout_ms,
+                        media_group_timeout_ms: hc.media_group_timeout_ms,
                         notify_cfg,
                         retry_store,
                         media_groups,
+                        memory_store,
+                        feedback_msg_map,
                     },
                 )
                 .await;
@@ -197,7 +221,20 @@ pub fn build_handler(
               query: teloxide::types::CallbackQuery,
               tx: mpsc::Sender<IncomingMessage>| {
             let retry_store = retry_store_cb.clone();
-            async move { handle_callback_query(bot, query, tx, retry_store, notify_cfg).await }
+            let memory_store = memory_store_cb.clone();
+            let feedback_msg_map = feedback_msg_map_cb.clone();
+            async move {
+                handle_callback_query(
+                    bot,
+                    query,
+                    tx,
+                    retry_store,
+                    notify_cfg,
+                    memory_store,
+                    feedback_msg_map,
+                )
+                .await
+            }
         },
     );
 
@@ -213,6 +250,35 @@ struct MessageContext {
     notify_cfg: crate::adapters::telegram_notifier::NotifyConfig,
     retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
     media_groups: MediaGroupMap,
+    memory_store: Option<Arc<MemoryStore>>,
+    feedback_msg_map: FeedbackMessageMap,
+}
+
+/// If the incoming message is a reply to a bot feedback message, save the reply
+/// text as a feedback comment and return `true` (meaning the message was consumed).
+async fn try_reply_as_comment(msg: &teloxide::types::Message, ctx: &MessageContext) -> bool {
+    let Some(reply) = msg.reply_to_message() else {
+        return false;
+    };
+    let Some(store) = &ctx.memory_store else {
+        return false;
+    };
+    let reply_msg_id = reply.id.0;
+    let Some(entry) = ctx.feedback_msg_map.get(&reply_msg_id) else {
+        return false;
+    };
+    let inbox_id = entry.value().to_string();
+    let comment = msg.text().unwrap_or("").to_owned();
+    if comment.is_empty() {
+        return false;
+    }
+    let store = Arc::clone(store);
+    match store.update_feedback_comment(&inbox_id, &comment).await {
+        Ok(true) => info!(inbox_id, "Feedback comment added via reply"),
+        Ok(false) => warn!(inbox_id, "No feedback found for reply-as-comment"),
+        Err(e) => warn!(?e, inbox_id, "Failed to save feedback comment"),
+    }
+    true
 }
 
 async fn handle_message(
@@ -221,6 +287,10 @@ async fn handle_message(
     tx: mpsc::Sender<IncomingMessage>,
     ctx: MessageContext,
 ) {
+    if try_reply_as_comment(&msg, &ctx).await {
+        return;
+    }
+
     let username = msg.from.as_ref().and_then(|u| u.username.clone());
     let message_id = msg.id.0;
     let forwarded_from = extract_forward_origin(&msg);
@@ -257,6 +327,7 @@ async fn handle_message(
                     bot: bot.clone(),
                     retry_store: ctx.retry_store,
                     notify_cfg: ctx.notify_cfg,
+                    feedback_msg_map: ctx.feedback_msg_map,
                 },
             );
         }
@@ -302,7 +373,8 @@ async fn handle_message(
                 retry_key,
                 retryable,
                 ctx.notify_cfg,
-            ),
+            )
+            .with_feedback_map(ctx.feedback_msg_map),
         ));
     }
 
@@ -323,6 +395,8 @@ async fn handle_callback_query(
     tx: mpsc::Sender<IncomingMessage>,
     retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
     notify_cfg: crate::adapters::telegram_notifier::NotifyConfig,
+    memory_store: Option<Arc<MemoryStore>>,
+    feedback_msg_map: FeedbackMessageMap,
 ) -> Result<(), teloxide::RequestError> {
     use teloxide::prelude::Requester;
 
@@ -334,10 +408,25 @@ async fn handle_callback_query(
         ..
     } = query;
 
+    let data_str = data.as_deref().unwrap_or("");
+
+    // Handle feedback callback: fb:{rating}:{uuid}
+    if data_str.starts_with("fb:") {
+        bot.answer_callback_query(callback_id).await?;
+        handle_feedback_callback(
+            &bot,
+            data_str,
+            message.as_ref(),
+            memory_store.as_ref(),
+            &feedback_msg_map,
+        )
+        .await;
+        return Ok(());
+    }
+
     // Acknowledge the button press immediately (removes the spinner in Telegram).
     bot.answer_callback_query(callback_id).await?;
 
-    let data_str = data.as_deref().unwrap_or("");
     let Some(uuid_str) = data_str.strip_prefix("retry:") else {
         return Ok(());
     };
@@ -373,12 +462,15 @@ async fn handle_callback_query(
     let fresh_retryable = RetryableMessage::from(&msg);
     let notifier = build_telegram_notifier(
         &bot,
-        chat_id,
-        reply_to,
-        retry_store,
-        retry_key,
-        fresh_retryable,
-        notify_cfg,
+        crate::adapters::telegram_notifier::BuildNotifierArgs {
+            chat_id,
+            reply_to,
+            retry_store,
+            retry_key,
+            retryable: fresh_retryable,
+            cfg: notify_cfg,
+            feedback_msg_map: Some(feedback_msg_map.clone()),
+        },
     )
     .await;
     msg.status_notifier = notifier.map(|n| Box::new(n) as Box<dyn StatusNotifier>);
@@ -388,6 +480,70 @@ async fn handle_callback_query(
     }
 
     Ok(())
+}
+
+async fn handle_feedback_callback(
+    bot: &teloxide::Bot,
+    data_str: &str,
+    message: Option<&teloxide::types::MaybeInaccessibleMessage>,
+    memory_store: Option<&Arc<MemoryStore>>,
+    feedback_msg_map: &FeedbackMessageMap,
+) {
+    use crate::feedback::{FeedbackEntry, FeedbackRating};
+    use chrono::Utc;
+    use teloxide::payloads::EditMessageTextSetters;
+
+    // Parse fb:{rating}:{uuid}
+    let parts: Vec<&str> = data_str.splitn(3, ':').collect();
+    if parts.len() < 3 {
+        return;
+    }
+    let Ok(rating_val) = parts[1].parse::<u8>() else {
+        return;
+    };
+    let Some(rating) = FeedbackRating::new(rating_val) else {
+        return;
+    };
+    let Ok(inbox_id) = Uuid::parse_str(parts[2]) else {
+        return;
+    };
+
+    let Some(store) = memory_store else {
+        warn!("Feedback callback received but memory store is not enabled");
+        return;
+    };
+
+    let entry = FeedbackEntry {
+        message_id: inbox_id.to_string(),
+        rating: rating.value(),
+        comment: String::new(),
+        created_at: Utc::now(),
+        source: "telegram".into(),
+        title: String::new(),
+    };
+
+    if let Err(e) = store.save_feedback(&entry).await {
+        warn!(?e, "Failed to save Telegram feedback");
+        return;
+    }
+
+    // Register in feedback message map for reply-as-comment.
+    if let Some(teloxide::types::MaybeInaccessibleMessage::Regular(m)) = message {
+        feedback_msg_map.insert(m.id.0, inbox_id);
+    }
+
+    // Edit the message to show the confirmed rating (remove keyboard).
+    let stars = rating.to_string();
+    if let Some(teloxide::types::MaybeInaccessibleMessage::Regular(m)) = message {
+        let text = format!("{}\n\nRated: {stars}", m.text().unwrap_or(""));
+        if let Err(e) = bot
+            .edit_message_text(m.chat.id, m.id, text)
+            .reply_markup(teloxide::types::InlineKeyboardMarkup::default())
+            .await
+        {
+            warn!(?e, "Failed to edit message after feedback");
+        }
+    }
 }
 
 /// Return `(file_id, filename, media_kind)` for the first downloadable file in the message.

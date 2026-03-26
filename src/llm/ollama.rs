@@ -498,7 +498,7 @@ mod tests {
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/json")
                     .set_body_json(serde_json::json!({
-                        "models": [{"name": "llama3", "size_vram": 4294967296u64}]
+                        "models": [{"name": "llama3", "size_vram": 4_294_967_296_u64}]
                     })),
             )
             .mount(&server)

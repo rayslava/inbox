@@ -224,6 +224,7 @@ rescan_on_write      = true
 
 # ── Memory (Grafeo graph database for persistent LLM memory) ──────────────────
 # Tools: memory_save, memory_recall, memory_link, memory_context
+# Also stores user feedback when enabled.
 
 [memory]
 enabled = false

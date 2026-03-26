@@ -183,6 +183,7 @@ async fn spawn_flush_sends_combined_message_after_timeout() {
                 retries: 3,
                 retry_base_ms: 100,
             },
+            feedback_msg_map: Arc::new(DashMap::new()),
         },
     );
 
@@ -235,6 +236,7 @@ async fn spawn_flush_waits_for_pending_downloads() {
                 retries: 3,
                 retry_base_ms: 100,
             },
+            feedback_msg_map: Arc::new(DashMap::new()),
         },
     );
 

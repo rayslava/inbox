@@ -54,8 +54,8 @@ cargo run -- hash-password
 - Markup the functions with the `anodized` https://docs.rs/anodized/latest/anodized/ crate
 - Always check the `cargo clippy`
 - Run the following set after changes:
-  - `cargo clippy --fix --all-features --allow-dirty`
-  - `cargo fix --all-features --allow-dirty`
+  - `cargo clippy --fix --all-features --allow-dirty --all-targets --workspace`
+  - `cargo fix --all-features --allow-dirty --all-targets --workspace`
   - `cargo fmt --all`
 - Always run tests after all the issues reported are fixed
 - No `#[allow]` tags must be used, fix issues, not mask them

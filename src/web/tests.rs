@@ -54,6 +54,7 @@ fn test_state(ready: bool) -> AdminState {
         tracker: Arc::new(ProcessingTracker::new()),
         inbox_tx: None,
         attachments_dir,
+        memory_store: None,
     }
 }
 
@@ -68,6 +69,7 @@ fn make_router(ready: bool) -> Router {
         tracker: state.tracker,
         inbox_tx: state.inbox_tx,
         attachments_dir: state.attachments_dir,
+        memory_store: state.memory_store,
     })
 }
 
@@ -231,6 +233,7 @@ async fn ui_nodes_with_session_returns_html_fragment() {
         tracker: state.tracker,
         inbox_tx: state.inbox_tx,
         attachments_dir: state.attachments_dir,
+        memory_store: state.memory_store,
     });
     let req = Request::builder()
         .uri("/ui/nodes")
@@ -273,6 +276,7 @@ async fn logs_entries_with_session_returns_html_fragment() {
         tracker: state.tracker,
         inbox_tx: state.inbox_tx,
         attachments_dir: state.attachments_dir,
+        memory_store: state.memory_store,
     });
     let req = Request::builder()
         .uri("/logs/entries")
@@ -327,6 +331,7 @@ async fn proxy_inbox_with_session_and_tx_returns_accepted() {
         tracker: state.tracker,
         inbox_tx: Some(tx),
         attachments_dir: state.attachments_dir,
+        memory_store: state.memory_store,
     });
     let req = Request::builder()
         .method("POST")
@@ -386,6 +391,7 @@ async fn status_with_valid_session_returns_json() {
         tracker: state.tracker,
         inbox_tx: state.inbox_tx,
         attachments_dir: state.attachments_dir,
+        memory_store: state.memory_store,
     });
     let req = Request::builder()
         .uri("/status")
@@ -401,4 +407,179 @@ async fn status_with_valid_session_returns_json() {
         .to_str()
         .unwrap();
     assert!(ct.contains("application/json"));
+}
+
+// ── Feedback endpoint tests ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn feedback_post_without_session_returns_401() {
+    let router = make_router(true);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/feedback")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"message_id":"00000000-0000-0000-0000-000000000001","rating":3}"#,
+        ))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn feedback_post_without_memory_store_returns_503() {
+    use axum::http::header;
+    use chrono::Utc;
+
+    let state = test_state(true);
+    let token = auth::generate_session_token();
+    state.sessions.insert(token.clone(), Utc::now());
+
+    let router = admin_router(AdminRouterArgs {
+        cfg: state.cfg,
+        readiness: state.readiness,
+        session_store: state.sessions,
+        metrics_handle: state.metrics_handle,
+        log_store: state.log_store,
+        tracker: state.tracker,
+        inbox_tx: state.inbox_tx,
+        attachments_dir: state.attachments_dir,
+        memory_store: None,
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/feedback")
+        .header("content-type", "application/json")
+        .header(header::COOKIE, format!("session={token}"))
+        .body(Body::from(
+            r#"{"message_id":"00000000-0000-0000-0000-000000000001","rating":3}"#,
+        ))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn feedback_post_with_memory_store_returns_ok() {
+    use crate::memory::MemoryStore;
+    use axum::http::header;
+    use chrono::Utc;
+
+    let state = test_state(true);
+    let token = auth::generate_session_token();
+    state.sessions.insert(token.clone(), Utc::now());
+
+    let store = Arc::new(MemoryStore::new_in_memory().unwrap());
+    let router = admin_router(AdminRouterArgs {
+        cfg: state.cfg,
+        readiness: state.readiness,
+        session_store: state.sessions,
+        metrics_handle: state.metrics_handle,
+        log_store: state.log_store,
+        tracker: state.tracker,
+        inbox_tx: state.inbox_tx,
+        attachments_dir: state.attachments_dir,
+        memory_store: Some(store),
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/feedback")
+        .header("content-type", "application/json")
+        .header(header::COOKIE, format!("session={token}"))
+        .body(Body::from(
+            r#"{"message_id":"00000000-0000-0000-0000-000000000001","rating":3}"#,
+        ))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn feedback_post_htmx_returns_html_fragment() {
+    use crate::memory::MemoryStore;
+    use axum::http::header;
+    use chrono::Utc;
+
+    let state = test_state(true);
+    let token = auth::generate_session_token();
+    state.sessions.insert(token.clone(), Utc::now());
+
+    let store = Arc::new(MemoryStore::new_in_memory().unwrap());
+    let router = admin_router(AdminRouterArgs {
+        cfg: state.cfg,
+        readiness: state.readiness,
+        session_store: state.sessions,
+        metrics_handle: state.metrics_handle,
+        log_store: state.log_store,
+        tracker: state.tracker,
+        inbox_tx: state.inbox_tx,
+        attachments_dir: state.attachments_dir,
+        memory_store: Some(store),
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/feedback")
+        .header("content-type", "application/json")
+        .header(header::COOKIE, format!("session={token}"))
+        .header("HX-Request", "true")
+        .body(Body::from(
+            r#"{"message_id":"00000000-0000-0000-0000-000000000001","rating":2}"#,
+        ))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(ct.contains("text/html"));
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("feedback-done"));
+}
+
+#[tokio::test]
+async fn feedback_get_without_session_returns_401() {
+    let router = make_router(true);
+    let req = Request::builder()
+        .uri("/feedback/00000000-0000-0000-0000-000000000001")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn feedback_get_not_found() {
+    use crate::memory::MemoryStore;
+    use axum::http::header;
+    use chrono::Utc;
+
+    let state = test_state(true);
+    let token = auth::generate_session_token();
+    state.sessions.insert(token.clone(), Utc::now());
+
+    let store = Arc::new(MemoryStore::new_in_memory().unwrap());
+    let router = admin_router(AdminRouterArgs {
+        cfg: state.cfg,
+        readiness: state.readiness,
+        session_store: state.sessions,
+        metrics_handle: state.metrics_handle,
+        log_store: state.log_store,
+        tracker: state.tracker,
+        inbox_tx: state.inbox_tx,
+        attachments_dir: state.attachments_dir,
+        memory_store: Some(store),
+    });
+    let req = Request::builder()
+        .uri("/feedback/nonexistent")
+        .header(header::COOKIE, format!("session={token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }

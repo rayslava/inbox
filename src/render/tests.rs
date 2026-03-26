@@ -343,7 +343,7 @@ fn render_fallback_source_urls_in_roam_refs() {
 fn render_fallback_tool_results_joined_cleanly() {
     let msg = IncomingMessage::new(
         MessageSource::Http,
-        "".into(),
+        String::new(),
         SourceMetadata::Http {
             remote_addr: None,
             user_agent: None,
@@ -386,7 +386,7 @@ fn render_fallback_tool_results_joined_cleanly() {
 fn render_fallback_title_used_when_present() {
     let msg = IncomingMessage::new(
         MessageSource::Http,
-        "".into(),
+        String::new(),
         SourceMetadata::Http {
             remote_addr: None,
             user_agent: None,
@@ -416,7 +416,7 @@ fn render_empty_text_image_uses_media_kind() {
 
     let mut msg = IncomingMessage::new(
         MessageSource::Telegram,
-        "".into(),
+        String::new(),
         SourceMetadata::Telegram {
             chat_id: 1,
             message_id: 3,
@@ -455,7 +455,7 @@ fn render_empty_text_image_uses_media_kind() {
 fn render_untitled_when_nothing_available() {
     let msg = IncomingMessage::new(
         MessageSource::Http,
-        "".into(),
+        String::new(),
         SourceMetadata::Http {
             remote_addr: None,
             user_agent: None,

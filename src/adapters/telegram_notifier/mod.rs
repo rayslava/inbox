@@ -8,6 +8,7 @@ use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::adapters::telegram::FeedbackMessageMap;
 use crate::message::RetryableMessage;
 use crate::processing_status::{ProcessingStage, StatusNotifier};
 
@@ -30,6 +31,7 @@ pub struct TelegramNotifier {
     retryable: RetryableMessage,
     /// Retry policy. Terminal stages (Done/Failed) use `cfg.retries * 2`.
     cfg: NotifyConfig,
+    feedback_msg_map: Option<FeedbackMessageMap>,
 }
 
 impl TelegramNotifier {
@@ -51,7 +53,14 @@ impl TelegramNotifier {
             retry_key,
             retryable,
             cfg,
+            feedback_msg_map: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_feedback_map(mut self, map: FeedbackMessageMap) -> Self {
+        self.feedback_msg_map = Some(map);
+        self
     }
 }
 
@@ -104,12 +113,23 @@ impl StatusNotifier for TelegramNotifier {
             self.retry_store.remove(&self.retry_key);
         }
 
-        let markup = is_failed.then(|| {
-            InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
-                "🔄 Retry",
-                format!("retry:{}", self.retry_key),
-            )]])
-        });
+        let markup = if is_failed {
+            Some(InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback(
+                    "\u{1f504} Retry",
+                    format!("retry:{}", self.retry_key),
+                ),
+            ]]))
+        } else if is_done {
+            let key = self.retry_key;
+            Some(InlineKeyboardMarkup::new(vec![vec![
+                InlineKeyboardButton::callback("\u{2b50}", format!("fb:1:{key}")),
+                InlineKeyboardButton::callback("\u{2b50}\u{2b50}", format!("fb:2:{key}")),
+                InlineKeyboardButton::callback("\u{2b50}\u{2b50}\u{2b50}", format!("fb:3:{key}")),
+            ]]))
+        } else {
+            None
+        };
 
         let mut edited = false;
         for attempt in 0..retries {
@@ -152,6 +172,13 @@ impl StatusNotifier for TelegramNotifier {
                 }
             }
         }
+
+        // On Done, register the bot message ID for reply-as-comment.
+        if is_done {
+            if let Some(ref map) = self.feedback_msg_map {
+                map.insert(self.sent_msg_id.0, self.retry_key);
+            }
+        }
     }
 }
 
@@ -191,29 +218,39 @@ pub async fn send_status_reply(
     None
 }
 
+/// Arguments for building a Telegram notifier.
+pub struct BuildNotifierArgs {
+    pub chat_id: teloxide::types::ChatId,
+    pub reply_to: Option<teloxide::types::MessageId>,
+    pub retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
+    pub retry_key: Uuid,
+    pub retryable: RetryableMessage,
+    pub cfg: NotifyConfig,
+    pub feedback_msg_map: Option<FeedbackMessageMap>,
+}
+
 /// Send an initial "⏳ Processing…" reply and return a fully-initialised notifier.
 ///
 /// Uses `cfg` for both the initial send and subsequent status edits.
 /// Returns `None` if all send attempts fail.
 pub async fn build_telegram_notifier(
     bot: &teloxide::Bot,
-    chat_id: teloxide::types::ChatId,
-    reply_to: Option<teloxide::types::MessageId>,
-    retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
-    retry_key: Uuid,
-    retryable: RetryableMessage,
-    cfg: NotifyConfig,
+    args: BuildNotifierArgs,
 ) -> Option<TelegramNotifier> {
-    let sent_msg_id = send_status_reply(bot, chat_id, reply_to, cfg).await?;
-    Some(TelegramNotifier::new(
+    let sent_msg_id = send_status_reply(bot, args.chat_id, args.reply_to, args.cfg).await?;
+    let mut notifier = TelegramNotifier::new(
         bot.clone(),
-        chat_id,
+        args.chat_id,
         sent_msg_id,
-        retry_store,
-        retry_key,
-        retryable,
-        cfg,
-    ))
+        args.retry_store,
+        args.retry_key,
+        args.retryable,
+        args.cfg,
+    );
+    if let Some(map) = args.feedback_msg_map {
+        notifier = notifier.with_feedback_map(map);
+    }
+    Some(notifier)
 }
 
 #[cfg(test)]

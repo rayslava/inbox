@@ -222,6 +222,11 @@ async fn advance_done_removes_from_retry_store() {
         !store.contains_key(&key),
         "retryable must be removed from store on done"
     );
+    let r = mock.get_responses();
+    assert!(
+        r.edited_messages_text[0].bot_request.reply_markup.is_some(),
+        "feedback inline buttons must be present on Done"
+    );
 }
 
 /// Tests that `send_status_reply` sends "⏳ Processing…" and returns a `MessageId`.
@@ -304,14 +309,17 @@ async fn build_telegram_notifier_sends_initial_and_returns_notifier() {
             let key = Uuid::new_v4();
             let notifier = build_telegram_notifier(
                 &bot,
-                msg.chat.id,
-                None,
-                s,
-                key,
-                dummy_retryable(),
-                NotifyConfig {
-                    retries: 3,
-                    retry_base_ms: 100,
+                BuildNotifierArgs {
+                    chat_id: msg.chat.id,
+                    reply_to: None,
+                    retry_store: s,
+                    retry_key: key,
+                    retryable: dummy_retryable(),
+                    cfg: NotifyConfig {
+                        retries: 3,
+                        retry_base_ms: 100,
+                    },
+                    feedback_msg_map: None,
                 },
             )
             .await;

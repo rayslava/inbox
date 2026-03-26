@@ -28,7 +28,7 @@ pub const WRITE_ERRORS: &str = "inbox_write_errors_total";
 /// Labels: adapter = "telegram" | "email"
 pub const ADAPTER_RECONNECTS: &str = "inbox_adapter_reconnects_total";
 
-/// Labels: op = "save" | "recall" | "link_source" | "link_memories" | "context" | "sources",
+/// Labels: op = "save" | "recall" | "`link_source`" | "`link_memories`" | "context" | "sources",
 ///         status = "success" | "failure"
 pub const MEMORY_OPS: &str = "inbox_memory_ops_total";
 
@@ -52,9 +52,22 @@ pub const WRITE_DURATION: &str = "inbox_write_duration_seconds";
 /// Labels: op
 pub const MEMORY_DURATION: &str = "inbox_memory_duration_seconds";
 
+/// Labels: rating = "1" | "2" | "3", source = "telegram" | "`web_ui`" | "http",
+///         status = "success" | "failure"
+pub const FEEDBACK_TOTAL: &str = "inbox_feedback_total";
+
+/// Labels: source, status = "success" | "failure"
+pub const FEEDBACK_COMMENTS_TOTAL: &str = "inbox_feedback_comments_total";
+
+/// Labels: op = "save" | "query" | "stats" | "`update_comment`"
+pub const FEEDBACK_DURATION: &str = "inbox_feedback_duration_seconds";
+
 // ── Gauges ────────────────────────────────────────────────────────────────────
 
 pub const QUEUE_DEPTH: &str = "inbox_queue_depth";
+
+/// Labels: rating = "1" | "2" | "3"
+pub const FEEDBACK_RATING_DISTRIBUTION: &str = "inbox_feedback_rating";
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -116,6 +129,26 @@ pub fn describe_metrics() {
         Unit::Count,
         "Current number of messages waiting in the pipeline queue"
     );
+    describe_counter!(
+        FEEDBACK_TOTAL,
+        Unit::Count,
+        "Total user feedback submissions by rating and source"
+    );
+    describe_counter!(
+        FEEDBACK_COMMENTS_TOTAL,
+        Unit::Count,
+        "Total feedback comment additions"
+    );
+    describe_histogram!(
+        FEEDBACK_DURATION,
+        Unit::Seconds,
+        "Feedback storage operation duration"
+    );
+    describe_gauge!(
+        FEEDBACK_RATING_DISTRIBUTION,
+        Unit::Count,
+        "Current feedback count per rating level"
+    );
 }
 
 #[cfg(test)]
@@ -140,6 +173,10 @@ mod tests {
         assert!(!ADAPTER_RECONNECTS.is_empty());
         assert!(!MEMORY_OPS.is_empty());
         assert!(!MEMORY_DURATION.is_empty());
+        assert!(!FEEDBACK_TOTAL.is_empty());
+        assert!(!FEEDBACK_COMMENTS_TOTAL.is_empty());
+        assert!(!FEEDBACK_DURATION.is_empty());
+        assert!(!FEEDBACK_RATING_DISTRIBUTION.is_empty());
     }
 
     #[test]

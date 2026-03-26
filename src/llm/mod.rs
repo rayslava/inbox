@@ -254,7 +254,7 @@ pub(crate) fn llm_call_tool_def() -> serde_json::Value {
 // ── Builder ───────────────────────────────────────────────────────────────────
 
 mod builder;
-pub use builder::build_chain;
+pub use builder::{BuildResult, build_chain};
 
 #[cfg(test)]
 mod tests;

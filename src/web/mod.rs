@@ -16,11 +16,13 @@ use tracing::warn;
 use crate::config::Config;
 use crate::health::ReadinessState;
 use crate::log_capture::LogStore;
+use crate::memory::MemoryStore;
 use crate::message::IncomingMessage;
 use crate::processing_status::ProcessingTracker;
 
 pub mod attachments;
 pub mod auth;
+pub mod feedback;
 pub mod proxy;
 pub mod ui;
 
@@ -36,6 +38,7 @@ pub(crate) struct AdminState {
     pub tracker: Arc<ProcessingTracker>,
     pub inbox_tx: Option<mpsc::Sender<IncomingMessage>>,
     pub attachments_dir: PathBuf,
+    pub memory_store: Option<Arc<MemoryStore>>,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -49,6 +52,7 @@ pub struct AdminRouterArgs {
     pub tracker: Arc<ProcessingTracker>,
     pub inbox_tx: Option<mpsc::Sender<IncomingMessage>>,
     pub attachments_dir: PathBuf,
+    pub memory_store: Option<Arc<MemoryStore>>,
 }
 
 pub fn admin_router(args: AdminRouterArgs) -> Router {
@@ -62,6 +66,7 @@ pub fn admin_router(args: AdminRouterArgs) -> Router {
         tracker: args.tracker,
         inbox_tx: args.inbox_tx,
         attachments_dir: args.attachments_dir,
+        memory_store: args.memory_store,
     };
 
     let mut router = Router::new()
@@ -82,7 +87,9 @@ pub fn admin_router(args: AdminRouterArgs) -> Router {
             .route("/status", get(status_handler))
             .route("/attachments/{*path}", get(attachments::serve_attachment))
             .route("/capture", post(proxy::inbox_handler))
-            .route("/capture/upload", post(proxy::upload_handler));
+            .route("/capture/upload", post(proxy::upload_handler))
+            .route("/feedback", post(feedback::submit_handler))
+            .route("/feedback/{message_id}", get(feedback::get_handler));
     }
 
     router.with_state(state)

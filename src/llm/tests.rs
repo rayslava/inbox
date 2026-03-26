@@ -603,8 +603,8 @@ async fn llm_call_not_offered_when_depth_zero() {
 
 // ── New resilience tests ───────────────────────────────────────────────────────
 
-/// A mock LLM that always returns ToolCalls with a given tool name,
-/// but switches to returning Message on the forced-summary call (when tool_defs is empty).
+/// A mock LLM that always returns `ToolCalls` with a given tool name,
+/// but switches to returning Message on the forced-summary call (when `tool_defs` is empty).
 struct ForcedSummaryLlm {
     calls: Arc<AtomicUsize>,
     response: crate::message::LlmResponse,
@@ -696,6 +696,38 @@ async fn chain_raw_fallback_carries_source_urls() {
     }
 }
 
+struct BudgetHintCheckLlm {
+    calls: Arc<AtomicUsize>,
+    captured: Arc<std::sync::Mutex<Vec<String>>>,
+    response: crate::message::LlmResponse,
+}
+
+#[async_trait]
+impl LlmClient for BudgetHintCheckLlm {
+    fn name(&self) -> &'static str {
+        "budget_hint_mock"
+    }
+    fn model(&self) -> &'static str {
+        "test-model"
+    }
+    fn retries(&self) -> u32 {
+        1
+    }
+    async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        self.captured.lock().unwrap().push(req.user_content.clone());
+        if n < 3 {
+            Ok(LlmCompletion::ToolCalls(vec![ToolCall {
+                id: "t1".into(),
+                name: "scrape_page".into(),
+                arguments: serde_json::json!({"url": "https://example.com"}),
+            }]))
+        } else {
+            Ok(LlmCompletion::Message(self.response.clone()))
+        }
+    }
+}
+
 #[tokio::test]
 async fn chain_budget_hint_injected_at_half_budget() {
     use std::sync::Mutex;
@@ -705,39 +737,6 @@ async fn chain_budget_hint_injected_at_half_budget() {
     let captured = Arc::clone(&captured_contents);
     let call_count = Arc::new(AtomicUsize::new(0));
     let calls_ref = Arc::clone(&call_count);
-
-    struct BudgetHintCheckLlm {
-        calls: Arc<AtomicUsize>,
-        captured: Arc<Mutex<Vec<String>>>,
-        response: crate::message::LlmResponse,
-    }
-
-    #[async_trait]
-    impl LlmClient for BudgetHintCheckLlm {
-        fn name(&self) -> &'static str {
-            "budget_hint_mock"
-        }
-        fn model(&self) -> &'static str {
-            "test-model"
-        }
-        fn retries(&self) -> u32 {
-            1
-        }
-        async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
-            let n = self.calls.fetch_add(1, Ordering::SeqCst);
-            self.captured.lock().unwrap().push(req.user_content.clone());
-            if n < 3 {
-                // Return tool calls for the first few turns
-                Ok(LlmCompletion::ToolCalls(vec![ToolCall {
-                    id: "t1".into(),
-                    name: "scrape_page".into(),
-                    arguments: serde_json::json!({"url": "https://example.com"}),
-                }]))
-            } else {
-                Ok(LlmCompletion::Message(self.response.clone()))
-            }
-        }
-    }
 
     let llm = BudgetHintCheckLlm {
         calls: calls_ref,
@@ -832,7 +831,7 @@ async fn chain_inner_retry_succeeds_after_transient_failure() {
 
 // ── Forced summary fail path ──────────────────────────────────────────────────
 
-/// Always returns ToolCalls, even when tool_definitions is empty (forced summary pass).
+/// Always returns `ToolCalls`, even when `tool_definitions` is empty (forced summary pass).
 struct AlwaysToolCallsLlm;
 
 #[async_trait]
@@ -855,7 +854,7 @@ impl LlmClient for AlwaysToolCallsLlm {
     }
 }
 
-/// When forced summary pass also fails (returns ToolCalls), chain falls through to RawFallback.
+/// When forced summary pass also fails (returns `ToolCalls`), chain falls through to `RawFallback`.
 #[tokio::test]
 async fn chain_forced_summary_fail_falls_back() {
     let chain = LlmChain::new(
@@ -1000,7 +999,7 @@ async fn tool_result_truncated_in_chain() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/html")
-                .set_body_string(&format!(
+                .set_body_string(format!(
                     "<html><body><p>{}</p></body></html>",
                     "x".repeat(200)
                 )),
