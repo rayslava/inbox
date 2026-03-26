@@ -10,3 +10,15 @@ pub mod org_file;
 pub trait OutputWriter: Send + Sync + 'static {
     async fn write(&self, msg: &ProcessedMessage, cfg: &Config) -> Result<(), InboxError>;
 }
+
+/// A no-op writer for tests that never writes output.
+#[cfg(any(test, feature = "test-helpers"))]
+pub struct NullWriter;
+
+#[cfg(any(test, feature = "test-helpers"))]
+#[async_trait]
+impl OutputWriter for NullWriter {
+    async fn write(&self, _msg: &ProcessedMessage, _cfg: &Config) -> Result<(), InboxError> {
+        Ok(())
+    }
+}

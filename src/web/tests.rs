@@ -183,6 +183,78 @@ async fn attachment_traversal_returns_403() {
 }
 
 #[tokio::test]
+async fn attachment_valid_file_returns_content() {
+    // Keep dir alive so the tempdir isn't dropped.
+    let dir = tempfile::tempdir().unwrap();
+    let att_dir = dir.path().to_path_buf();
+
+    // Create a file in the attachments dir.
+    std::fs::write(att_dir.join("test.txt"), b"hello attachment").unwrap();
+
+    let cfg = Arc::new(Config {
+        general: GeneralConfig {
+            output_file: att_dir.join("inbox.org"),
+            attachments_dir: att_dir.clone(),
+            log_level: "info".into(),
+            log_format: "pretty".into(),
+        },
+        admin: crate::config::AdminConfig::default(),
+        web_ui: WebUiConfig::default(),
+        pipeline: PipelineConfig::default(),
+        llm: LlmConfig {
+            fallback: FallbackMode::default(),
+            url_content_max_chars: 4000,
+            max_tool_turns: 5,
+            max_llm_tool_depth: 1,
+            inner_retries: 0,
+            vision_max_bytes: 5 * 1024 * 1024,
+            tool_result_max_chars: 0,
+            prompts: LlmPromptsConfig::default(),
+            backends: vec![],
+        },
+        adapters: AdaptersConfig::default(),
+        url_fetch: UrlFetchConfig::default(),
+        syncthing: SyncthingConfig::default(),
+        tooling: ToolingConfig::default(),
+        memory: crate::config::MemoryConfig::default(),
+    });
+    let sessions = auth::new_session_store();
+    let handle = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .build_recorder()
+        .handle();
+
+    let router = admin_router(AdminRouterArgs {
+        cfg,
+        readiness: ReadinessState::new(true),
+        session_store: sessions,
+        metrics_handle: handle,
+        log_store: LogStore::new(100),
+        tracker: Arc::new(ProcessingTracker::new()),
+        inbox_tx: None,
+        attachments_dir: att_dir,
+        memory_store: None,
+    });
+
+    let req = Request::builder()
+        .uri("/attachments/test.txt")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(ct.contains("text/plain"));
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(&body[..], b"hello attachment");
+}
+
+#[tokio::test]
 async fn attachment_not_found_returns_404() {
     let router = make_router(true);
     let req = Request::builder()
@@ -409,6 +481,73 @@ async fn status_with_valid_session_returns_json() {
     assert!(ct.contains("application/json"));
 }
 
+// ── Proxy edge-case tests ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn proxy_inbox_empty_body_returns_400() {
+    use axum::http::header;
+    use chrono::Utc;
+    use tokio::sync::mpsc;
+
+    let state = test_state(true);
+    let (tx, _rx) = mpsc::channel(8);
+    let token = auth::generate_session_token();
+    state.sessions.insert(token.clone(), Utc::now());
+
+    let router = admin_router(AdminRouterArgs {
+        cfg: state.cfg,
+        readiness: state.readiness,
+        session_store: state.sessions,
+        metrics_handle: state.metrics_handle,
+        log_store: state.log_store,
+        tracker: state.tracker,
+        inbox_tx: Some(tx),
+        attachments_dir: state.attachments_dir,
+        memory_store: state.memory_store,
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/capture")
+        .header("content-type", "text/plain")
+        .header(header::COOKIE, format!("session={token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn proxy_inbox_no_tx_returns_503() {
+    use axum::http::header;
+    use chrono::Utc;
+
+    let state = test_state(true);
+    let token = auth::generate_session_token();
+    state.sessions.insert(token.clone(), Utc::now());
+
+    // inbox_tx is None by default in test_state
+    let router = admin_router(AdminRouterArgs {
+        cfg: state.cfg,
+        readiness: state.readiness,
+        session_store: state.sessions,
+        metrics_handle: state.metrics_handle,
+        log_store: state.log_store,
+        tracker: state.tracker,
+        inbox_tx: None,
+        attachments_dir: state.attachments_dir,
+        memory_store: state.memory_store,
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/capture")
+        .header("content-type", "text/plain")
+        .header(header::COOKIE, format!("session={token}"))
+        .body(Body::from("some content"))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
 // ── Feedback endpoint tests ──────────────────────────────────────────────────
 
 #[tokio::test]
@@ -551,6 +690,58 @@ async fn feedback_get_without_session_returns_401() {
         .unwrap();
     let resp = router.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn feedback_get_returns_entry_after_post() {
+    use crate::memory::MemoryStore;
+    use axum::http::header;
+    use chrono::Utc;
+
+    let state = test_state(true);
+    let token = auth::generate_session_token();
+    state.sessions.insert(token.clone(), Utc::now());
+
+    let store = Arc::new(MemoryStore::new_in_memory().unwrap());
+    let router = admin_router(AdminRouterArgs {
+        cfg: state.cfg,
+        readiness: state.readiness,
+        session_store: state.sessions.clone(),
+        metrics_handle: state.metrics_handle,
+        log_store: state.log_store,
+        tracker: state.tracker,
+        inbox_tx: state.inbox_tx,
+        attachments_dir: state.attachments_dir,
+        memory_store: Some(store),
+    });
+
+    // First, POST feedback
+    let req = Request::builder()
+        .method("POST")
+        .uri("/feedback")
+        .header("content-type", "application/json")
+        .header(header::COOKIE, format!("session={token}"))
+        .body(Body::from(
+            r#"{"message_id":"00000000-0000-0000-0000-000000000099","rating":1,"comment":"poor"}"#,
+        ))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Then, GET it back
+    let req = Request::builder()
+        .uri("/feedback/00000000-0000-0000-0000-000000000099")
+        .header(header::COOKIE, format!("session={token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("00000000-0000-0000-0000-000000000099"));
+    assert!(text.contains("poor"));
 }
 
 #[tokio::test]

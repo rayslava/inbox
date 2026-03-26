@@ -149,7 +149,7 @@ async fn save_bytes(
     })
 }
 
-fn sanitize_filename(s: &str) -> String {
+pub(super) fn sanitize_filename(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') {

@@ -7,6 +7,7 @@ use crate::message::IncomingMessage;
 
 pub mod email;
 pub mod http;
+pub mod reconnect;
 pub mod telegram;
 pub(crate) mod telegram_media_group;
 pub mod telegram_notifier;

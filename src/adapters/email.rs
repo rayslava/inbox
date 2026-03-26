@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -8,6 +10,7 @@ use crate::error::InboxError;
 use crate::message::{IncomingMessage, MessageSource, SourceMetadata};
 
 use super::InputAdapter;
+use super::reconnect::{ReconnectPolicy, reconnect_loop};
 
 pub struct EmailAdapter {
     pub cfg: EmailConfig,
@@ -27,27 +30,20 @@ impl InputAdapter for EmailAdapter {
     ) -> Result<(), InboxError> {
         info!("Email adapter starting (IMAP IDLE)");
 
-        let mut first = true;
-        loop {
-            tokio::select! {
-                () = shutdown.cancelled() => {
-                    info!("Email adapter shutdown");
-                    return Ok(());
-                }
-                () = run_imap_session(&self.cfg, &self.attachments_dir, &tx) => {
-                    if !first {
-                        metrics::counter!(
-                            crate::telemetry::ADAPTER_RECONNECTS,
-                            "adapter" => "email"
-                        )
-                        .increment(1);
-                    }
-                    first = false;
-                    // Reconnect after session ends
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                }
-            }
-        }
+        let policy = ReconnectPolicy {
+            initial_backoff: Duration::from_secs(5),
+            max_backoff: Duration::from_secs(300),
+            stable_threshold: Some(Duration::from_secs(60)),
+            adapter_label: "email",
+        };
+
+        reconnect_loop(policy, shutdown, |_token| {
+            run_imap_session(&self.cfg, &self.attachments_dir, &tx)
+        })
+        .await;
+
+        info!("Email adapter shutdown");
+        Ok(())
     }
 }
 

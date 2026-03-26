@@ -284,3 +284,5 @@ fn html_response(body: String) -> Response {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_proxy;

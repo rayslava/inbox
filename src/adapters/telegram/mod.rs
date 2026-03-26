@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dashmap::DashMap;
 use tokio::sync::mpsc;
@@ -9,10 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-const RECONNECT_BACKOFF_INIT: Duration = Duration::from_secs(1);
-const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(60);
-const STABLE_THRESHOLD: Duration = Duration::from_secs(30);
-
+use crate::adapters::reconnect::{ReconnectPolicy, reconnect_loop};
 use crate::adapters::telegram_media_group::{self, MediaGroupMap};
 use crate::config::TelegramConfig;
 use crate::error::InboxError;
@@ -53,9 +50,20 @@ impl InputAdapter for TelegramAdapter {
 
         let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
         let feedback_msg_map: FeedbackMessageMap = Arc::new(DashMap::new());
-        let mut backoff = RECONNECT_BACKOFF_INIT;
 
-        loop {
+        let policy = ReconnectPolicy {
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(60),
+            stable_threshold: Some(Duration::from_secs(30)),
+            adapter_label: "telegram",
+        };
+
+        reconnect_loop(policy, shutdown, |token| {
+            let tx = tx.clone();
+            let retry_store = retry_store.clone();
+            let feedback_msg_map = feedback_msg_map.clone();
+            let token = token.clone();
+
             let client = crate::tls::client_builder()
                 .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
                 .build()
@@ -71,60 +79,36 @@ impl InputAdapter for TelegramAdapter {
                     retries: self.cfg.status_notify_retries,
                     retry_base_ms: self.cfg.status_notify_retry_base_ms,
                 },
-                retry_store: retry_store.clone(),
+                retry_store,
                 memory_store: self.memory_store.clone(),
-                feedback_msg_map: feedback_msg_map.clone(),
+                feedback_msg_map,
             });
 
             let mut dispatcher = Dispatcher::builder(bot, handler)
-                .dependencies(dptree::deps![tx.clone()])
+                .dependencies(dptree::deps![tx])
                 .build();
 
-            let started = Instant::now();
+            async move {
+                let mut dispatch_task = tokio::task::spawn(async move {
+                    dispatcher.dispatch().await;
+                });
 
-            let mut dispatch_task = tokio::task::spawn(async move {
-                dispatcher.dispatch().await;
-            });
-
-            tokio::select! {
-                () = shutdown.cancelled() => {
-                    dispatch_task.abort();
-                    info!("Telegram adapter shutdown");
-                    return Ok(());
-                }
-                result = &mut dispatch_task => {
-                    if let Err(ref e) = result {
-                        warn!(panic = ?e, "Telegram dispatcher panicked, will reconnect");
+                tokio::select! {
+                    () = token.cancelled() => {
+                        dispatch_task.abort();
+                    }
+                    result = &mut dispatch_task => {
+                        if let Err(ref e) = result {
+                            warn!(panic = ?e, "Telegram dispatcher panicked, will reconnect");
+                        }
                     }
                 }
             }
+        })
+        .await;
 
-            if shutdown.is_cancelled() {
-                return Ok(());
-            }
-
-            if started.elapsed() >= STABLE_THRESHOLD {
-                backoff = RECONNECT_BACKOFF_INIT;
-            }
-
-            metrics::counter!(
-                crate::telemetry::ADAPTER_RECONNECTS,
-                "adapter" => "telegram"
-            )
-            .increment(1);
-
-            warn!(
-                delay_secs = backoff.as_secs(),
-                "Telegram dispatcher exited unexpectedly, reconnecting"
-            );
-
-            tokio::select! {
-                () = shutdown.cancelled() => return Ok(()),
-                () = tokio::time::sleep(backoff) => {}
-            }
-
-            backoff = (backoff * 2).min(RECONNECT_BACKOFF_MAX);
-        }
+        info!("Telegram adapter shutdown");
+        Ok(())
     }
 }
 

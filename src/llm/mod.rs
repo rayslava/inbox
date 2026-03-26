@@ -260,6 +260,8 @@ pub use builder::{BuildResult, build_chain};
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_builder;
+#[cfg(test)]
 mod tests_resilience;
 #[cfg(test)]
 mod tests_thinking;
