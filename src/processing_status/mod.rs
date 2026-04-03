@@ -112,6 +112,12 @@ impl Default for ProcessingTracker {
 #[async_trait::async_trait]
 pub trait StatusNotifier: Send + Sync {
     async fn advance(&mut self, stage: ProcessingStage);
+
+    /// Returns the Telegram message ID of the status message, if this is a
+    /// Telegram notifier. Used by the pending store to enable resume notifications.
+    fn telegram_status_msg_id(&self) -> Option<i32> {
+        None
+    }
 }
 
 // ── NoopNotifier ──────────────────────────────────────────────────────────────

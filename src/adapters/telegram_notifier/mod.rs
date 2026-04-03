@@ -180,6 +180,10 @@ impl StatusNotifier for TelegramNotifier {
             }
         }
     }
+
+    fn telegram_status_msg_id(&self) -> Option<i32> {
+        Some(self.sent_msg_id.0)
+    }
 }
 
 /// Send an initial "⏳ Processing…" reply and return the sent message ID.
@@ -252,6 +256,8 @@ pub async fn build_telegram_notifier(
     }
     Some(notifier)
 }
+
+pub mod resume;
 
 #[cfg(test)]
 mod tests;
