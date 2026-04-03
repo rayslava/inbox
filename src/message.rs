@@ -25,7 +25,7 @@ pub struct IncomingMessage {
 }
 
 /// Hints derived from the pre-processing stage that guide subsequent pipeline stages.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProcessingHints {
     /// If `true`, instruct the LLM to call the web search tool before summarizing.
     pub force_web_search: bool,
@@ -83,7 +83,7 @@ impl IncomingMessage {
 }
 
 /// A clone-able snapshot of an [`IncomingMessage`] used to re-enqueue failed messages.
-#[derive(Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RetryableMessage {
     pub text: String,
     pub metadata: SourceMetadata,
@@ -106,7 +106,7 @@ impl From<&IncomingMessage> for RetryableMessage {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MessageSource {
     Telegram,
     Http,
@@ -130,7 +130,7 @@ impl std::fmt::Display for MessageSource {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SourceMetadata {
     Telegram {
         chat_id: i64,
@@ -150,7 +150,7 @@ pub enum SourceMetadata {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Attachment {
     pub original_name: String,
     pub saved_path: PathBuf,
@@ -160,7 +160,7 @@ pub struct Attachment {
 
 /// Semantic classification independent of mime string.
 /// Used by web UI inline preview and org template.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MediaKind {
     Image,
     Audio,

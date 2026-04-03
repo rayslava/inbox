@@ -1,5 +1,5 @@
 /// Text extracted from a fetched URL.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UrlContent {
     pub url: String,
     pub text: String,
