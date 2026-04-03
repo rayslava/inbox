@@ -46,8 +46,11 @@ impl OrgNodeTemplate<'_> {
     }
 }
 
+/// Tag added to org entries when LLM processing fell back to raw mode.
+pub const PENDING_TAG: &str = "inbox_pending";
+
 /// Merge user tags, pre-processing suggested tags, and LLM tags in priority order,
-/// deduplicating case-insensitively.
+/// deduplicating case-insensitively. Appends [`PENDING_TAG`] when there is no LLM response.
 fn merge_tags(msg: &ProcessedMessage) -> Vec<String> {
     let original = &msg.enriched.original;
     let mut all = original.user_tags.clone();
@@ -62,6 +65,8 @@ fn merge_tags(msg: &ProcessedMessage) -> Vec<String> {
                 all.push(t.clone());
             }
         }
+    } else {
+        all.push(PENDING_TAG.to_owned());
     }
     all
 }
@@ -224,3 +229,5 @@ fn relative_path(path: &std::path::Path, base: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_pending;

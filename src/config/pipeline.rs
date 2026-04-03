@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::Deserialize;
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -8,6 +10,47 @@ pub struct PipelineConfig {
     pub web_content: WebContentConfig,
     #[serde(default)]
     pub preprocessing: PreprocessingConfig,
+    #[serde(default)]
+    pub resume: ResumeConfig,
+}
+
+// ── Incomplete-processing resume ───────────────────────────────────────────────
+
+/// Configuration for background retry of messages that fell back to raw mode.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResumeConfig {
+    /// Enable the background resume task.
+    #[serde(default)]
+    pub enabled: bool,
+    /// How often (seconds) to scan for pending items when idle. Default: 300 (5 min).
+    #[serde(default = "default_resume_interval_secs")]
+    pub interval_secs: u64,
+    /// Maximum retry attempts before giving up. Default: 5.
+    #[serde(default = "default_resume_max_retries")]
+    pub max_retries: u32,
+    /// Path to the pending `SQLite` database.
+    /// Defaults to `{attachments_dir}/pending.db`.
+    #[serde(default)]
+    pub db_path: Option<PathBuf>,
+}
+
+impl Default for ResumeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_secs: default_resume_interval_secs(),
+            max_retries: default_resume_max_retries(),
+            db_path: None,
+        }
+    }
+}
+
+fn default_resume_interval_secs() -> u64 {
+    300
+}
+
+fn default_resume_max_retries() -> u32 {
+    5
 }
 
 // ── Pre-processing rules ───────────────────────────────────────────────────────

@@ -15,8 +15,8 @@ pub use infra::{AdminConfig, GeneralConfig, SyncthingConfig, UrlFetchConfig, Web
 pub use llm::{FallbackMode, LlmBackendConfig, LlmBackendType, LlmConfig, LlmPromptsConfig};
 pub use memory::MemoryConfig;
 pub use pipeline::{
-    JsShellPolicy, PipelineConfig, PreprocessingConfig, PreprocessingRule, RuleAction,
-    RuleCondition, WebContentConfig,
+    JsShellPolicy, PipelineConfig, PreprocessingConfig, PreprocessingRule, ResumeConfig,
+    RuleAction, RuleCondition, WebContentConfig,
 };
 pub use tooling::{
     CrawlToolConfig, DuckDuckGoSearchToolConfig, KagiSearchToolConfig, NamedToolConfig,
