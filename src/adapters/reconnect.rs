@@ -40,7 +40,9 @@ pub async fn reconnect_loop<F, Fut>(
         let started = Instant::now();
 
         // Run the inner operation until it returns (error, panic, or clean exit).
+        // biased ensures shutdown is always checked first when both branches are ready.
         tokio::select! {
+            biased;
             () = shutdown.cancelled() => return,
             () = operation(&shutdown) => {}
         }
