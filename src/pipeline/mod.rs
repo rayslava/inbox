@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::error::InboxError;
 use crate::message::{EnrichedMessage, IncomingMessage, ProcessedMessage};
 use crate::output::OutputWriter;
+use crate::pending::PendingStore;
 use crate::processing_status::{ProcessingStage, ProcessingTracker};
 
 pub mod content_extractor;
@@ -28,7 +29,8 @@ pub struct Pipeline {
     pub fetcher: UrlFetcher,
     pub tracker: Arc<ProcessingTracker>,
     pub memory_store: Option<Arc<crate::memory::MemoryStore>>,
-    in_flight: Arc<tokio::sync::Semaphore>,
+    pub pending: Option<Arc<PendingStore>>,
+    pub in_flight: Arc<tokio::sync::Semaphore>,
 }
 
 impl Pipeline {
@@ -38,6 +40,7 @@ impl Pipeline {
         writer: Arc<dyn OutputWriter>,
         tracker: Arc<ProcessingTracker>,
         memory_store: Option<Arc<crate::memory::MemoryStore>>,
+        pending: Option<Arc<PendingStore>>,
     ) -> Self {
         let fetcher = UrlFetcher::new(&config.url_fetch);
         let in_flight_limit =
@@ -49,6 +52,7 @@ impl Pipeline {
             fetcher,
             tracker,
             memory_store,
+            pending,
             in_flight: Arc::new(tokio::sync::Semaphore::new(in_flight_limit)),
         }
     }
@@ -148,6 +152,16 @@ impl Pipeline {
             self.writer.write(&processed, &self.config),
         )
         .await?;
+
+        // Persist fallback items for background LLM retry.
+        if processed.llm_response.is_none() {
+            if let Some(ref store) = self.pending {
+                let tg_msg_id = notifier.as_ref().and_then(|n| n.telegram_status_msg_id());
+                if let Err(e) = store.insert(id, &processed, tg_msg_id).await {
+                    warn!(?e, %id, "Failed to persist pending item — resume unavailable for this message");
+                }
+            }
+        }
 
         let title = processed.llm_response.as_ref().map_or_else(
             || {
@@ -316,7 +330,10 @@ impl Pipeline {
         url_count = enriched.urls.len(),
         content_count = enriched.url_contents.len(),
     ))]
-    async fn run_llm(&self, enriched: EnrichedMessage) -> Result<ProcessedMessage, InboxError> {
+    pub(crate) async fn run_llm(
+        &self,
+        enriched: EnrichedMessage,
+    ) -> Result<ProcessedMessage, InboxError> {
         use crate::llm::{LlmOutcome, LlmRequest, LlmTurnProgress};
 
         let text_preview: String = enriched.original.text.chars().take(120).collect();

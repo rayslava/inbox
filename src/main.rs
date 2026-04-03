@@ -13,8 +13,10 @@ use inbox::{
     health::ReadinessState,
     llm, log_capture,
     output::{OutputWriter, org_file::OrgFileWriter},
+    pending::PendingStore,
     pipeline::Pipeline,
     processing_status::ProcessingTracker,
+    resume_task::{self, ResumeTaskArgs},
     telemetry as inbox_telemetry, web,
 };
 
@@ -81,12 +83,36 @@ async fn main() -> Result<()> {
     let llm_chain = Arc::new(llm_chain);
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
+
+    // Open the pending store if resume is enabled.
+    let pending_store: Option<Arc<PendingStore>> = if cfg.pipeline.resume.enabled {
+        let db_path = cfg
+            .pipeline
+            .resume
+            .db_path
+            .clone()
+            .unwrap_or_else(|| cfg.general.attachments_dir.join("pending.db"));
+        match PendingStore::open(&db_path).await {
+            Ok(s) => {
+                info!(?db_path, "Pending store opened");
+                Some(Arc::new(s))
+            }
+            Err(e) => {
+                warn!(?e, "Failed to open pending store — resume disabled");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let pipeline = Arc::new(Pipeline::new(
         Arc::clone(&cfg),
         llm_chain,
         writer,
         Arc::clone(&tracker),
         memory_store.clone(),
+        pending_store.clone(),
     ));
 
     let (tx, rx) = mpsc::channel::<inbox::message::IncomingMessage>(256);
@@ -94,6 +120,19 @@ async fn main() -> Result<()> {
     // Spawn pipeline consumer
     let pipeline_clone = Arc::clone(&pipeline);
     tokio::spawn(async move { pipeline_clone.run(rx).await });
+
+    // Spawn background resume task if the pending store is available.
+    if let Some(store) = pending_store {
+        let args = ResumeTaskArgs {
+            store,
+            pipeline: Arc::clone(&pipeline),
+            config: Arc::clone(&cfg),
+            telegram_notifier: None, // TODO: wire Telegram bot when adapter exposes it
+            shutdown: shutdown.clone(),
+        };
+        tokio::spawn(resume_task::run(args));
+        info!("Background resume task started");
+    }
 
     // Spawn adapters
     spawn_adapters(&cfg, &tx, &shutdown, memory_store.as_ref());
