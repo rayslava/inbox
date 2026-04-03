@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use chrono::Utc;
 use dashmap::DashMap;
 use teloxide::prelude::*;
 use teloxide::types::MessageId;
@@ -7,7 +8,12 @@ use teloxide_tests::{MockBot, MockMessageText};
 use uuid::Uuid;
 
 use super::*;
-use crate::message::{IncomingMessage, MessageSource, RetryableMessage, SourceMetadata};
+use crate::adapters::telegram_notifier::resume::TelegramResumeNotifier;
+use crate::message::{
+    IncomingMessage, MessageSource, ProcessingHints, RetryableMessage, SourceMetadata,
+};
+use crate::pending::PendingItem;
+use crate::url_content::UrlContent;
 
 // ── Pure-function unit tests ───────────────────────────────────────────────────
 
@@ -338,4 +344,56 @@ async fn build_telegram_notifier_sends_initial_and_returns_notifier() {
     let r = mock.get_responses();
     assert!(!r.sent_messages_text.is_empty());
     assert_eq!(r.sent_messages_text[0].bot_request.text, "⏳ Processing…");
+}
+
+// ── TelegramResumeNotifier tests ──────────────────────────────────────────────
+
+fn dummy_http_pending_item() -> PendingItem {
+    PendingItem {
+        id: Uuid::new_v4(),
+        created_at: Utc::now(),
+        retry_count: 0,
+        last_retry_at: None,
+        incoming: RetryableMessage {
+            text: "msg".into(),
+            metadata: SourceMetadata::Http {
+                remote_addr: None,
+                user_agent: None,
+            },
+            attachments: vec![],
+            user_tags: vec![],
+            preprocessing_hints: ProcessingHints::default(),
+            received_at: Utc::now(),
+        },
+        url_contents: vec![UrlContent {
+            url: "https://example.com".into(),
+            text: "text".into(),
+            page_title: None,
+            headings: vec![],
+        }],
+        tool_results: vec![],
+        source_urls: vec![],
+        fallback_title: None,
+        telegram_status_msg_id: None,
+        source: "http".into(),
+        url_count: 1,
+        tool_count: 0,
+    }
+}
+
+#[tokio::test]
+async fn notify_done_noop_for_non_telegram_item() {
+    // An HTTP item has no chat_id, so notify_done should return Ok immediately
+    // without making any bot calls.
+    let client = reqwest::Client::new();
+    let bot = teloxide::Bot::with_client("fake:token", client);
+    let notifier = TelegramResumeNotifier {
+        bot,
+        feedback_msg_map: Arc::new(DashMap::new()),
+        retry_store: Arc::new(DashMap::new()),
+    };
+
+    let item = dummy_http_pending_item();
+    let result = notifier.notify_done(&item, "Some Title", item.id).await;
+    assert!(result.is_ok());
 }

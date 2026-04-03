@@ -41,6 +41,23 @@ pub fn failing_llm_chain(message: impl Into<String>) -> Arc<LlmChain> {
     ))
 }
 
+/// Build a `LlmChain` backed by a `MockLlm` that always fails but uses
+/// `FallbackMode::Raw`, so the pipeline produces a `ProcessedMessage` with
+/// `llm_response = None` instead of propagating an error.
+#[must_use]
+pub fn always_fail_llm_chain() -> Arc<LlmChain> {
+    let client = Box::new(MockLlm::failing("simulated LLM failure")) as Box<dyn LlmClient>;
+    Arc::new(LlmChain::new(
+        vec![client],
+        FallbackMode::Raw,
+        3,
+        None,
+        1,
+        0,
+        0,
+    ))
+}
+
 /// Build a default `LlmResponse` for use in tests.
 #[must_use]
 pub fn default_llm_response() -> LlmResponse {

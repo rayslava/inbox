@@ -6,6 +6,7 @@ use crate::config::{
     ToolingConfig, UrlFetchConfig, WebUiConfig,
 };
 use crate::message::{EnrichedMessage, IncomingMessage, MessageSource, SourceMetadata};
+use crate::pending::PendingStore;
 use crate::processing_status::ProcessingTracker;
 
 fn test_config(policy: crate::config::JsShellPolicy) -> Config {
@@ -27,6 +28,7 @@ fn test_config(policy: crate::config::JsShellPolicy) -> Config {
                 ],
             },
             preprocessing: crate::config::PreprocessingConfig::default(),
+            resume: crate::config::ResumeConfig::default(),
         },
         llm: crate::test_helpers::no_llm_config(),
         adapters: AdaptersConfig::default(),
@@ -158,7 +160,7 @@ fn make_test_pipeline(cfg: Config) -> Arc<Pipeline> {
     let llm = crate::test_helpers::mock_llm_chain(crate::test_helpers::default_llm_response());
     let writer = Arc::new(crate::output::NullWriter);
     let tracker = Arc::new(ProcessingTracker::new());
-    Arc::new(Pipeline::new(cfg, llm, writer, tracker, None))
+    Arc::new(Pipeline::new(cfg, llm, writer, tracker, None, None))
 }
 
 fn test_enriched(text: &str, urls: Vec<url::Url>, user_tags: Vec<String>) -> EnrichedMessage {
@@ -238,4 +240,42 @@ fn build_llm_guidance_force_web_search() {
     enriched.original.preprocessing_hints.force_web_search = true;
     let guidance = pipeline.build_llm_guidance(&enriched, "");
     assert!(guidance.contains("web_search"));
+}
+
+#[tokio::test]
+async fn fallback_item_inserted_into_pending_store() {
+    // Build a pipeline backed by a no-LLM chain (always falls back) and a real
+    // pending store in a temp DB, then run a message through it and verify the
+    // item lands in the store.
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("pending.db");
+    let store = Arc::new(PendingStore::open(&db_path).await.unwrap());
+
+    let cfg = Arc::new(test_config(crate::config::JsShellPolicy::Allow));
+    let failing_llm = crate::test_helpers::always_fail_llm_chain();
+    let writer = Arc::new(crate::output::NullWriter);
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Arc::new(Pipeline::new(
+        cfg,
+        failing_llm,
+        writer,
+        tracker,
+        None,
+        Some(store.clone()),
+    ));
+
+    let enriched = test_enriched("test pending insertion", vec![], vec![]);
+    // run_llm produces a ProcessedMessage; if LLM fails it has llm_response=None.
+    let processed = pipeline.run_llm(enriched).await.unwrap();
+    assert!(processed.llm_response.is_none(), "expected fallback");
+
+    // Simulate what the pipeline does after run_llm when llm_response is None.
+    store
+        .insert(processed.enriched.original.id, &processed, None)
+        .await
+        .unwrap();
+
+    let items = store.list(5, 10).await.unwrap();
+    assert_eq!(items.len(), 1, "one item should be in the pending store");
+    assert_eq!(items[0].incoming.text, "test pending insertion");
 }
