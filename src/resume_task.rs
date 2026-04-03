@@ -1,0 +1,241 @@
+//! Background task that retries messages that fell back to raw mode.
+//!
+//! Runs on a configurable interval and only processes items when the pipeline
+//! is idle (no in-flight messages). On success, patches the org-mode output
+//! file in-place and optionally notifies the original Telegram chat.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use metrics::{counter, gauge};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
+
+use crate::adapters::telegram_notifier::resume::TelegramResumeNotifier;
+use crate::config::Config;
+use crate::message::{EnrichedMessage, IncomingMessage, MessageSource};
+use crate::output::org_patcher;
+use crate::pending::{PendingItem, PendingStore};
+use crate::pipeline::Pipeline;
+use crate::render::render_org_node;
+use crate::telemetry;
+use anodized::spec;
+
+/// Maximum number of items to retry per scan cycle.
+const BATCH_SIZE: u32 = 3;
+
+/// Arguments for the background resume task.
+pub struct ResumeTaskArgs {
+    pub store: Arc<PendingStore>,
+    pub pipeline: Arc<Pipeline>,
+    pub config: Arc<Config>,
+    pub telegram_notifier: Option<Arc<TelegramResumeNotifier>>,
+    pub shutdown: CancellationToken,
+}
+
+/// Run the background resume loop.
+///
+/// Wakes every `interval_secs`, checks that the pipeline is idle, then
+/// processes up to [`BATCH_SIZE`] pending items. Exits cleanly when
+/// `shutdown` is cancelled.
+#[spec(requires: args.config.pipeline.resume.interval_secs > 0)]
+pub async fn run(args: ResumeTaskArgs) {
+    let interval = Duration::from_secs(args.config.pipeline.resume.interval_secs);
+    let max_retries = args.config.pipeline.resume.max_retries;
+
+    loop {
+        tokio::select! {
+            () = tokio::time::sleep(interval) => {}
+            () = args.shutdown.cancelled() => {
+                info!("Resume task shutting down");
+                break;
+            }
+        }
+
+        // Only scan when the pipeline is idle (no permits consumed).
+        // Try to acquire one permit non-blockingly; if it fails the pipeline is busy.
+        let idle_permit = args.pipeline.in_flight.try_acquire();
+        if idle_permit.is_err() {
+            debug!("Pipeline busy, skipping resume scan");
+            continue;
+        }
+        // Release the permit immediately — we just used it to probe idleness.
+        drop(idle_permit);
+
+        process_pending_batch(&args, max_retries).await;
+    }
+}
+
+async fn process_pending_batch(args: &ResumeTaskArgs, max_retries: u32) {
+    let items = match args.store.list(max_retries, BATCH_SIZE).await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(?e, "Failed to list pending items");
+            return;
+        }
+    };
+
+    if items.is_empty() {
+        debug!("No pending items to resume");
+    } else {
+        info!(count = items.len(), "Processing pending items batch");
+    }
+
+    for item in &items {
+        retry_item(args, item, max_retries).await;
+    }
+
+    // Update metrics after the batch.
+    update_pending_metrics(&args.store, max_retries).await;
+}
+
+async fn retry_item(args: &ResumeTaskArgs, item: &PendingItem, max_retries: u32) {
+    let id = item.id;
+    info!(%id, retry_count = item.retry_count, source = %item.source, "Retrying pending item");
+
+    let enriched = match build_enriched(item) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(?e, %id, "Failed to reconstruct enriched message for retry");
+            if let Err(e2) = args.store.increment_retry(id).await {
+                warn!(?e2, %id, "Failed to increment retry count");
+            }
+            counter!(telemetry::RESUME_ATTEMPTS, "status" => "failure").increment(1);
+            return;
+        }
+    };
+
+    match args.pipeline.run_llm(enriched).await {
+        Ok(processed) if processed.llm_response.is_some() => {
+            on_success(args, item, processed).await;
+        }
+        Ok(_) => {
+            // Still falling back — increment retry.
+            warn!(%id, "LLM still falling back on retry");
+            if let Err(e) = args.store.increment_retry(id).await {
+                warn!(?e, %id, "Failed to increment retry count");
+            }
+            let remaining = max_retries.saturating_sub(item.retry_count + 1);
+            info!(%id, remaining_retries = remaining, "Retry did not improve result");
+            counter!(telemetry::RESUME_ATTEMPTS, "status" => "failure").increment(1);
+        }
+        Err(e) => {
+            warn!(?e, %id, "LLM error during retry");
+            if let Err(e2) = args.store.increment_retry(id).await {
+                warn!(?e2, %id, "Failed to increment retry count");
+            }
+            counter!(telemetry::RESUME_ATTEMPTS, "status" => "failure").increment(1);
+        }
+    }
+}
+
+async fn on_success(
+    args: &ResumeTaskArgs,
+    item: &PendingItem,
+    processed: crate::message::ProcessedMessage,
+) {
+    let id = item.id;
+    let title = processed
+        .llm_response
+        .as_ref()
+        .map_or("", |r| r.title.as_str())
+        .to_owned();
+
+    let new_text = match render_org_node(&processed, &args.config.general.attachments_dir) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(?e, %id, "Failed to render org node for resume patch");
+            counter!(telemetry::RESUME_ATTEMPTS, "status" => "failure").increment(1);
+            return;
+        }
+    };
+
+    let output_path = &args.config.general.output_file;
+    match org_patcher::patch_entry(output_path, id, &new_text).await {
+        Ok(true) => {
+            info!(%id, %title, "Successfully patched org entry");
+        }
+        Ok(false) => {
+            warn!(%id, "Org entry not found in output file — removing from pending anyway");
+            counter!(telemetry::RESUME_ATTEMPTS, "status" => "not_found").increment(1);
+        }
+        Err(e) => {
+            warn!(?e, %id, "Failed to patch org file");
+            counter!(telemetry::RESUME_ATTEMPTS, "status" => "failure").increment(1);
+            return;
+        }
+    }
+
+    // Remove from pending store.
+    if let Err(e) = args.store.remove(id).await {
+        warn!(?e, %id, "Failed to remove pending item after successful retry");
+    }
+
+    counter!(telemetry::RESUME_ATTEMPTS, "status" => "success").increment(1);
+
+    // Notify Telegram if applicable.
+    if item.source == "telegram" {
+        if let Some(ref notifier) = args.telegram_notifier {
+            if let Err(e) = notifier.notify_done(item, &title, id).await {
+                warn!(?e, %id, "Failed to send Telegram resume notification");
+            }
+        }
+    }
+
+    // Trigger Syncthing rescan if configured.
+    if args.config.syncthing.enabled && args.config.syncthing.rescan_on_write {
+        crate::output::org_file::trigger_syncthing_rescans(&args.config.syncthing).await;
+    }
+}
+
+/// Reconstruct an [`EnrichedMessage`] from a stored [`PendingItem`].
+///
+/// The enriched URL contents and fallback tool results are pre-loaded so
+/// the LLM stage can use them without re-fetching.
+pub(crate) fn build_enriched(
+    item: &PendingItem,
+) -> Result<EnrichedMessage, crate::error::InboxError> {
+    let source = match item.source.as_str() {
+        "telegram" => MessageSource::Telegram,
+        "email" => MessageSource::Email,
+        _ => MessageSource::Http,
+    };
+
+    let mut incoming = IncomingMessage::with_id(
+        item.id,
+        source,
+        item.incoming.text.clone(),
+        item.incoming.metadata.clone(),
+    );
+    incoming.attachments = item.incoming.attachments.clone();
+    incoming.user_tags = item.incoming.user_tags.clone();
+    incoming.preprocessing_hints = item.incoming.preprocessing_hints.clone();
+    incoming.received_at = item.incoming.received_at;
+
+    // Re-parse URLs from stored url_contents so we don't re-fetch.
+    let urls: Vec<url::Url> = item
+        .url_contents
+        .iter()
+        .filter_map(|uc| uc.url.parse().ok())
+        .collect();
+
+    Ok(EnrichedMessage {
+        original: incoming,
+        urls,
+        url_contents: item.url_contents.clone(),
+    })
+}
+
+async fn update_pending_metrics(store: &PendingStore, max_retries: u32) {
+    match store.stats(max_retries).await {
+        Ok(s) => {
+            gauge!(telemetry::PENDING_ITEMS).set(f64::from(s.total_items));
+            gauge!(telemetry::PENDING_EXHAUSTED).set(f64::from(s.exhausted_items));
+            gauge!(telemetry::PENDING_DB_BYTES).set(s.db_bytes() as f64);
+            gauge!(telemetry::PENDING_DB_FREELIST_PAGES).set(s.db_freelist_count as f64);
+        }
+        Err(e) => {
+            warn!(?e, "Failed to collect pending store stats");
+        }
+    }
+}

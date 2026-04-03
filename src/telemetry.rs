@@ -69,6 +69,23 @@ pub const QUEUE_DEPTH: &str = "inbox_queue_depth";
 /// Labels: rating = "1" | "2" | "3"
 pub const FEEDBACK_RATING_DISTRIBUTION: &str = "inbox_feedback_rating";
 
+// ── Pending / resume metrics ──────────────────────────────────────────────────
+
+/// Gauge: current number of items awaiting LLM retry.
+pub const PENDING_ITEMS: &str = "inbox_pending_items";
+
+/// Gauge: items that have exhausted `max_retries` and will not be retried.
+pub const PENDING_EXHAUSTED: &str = "inbox_pending_exhausted";
+
+/// Gauge: estimated `SQLite` database file size in bytes.
+pub const PENDING_DB_BYTES: &str = "inbox_pending_db_bytes";
+
+/// Gauge: number of free (unused) pages in the `SQLite` store (fragmentation indicator).
+pub const PENDING_DB_FREELIST_PAGES: &str = "inbox_pending_db_freelist_pages";
+
+/// Counter. Labels: status = "success" | "failure" | "`not_found`"
+pub const RESUME_ATTEMPTS: &str = "inbox_resume_attempts_total";
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Call once at startup to register metric descriptions with the recorder.
@@ -148,6 +165,31 @@ pub fn describe_metrics() {
         FEEDBACK_RATING_DISTRIBUTION,
         Unit::Count,
         "Current feedback count per rating level"
+    );
+    describe_gauge!(
+        PENDING_ITEMS,
+        Unit::Count,
+        "Pending items awaiting LLM retry"
+    );
+    describe_gauge!(
+        PENDING_EXHAUSTED,
+        Unit::Count,
+        "Pending items that have exhausted max retries"
+    );
+    describe_gauge!(
+        PENDING_DB_BYTES,
+        Unit::Bytes,
+        "Estimated pending SQLite database file size in bytes"
+    );
+    describe_gauge!(
+        PENDING_DB_FREELIST_PAGES,
+        Unit::Count,
+        "Free (unused) pages in the pending SQLite store"
+    );
+    describe_counter!(
+        RESUME_ATTEMPTS,
+        Unit::Count,
+        "Total resume attempts by status (success, failure, not_found)"
     );
 }
 
