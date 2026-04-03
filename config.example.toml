@@ -210,6 +210,22 @@ js_shell_patterns = [
   "requires javascript"
 ]
 
+# ── Incomplete-processing resume ─────────────────────────────────────────────
+# When all LLM backends fail, the message is written with an :inbox_pending: tag.
+# If resume is enabled, the full context (URL contents, tool results, etc.) is
+# stored in a SQLite database and retried in the background when the pipeline is
+# idle.
+
+[pipeline.resume]
+# Set to true to enable the pending store and background retry task.
+enabled      = false
+# How often (in seconds) the resume task wakes up to check for pending items.
+interval_secs = 300  # 5 minutes
+# Maximum number of LLM retry attempts per item before it is abandoned.
+max_retries   = 5
+# Path to the SQLite database file.  Defaults to {attachments_dir}/pending.db.
+# db_path = "/path/to/pending.db"
+
 # ── Syncthing ─────────────────────────────────────────────────────────────────
 
 [syncthing]
