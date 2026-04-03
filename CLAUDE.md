@@ -30,7 +30,7 @@ cargo run -- hash-password
 
 - Config file is TOML with `${ENV_VAR}` interpolation at load time.
 - Reference: `config.example.toml`.
-- Core sections: `[general]`, `[admin]`, `[web_ui]`, `[llm]`, `[[llm.backends]]`, `[adapters.*]`, `[url_fetch]`, `[pipeline.web_content]`, `[syncthing]`, `[tooling.*]`.
+- Core sections: `[general]`, `[admin]`, `[web_ui]`, `[llm]`, `[[llm.backends]]`, `[adapters.*]`, `[url_fetch]`, `[pipeline.web_content]`, `[pipeline.resume]`, `[syncthing]`, `[tooling.*]`.
 
 ## LLM/tooling notes
 
@@ -57,7 +57,16 @@ cargo run -- hash-password
   - `cargo clippy --fix --all-features --allow-dirty --all-targets --workspace`
   - `cargo fix --all-features --allow-dirty --all-targets --workspace`
   - `cargo fmt --all`
+  - After SQL migration changes: `sqlfluff lint src/pending/migrations/`
+  - After `sqlx::query!` macro changes: `cargo sqlx prepare --workspace`
 - Always run tests after all the issues reported are fixed
 - No `#[allow]` tags must be used, fix issues, not mask them
+- No tests can be excluded, if the test is flaky it must be either fixed or removed
 - After the change is prepared, update the config.example.toml correspondingly
 - Use `cargo tarpaulin` to validate that code coverage is not reduced after fix
+
+## SQL style
+
+- SQL migrations live in `src/pending/migrations/` as `{nnnn}_{description}.sql` (e.g. `0001_create_foo.sql`)
+- Lint with `sqlfluff lint --dialect sqlite src/pending/migrations/`
+- After changing any `sqlx::query!` macros, run `cargo sqlx prepare --workspace` and commit the updated `.sqlx/` directory
