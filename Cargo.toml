@@ -57,6 +57,7 @@ tempfile            = "3"
 urlencoding         = "2"
 base64              = "0"
 grafeo              = { version = "0", features = ["embedded", "wal", "grafeo-file", "mmap"] }
+sqlx                = { version = "0", default-features = false, features = ["sqlite", "runtime-tokio-rustls", "chrono", "uuid", "migrate", "macros"] }
 
 [features]
 test-helpers = []
