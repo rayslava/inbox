@@ -5,6 +5,9 @@ use crate::error::InboxError;
 use crate::message::ProcessedMessage;
 
 pub mod org_file;
+pub mod org_patcher;
+#[cfg(test)]
+mod tests_org_patcher;
 
 #[async_trait]
 pub trait OutputWriter: Send + Sync + 'static {

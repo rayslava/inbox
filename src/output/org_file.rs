@@ -57,7 +57,7 @@ async fn append_to_file(path: &Path, content: &str) -> Result<(), std::io::Error
     Ok(())
 }
 
-async fn trigger_syncthing_rescans(cfg: &SyncthingConfig) {
+pub(crate) async fn trigger_syncthing_rescans(cfg: &SyncthingConfig) {
     let client = crate::tls::client_builder()
         .build()
         .expect("Failed to build Syncthing HTTP client");
