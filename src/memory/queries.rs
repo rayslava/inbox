@@ -6,12 +6,18 @@ use crate::error::InboxError;
 use super::{MemoryEntry, RecallOutcome, RelatedMemory, SourceEntry};
 
 pub(super) fn create_indexes(db: &GrafeoDB, dims: usize) {
+    // Grafeo's GQL dialect does not support IF NOT EXISTS on vector indexes.
+    // Attempt creation and silently ignore errors — the index already exists
+    // on subsequent restarts.
     let query = format!(
-        "CREATE VECTOR INDEX IF NOT EXISTS mem_vec_idx \
+        "CREATE VECTOR INDEX mem_vec_idx \
          ON :Memory(embedding) DIMENSION {dims} METRIC 'cosine'"
     );
     if let Err(e) = db.session().execute(&query) {
-        warn!("Vector index creation (may already exist): {e}");
+        let msg = e.to_string();
+        if !msg.contains("already exists") && !msg.contains("duplicate") {
+            warn!("Vector index creation failed: {e}");
+        }
     }
 }
 
