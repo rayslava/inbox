@@ -48,6 +48,8 @@ impl OrgNodeTemplate<'_> {
 
 /// Tag added to org entries when LLM processing fell back to raw mode.
 pub const PENDING_TAG: &str = "inbox_pending";
+/// Tag applied to org entries where all LLM retries were exhausted.
+pub const FAILED_TAG: &str = "inbox_failed";
 
 /// Merge user tags, pre-processing suggested tags, and LLM tags in priority order,
 /// deduplicating case-insensitively. Appends [`PENDING_TAG`] when there is no LLM response.

@@ -96,15 +96,17 @@ model        = "openai/gpt-4o-mini"
 api_key      = "${OPENROUTER_API_KEY}"
 # base_url defaults to "https://openrouter.ai/api/v1"; override for compatible APIs.
 # base_url   = "https://openrouter.ai/api/v1"
-retries      = 3
-timeout_secs = 30
+retries             = 3
+timeout_secs        = 30
+# connect_timeout_secs = 10   # TCP connect timeout (default 10s); separate from read timeout
 
 # Fallback backend: local Ollama (comment out if not available)
 # [[llm.backends]]
 # type           = "ollama"
 # model          = "llama3.2"
 # base_url       = "http://localhost:11434"
-# timeout_secs   = 60
+# timeout_secs   = 60         # read/response timeout; set longer for CPU-based inference
+# connect_timeout_secs = 10   # TCP connect timeout; set short to fail fast if Ollama is down
 # think              = true   # static default; model may also call activate_thinking tool
 # think_timeout_secs = 300    # timeout for thinking requests (default: timeout_secs)
 # thinking_supported = true   # allow model to call activate_thinking (Ollama only; default: false)

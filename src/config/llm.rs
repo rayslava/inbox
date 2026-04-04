@@ -148,6 +148,16 @@ pub struct LlmBackendConfig {
     /// Not used for `OpenRouter` (cloud manages context).
     #[serde(default)]
     pub context_size: Option<usize>,
+    /// TCP connection timeout in seconds, separate from the response read timeout.
+    /// Allows fast failure when the server is not reachable, while still allowing
+    /// `timeout_secs` to be long for slow CPU-based inference.
+    /// Default: 10 seconds.
+    #[serde(default = "default_connect_timeout_secs")]
+    pub connect_timeout_secs: u64,
+}
+
+fn default_connect_timeout_secs() -> u64 {
+    10
 }
 
 fn default_openrouter_base_url() -> String {

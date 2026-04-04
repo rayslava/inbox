@@ -54,6 +54,7 @@ impl OllamaClient {
     )]
     pub fn from_config(cfg: &LlmBackendConfig) -> Self {
         let client = crate::tls::client_builder()
+            .connect_timeout(Duration::from_secs(cfg.connect_timeout_secs))
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .build()
             .expect("Failed to build Ollama HTTP client");

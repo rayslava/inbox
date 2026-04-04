@@ -17,7 +17,7 @@ use crate::message::{EnrichedMessage, IncomingMessage, MessageSource};
 use crate::output::org_patcher;
 use crate::pending::{PendingItem, PendingStore};
 use crate::pipeline::Pipeline;
-use crate::render::render_org_node;
+use crate::render::{FAILED_TAG, PENDING_TAG, render_org_node};
 use crate::telemetry;
 use anodized::spec;
 
@@ -116,13 +116,23 @@ async fn retry_item(args: &ResumeTaskArgs, item: &PendingItem, max_retries: u32)
                 warn!(?e, %id, "Failed to increment retry count");
             }
             let remaining = max_retries.saturating_sub(item.retry_count + 1);
-            info!(%id, remaining_retries = remaining, "Retry did not improve result");
+            if remaining == 0 {
+                warn!(%id, "All retries exhausted for pending item — marking as failed");
+                on_exhausted(args, item).await;
+            } else {
+                info!(%id, remaining_retries = remaining, "Retry did not improve result");
+            }
             counter!(telemetry::RESUME_ATTEMPTS, "status" => "failure").increment(1);
         }
         Err(e) => {
             warn!(?e, %id, "LLM error during retry");
             if let Err(e2) = args.store.increment_retry(id).await {
                 warn!(?e2, %id, "Failed to increment retry count");
+            }
+            let remaining = max_retries.saturating_sub(item.retry_count + 1);
+            if remaining == 0 {
+                warn!(%id, "All retries exhausted (LLM error) — marking as failed");
+                on_exhausted(args, item).await;
             }
             counter!(telemetry::RESUME_ATTEMPTS, "status" => "failure").increment(1);
         }
@@ -186,6 +196,59 @@ async fn on_success(
     if args.config.syncthing.enabled && args.config.syncthing.rescan_on_write {
         crate::output::org_file::trigger_syncthing_rescans(&args.config.syncthing).await;
     }
+}
+
+/// Called when all retries for an item are exhausted.
+///
+/// Replaces `:inbox_pending:` with `:inbox_failed:` in the org file (in-place
+/// text substitution, not a full re-render) and notifies Telegram if applicable.
+async fn on_exhausted(args: &ResumeTaskArgs, item: &PendingItem) {
+    let id = item.id;
+    let output_path = &args.config.general.output_file;
+
+    // Read, patch the tag, write back atomically.
+    match tokio::fs::read_to_string(output_path).await {
+        Ok(text) => {
+            // Replace only the first occurrence associated with this entry's
+            // heading — a simple string replace across the whole file is safe
+            // because each UUID is unique, but the tag appears on the headline,
+            // not the ID line, so swap globally (there is only one per ID).
+            let needle = format!(":{PENDING_TAG}:");
+            let replacement = format!(":{FAILED_TAG}:");
+            if text.contains(&needle) {
+                let patched = text.replacen(&needle, &replacement, 1);
+                let tmp = output_path.with_extension("org.tmp");
+                if let Err(e) = tokio::fs::write(&tmp, &patched).await {
+                    warn!(?e, %id, "Failed to write tmp org file for exhausted patch");
+                } else if let Err(e) = tokio::fs::rename(&tmp, output_path).await {
+                    warn!(?e, %id, "Failed to rename tmp org file for exhausted patch");
+                } else {
+                    info!(%id, "Patched org entry tag to :inbox_failed:");
+                    if args.config.syncthing.enabled && args.config.syncthing.rescan_on_write {
+                        crate::output::org_file::trigger_syncthing_rescans(&args.config.syncthing)
+                            .await;
+                    }
+                }
+            }
+        }
+        Err(e) => warn!(?e, %id, "Could not read org file to patch exhausted tag"),
+    }
+
+    // Telegram notification.
+    if item.source == "telegram" {
+        if let Some(ref notifier) = args.telegram_notifier {
+            let title = item
+                .fallback_title
+                .as_deref()
+                .unwrap_or("(unknown)")
+                .to_owned();
+            if let Err(e) = notifier.notify_done(item, &title, id).await {
+                warn!(?e, %id, "Failed to send Telegram exhausted notification");
+            }
+        }
+    }
+
+    counter!(telemetry::RESUME_ATTEMPTS, "status" => "exhausted").increment(1);
 }
 
 /// Reconstruct an [`EnrichedMessage`] from a stored [`PendingItem`].
