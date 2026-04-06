@@ -111,7 +111,8 @@ timeout_secs        = 30
 # think_timeout_secs = 300    # timeout for thinking requests (default: timeout_secs)
 # thinking_supported = true   # allow model to call activate_thinking (Ollama only; default: false)
 # max_concurrent     = 1      # serialize requests to avoid overloading the local model (omit = unlimited)
-# context_size   = 16384      # num_ctx for Ollama (KV cache / context window size); also used to truncate over-long requests
+# context_size   = 2048       # num_ctx for Ollama (KV cache / context window size); also used to truncate over-long requests client-side
+# circuit_open_secs = 300     # After a TCP connection failure, skip this backend for N seconds (0 = disabled)
 
 # ── Adapters ──────────────────────────────────────────────────────────────────
 

@@ -53,6 +53,7 @@ fn openrouter_backend() -> LlmBackendConfig {
         max_concurrent: None,
         context_size: None,
         connect_timeout_secs: 10,
+        circuit_open_secs: 0,
     }
 }
 
@@ -70,6 +71,7 @@ fn ollama_backend() -> LlmBackendConfig {
         max_concurrent: Some(1),
         context_size: Some(4096),
         connect_timeout_secs: 10,
+        circuit_open_secs: 0,
     }
 }
 

@@ -1,8 +1,8 @@
 use anodized::spec;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tracing::{debug, info, instrument, warn};
 
@@ -24,21 +24,50 @@ pub struct OllamaClient {
     pub thinking_supported: bool,
     /// KV-cache context window size in tokens. Sent as `options.num_ctx` when set.
     pub context_size: Option<usize>,
+    /// Seconds to skip this backend after a connection failure (circuit breaker).
+    /// 0 disables the circuit breaker.
+    circuit_open_secs: u64,
+    last_connection_failure: Arc<Mutex<Option<Instant>>>,
     semaphore: Option<Arc<Semaphore>>,
     client: reqwest::Client,
 }
 
+/// Result of the Ollama `/api/ps` pre-flight check.
+enum PsResult {
+    /// Model is loaded in memory and ready.
+    Ready { vram_mb: Option<u64> },
+    /// Ollama is up but this model is not loaded (cold-start expected).
+    ColdStart,
+    /// TCP connection failed — Ollama is unreachable.
+    Unreachable,
+    /// Reachable but response could not be parsed (non-fatal).
+    Unknown,
+}
+
 impl OllamaClient {
-    /// Query the Ollama `/api/ps` endpoint to get currently loaded models.
-    /// Returns `None` if the request fails (always non-fatal).
-    async fn query_ps(&self) -> Option<Vec<OllamaPsModel>> {
-        let resp = self
+    /// Query the Ollama `/api/ps` endpoint to determine model readiness.
+    async fn query_ps(&self) -> PsResult {
+        match self
             .client
             .get(format!("{}/api/ps", self.base_url))
             .send()
             .await
-            .ok()?;
-        resp.json::<OllamaPsResponse>().await.ok().map(|r| r.models)
+        {
+            Err(e) if e.is_connect() => PsResult::Unreachable,
+            Err(_) => PsResult::Unknown,
+            Ok(resp) => match resp.json::<OllamaPsResponse>().await {
+                Err(_) => PsResult::Unknown,
+                Ok(r) => {
+                    let entry = r.models.iter().find(|m| m.name.contains(&self.model));
+                    match entry {
+                        Some(m) => PsResult::Ready {
+                            vram_mb: m.size_vram.map(|b| b / (1024 * 1024)),
+                        },
+                        None => PsResult::ColdStart,
+                    }
+                }
+            },
+        }
     }
 
     /// Create an `OllamaClient` from backend config.
@@ -68,9 +97,46 @@ impl OllamaClient {
             think_timeout: cfg.think_timeout_secs.map(Duration::from_secs),
             thinking_supported: cfg.thinking_supported,
             context_size: cfg.context_size,
+            circuit_open_secs: cfg.circuit_open_secs,
+            last_connection_failure: Arc::new(Mutex::new(None)),
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
         }
+    }
+
+    /// Record a connection failure and open the circuit breaker.
+    fn record_connection_failure(&self) {
+        *self
+            .last_connection_failure
+            .lock()
+            .expect("circuit mutex poisoned") = Some(Instant::now());
+    }
+
+    /// Clear the circuit breaker (called on successful response).
+    fn clear_circuit(&self) {
+        *self
+            .last_connection_failure
+            .lock()
+            .expect("circuit mutex poisoned") = None;
+    }
+
+    /// Returns `true` when the circuit is open and requests should be skipped.
+    fn is_circuit_open(&self) -> Option<Duration> {
+        if self.circuit_open_secs == 0 {
+            return None;
+        }
+        let guard = self
+            .last_connection_failure
+            .lock()
+            .expect("circuit mutex poisoned");
+        if let Some(failed_at) = *guard {
+            let elapsed = failed_at.elapsed();
+            let limit = Duration::from_secs(self.circuit_open_secs);
+            if elapsed < limit {
+                return Some(limit.checked_sub(elapsed).unwrap());
+            }
+        }
+        None
     }
 }
 
@@ -170,14 +236,38 @@ impl LlmClient for OllamaClient {
             ..
         } = req;
 
-        // Pre-flight: log model load status from Ollama /api/ps.
-        if let Some(models) = self.query_ps().await {
-            let loaded = models.iter().any(|m| m.name.contains(self.model.as_str()));
-            let vram_mb = models
-                .iter()
-                .find(|m| m.name.contains(self.model.as_str()))
-                .and_then(|m| m.size_vram.map(|b| b / (1024 * 1024)));
-            info!(model = %self.model, loaded, vram_mb, "Ollama model load status");
+        // Circuit breaker: skip immediately if a recent connection failure is still within cooldown.
+        if let Some(remaining) = self.is_circuit_open() {
+            warn!(
+                model = %self.model,
+                remaining_secs = remaining.as_secs(),
+                "Ollama circuit open — skipping request"
+            );
+            return Err(InboxError::Llm(format!(
+                "Ollama circuit open: backend unreachable, retry in {}s",
+                remaining.as_secs()
+            )));
+        }
+
+        // Pre-flight: determine model readiness via /api/ps.
+        match self.query_ps().await {
+            PsResult::Unreachable => {
+                self.record_connection_failure();
+                warn!(model = %self.model, "Ollama unreachable (connection refused) — opening circuit");
+                return Err(InboxError::Llm(
+                    "Ollama unreachable (connection refused)".into(),
+                ));
+            }
+            PsResult::ColdStart => {
+                warn!(
+                    model = %self.model,
+                    "Ollama model not loaded — cold start expected, first request will be slow"
+                );
+            }
+            PsResult::Ready { vram_mb } => {
+                info!(model = %self.model, vram_mb, "Ollama model loaded and warm");
+            }
+            PsResult::Unknown => {}
         }
 
         // Guard: truncate user_content if estimated tokens exceed the configured context window.
@@ -271,6 +361,9 @@ impl LlmClient for OllamaClient {
             debug!(thinking = %truncate_for_log(thinking, 2000), "Ollama model thinking trace");
         }
 
+        // Successful response — clear any previous connection failure.
+        self.clear_circuit();
+
         // Tool calls?
         if let Some(tool_calls) = chat.message.tool_calls {
             info!(
@@ -316,6 +409,7 @@ fn truncate_for_log(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -329,6 +423,8 @@ mod tests {
             think_timeout: None,
             thinking_supported: false,
             context_size: None,
+            circuit_open_secs: 0,
+            last_connection_failure: Arc::new(Mutex::new(None)),
             semaphore: None,
             client: reqwest::Client::new(),
         }
@@ -570,6 +666,96 @@ mod tests {
         let req = LlmRequest::simple("sys", "user");
         let result = client.complete(req).await.unwrap();
         assert!(matches!(result, LlmCompletion::Message(_)));
+    }
+
+    #[tokio::test]
+    async fn circuit_open_skips_request() {
+        // Pre-set a recent connection failure; subsequent call should return
+        // a circuit-open error without making any HTTP requests.
+        let server = MockServer::start().await;
+        // No mocks registered — any HTTP hit would be an unexpected request.
+
+        let mut client = make_client(&server.uri());
+        client.circuit_open_secs = 300;
+        *client.last_connection_failure.lock().expect("mutex") = Some(Instant::now());
+
+        let result = client.complete(LlmRequest::simple("sys", "user")).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("circuit"),
+            "expected circuit-open error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn circuit_clears_on_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(serde_json::json!({"models": []})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(chat_response_body()),
+            )
+            .mount(&server)
+            .await;
+
+        let mut client = make_client(&server.uri());
+        // Artificially open a stale circuit from 1000s ago (expired).
+        client.circuit_open_secs = 1;
+        *client.last_connection_failure.lock().expect("mutex") =
+            Some(Instant::now().checked_sub(Duration::from_secs(10)).unwrap());
+
+        // Circuit should be expired — request succeeds and clears failure.
+        let result = client.complete(LlmRequest::simple("sys", "user")).await;
+        assert!(result.is_ok());
+        assert!(
+            client
+                .last_connection_failure
+                .lock()
+                .expect("mutex")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn preflight_cold_start_proceeds() {
+        // Empty /api/ps (model not loaded) — should proceed with a cold-start warning,
+        // not fail.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(serde_json::json!({"models": []})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(chat_response_body()),
+            )
+            .mount(&server)
+            .await;
+
+        let result = make_client(&server.uri())
+            .complete(LlmRequest::simple("sys", "user"))
+            .await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

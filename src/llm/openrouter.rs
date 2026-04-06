@@ -258,10 +258,32 @@ fn truncate_for_log(s: &str, max_chars: usize) -> String {
 /// Returns an error if the text is not valid JSON or missing required fields.
 #[spec(requires: !backend.trim().is_empty())]
 pub fn parse_llm_json_response(text: &str, backend: &str) -> Result<LlmResponse, InboxError> {
-    // Strip optional markdown fences
     let cleaned = strip_markdown_fences(text);
-    let json: serde_json::Value = serde_json::from_str(cleaned)
-        .map_err(|e| InboxError::Llm(format!("LLM JSON parse error: {e}. Raw: {text}")))?;
+
+    let json: serde_json::Value = match serde_json::from_str(cleaned) {
+        Ok(v) => v,
+        Err(first_err) => {
+            // Fallback: extract the first complete {…} object from the text.
+            // Handles think-tag artifacts (e.g. `</think>` after the JSON) and
+            // duplicate objects that some models emit.
+            match extract_first_json_object(cleaned)
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            {
+                Some(v) => {
+                    debug!(
+                        backend,
+                        "LLM response had extra content around JSON — extracted first object"
+                    );
+                    v
+                }
+                None => {
+                    return Err(InboxError::Llm(format!(
+                        "LLM JSON parse error: {first_err}. Raw: {text}"
+                    )));
+                }
+            }
+        }
+    };
 
     let title = json["title"].as_str().unwrap_or("(no title)").to_owned();
     let tags = json["tags"]
@@ -291,6 +313,46 @@ fn strip_markdown_fences(s: &str) -> &str {
         .or_else(|| s.strip_prefix("```"))
         .unwrap_or(s);
     s.strip_suffix("```").unwrap_or(s).trim()
+}
+
+/// Scan `s` for the first balanced `{…}` JSON object and return the slice.
+/// Handles string literals (including escaped quotes) so brace characters
+/// inside string values are not counted.
+fn extract_first_json_object(s: &str) -> Option<&str> {
+    let start = s.find('{')?;
+    let tail = &s[start..];
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for (i, c) in tail.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if c == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[start..start + i + c.len_utf8()]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]

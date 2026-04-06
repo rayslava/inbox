@@ -55,6 +55,38 @@ fn parse_json_invalid_returns_error() {
     assert!(result.is_err());
 }
 
+#[test]
+fn parse_json_strips_think_tag_trailing() {
+    // qwen3.5 sometimes emits </think> after the JSON object
+    let text = r#"{"title":"T","tags":[],"summary":"S"}
+</think>"#;
+    let r = parse_llm_json_response(text, "x").unwrap();
+    assert_eq!(r.title, "T");
+}
+
+#[test]
+fn parse_json_strips_duplicate_json_after_think_tag() {
+    // Model emits </think> then a duplicate JSON object
+    let text = "```json\n{\"title\":\"T\",\"tags\":[],\"summary\":\"S\"}\n</think>\n{\"title\":\"T2\",\"tags\":[],\"summary\":\"S2\"}\n```";
+    let r = parse_llm_json_response(text, "x").unwrap();
+    assert_eq!(r.title, "T");
+    assert_eq!(r.summary, "S");
+}
+
+#[test]
+fn parse_json_extracts_first_object_from_preamble() {
+    // Preamble text before the JSON object
+    let text = "Here is the result:\n{\"title\":\"T\",\"tags\":[],\"summary\":\"S\"}";
+    let r = parse_llm_json_response(text, "x").unwrap();
+    assert_eq!(r.title, "T");
+}
+
+#[test]
+fn parse_json_truly_malformed_returns_error() {
+    let result = parse_llm_json_response("no braces here at all", "x");
+    assert!(result.is_err());
+}
+
 #[tokio::test]
 async fn complete_success() {
     let server = MockServer::start().await;
