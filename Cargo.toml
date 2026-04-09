@@ -48,7 +48,7 @@ clap                = { version = "4", features = ["derive"] }
 metrics             = "0"
 metrics-exporter-prometheus = { version = "0", features = ["http-listener"] }
 mime_guess          = "2"
-argon2              = { version = "0.6.0-rc.7", features = ["getrandom"] }
+argon2              = { version = "0.6.0-rc.8", features = ["getrandom"] }
 rand                = { version = "0", features = ["std"] }
 dashmap             = "6"
 mime                = "0"
