@@ -98,4 +98,21 @@ mod tests {
     fn normalize_relative_path_rejects_absolute() {
         assert!(normalize_relative_path("/tmp/file").is_none());
     }
+
+    #[test]
+    fn normalize_relative_path_strips_current_dir_components() {
+        let p = normalize_relative_path("./sub/./file.txt").expect("normalized");
+        assert_eq!(p, Path::new("sub/file.txt"));
+    }
+
+    #[test]
+    fn normalize_relative_path_returns_none_for_dot_only() {
+        // "." resolves to an empty path after stripping CurDir — must be rejected.
+        assert!(normalize_relative_path(".").is_none());
+    }
+
+    #[test]
+    fn normalize_relative_path_rejects_embedded_parent_dir() {
+        assert!(normalize_relative_path("safe/../../../etc/passwd").is_none());
+    }
 }

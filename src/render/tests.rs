@@ -59,6 +59,56 @@ fn render_empty_text_untitled() {
     assert!(result.contains("(untitled)"));
 }
 
+fn make_with_attachment(media_kind: crate::message::MediaKind) -> ProcessedMessage {
+    use crate::message::Attachment;
+    let mut msg = make_processed("", None);
+    msg.enriched.original.attachments.push(Attachment {
+        original_name: "file".into(),
+        saved_path: std::path::PathBuf::from("/tmp/file"),
+        mime_type: None,
+        media_kind,
+    });
+    msg
+}
+
+#[test]
+fn fallback_title_uses_attachment_kind_when_text_empty() {
+    use crate::message::MediaKind;
+    let cases = [
+        (MediaKind::Image, "Image"),
+        (MediaKind::Audio, "Audio"),
+        (MediaKind::Video, "Video"),
+        (MediaKind::VoiceMessage, "Voice Message"),
+        (MediaKind::Sticker, "Sticker"),
+        (MediaKind::Animation, "Animation"),
+    ];
+    for (kind, expected_title) in cases {
+        let msg = make_with_attachment(kind);
+        let out = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+        assert!(
+            out.contains(&format!("* {expected_title}")),
+            "expected `* {expected_title}` for kind {kind:?}, got:\n{out}"
+        );
+    }
+}
+
+#[test]
+fn fallback_title_document_attachment_is_untitled() {
+    use crate::message::MediaKind;
+    // Document/Other map to None in the fallback chain → "(untitled)".
+    let msg = make_with_attachment(MediaKind::Document);
+    let out = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+    assert!(out.contains("(untitled)"), "got:\n{out}");
+}
+
+#[test]
+fn fallback_title_uses_explicit_override() {
+    let mut msg = make_processed("", None);
+    msg.fallback_title = Some("Explicit override".into());
+    let out = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+    assert!(out.contains("* Explicit override"), "got:\n{out}");
+}
+
 #[test]
 fn attachment_names_joined() {
     let tmpl = OrgNodeTemplate {

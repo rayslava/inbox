@@ -107,4 +107,58 @@ mod tests {
             UrlKind::File { .. }
         ));
     }
+
+    #[test]
+    fn content_type_plain_text_treated_as_page() {
+        assert!(matches!(
+            classify_by_content_type("text/plain"),
+            UrlKind::Page
+        ));
+    }
+
+    #[test]
+    fn content_type_bare_without_parameters() {
+        assert!(matches!(
+            classify_by_content_type("application/json"),
+            UrlKind::File { .. }
+        ));
+    }
+
+    #[test]
+    fn content_type_malformed_returns_unknown() {
+        assert!(matches!(
+            classify_by_content_type("not-a-mime-type"),
+            UrlKind::Unknown
+        ));
+    }
+
+    #[test]
+    fn extension_case_insensitive() {
+        let url = Url::parse("https://example.com/Photo.JPG").unwrap();
+        assert!(matches!(
+            classify_by_extension(&url),
+            Some(UrlKind::File { .. })
+        ));
+    }
+
+    #[test]
+    fn extension_zip_archive() {
+        let url = Url::parse("https://example.com/bundle.zip").unwrap();
+        assert!(matches!(
+            classify_by_extension(&url),
+            Some(UrlKind::File { .. })
+        ));
+    }
+
+    #[test]
+    fn extension_php_classified_as_page() {
+        let url = Url::parse("https://example.com/index.php").unwrap();
+        assert!(matches!(classify_by_extension(&url), Some(UrlKind::Page)));
+    }
+
+    #[test]
+    fn extension_empty_path_returns_none() {
+        let url = Url::parse("https://example.com/").unwrap();
+        assert!(classify_by_extension(&url).is_none());
+    }
 }
