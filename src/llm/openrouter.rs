@@ -123,122 +123,140 @@ impl LlmClient for OpenRouterClient {
 
     #[instrument(skip(self, req), fields(model = %self.model))]
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
-        let LlmRequest {
-            system_prompt,
-            user_content,
-            tool_definitions,
-            require_initial_tool_call,
-            images,
-            ..
-        } = req;
-
-        let user_message_content: serde_json::Value = if images.is_empty() {
-            serde_json::Value::String(user_content)
-        } else {
-            let mut parts = vec![serde_json::json!({"type": "text", "text": user_content})];
-            for (mime, b64) in &images {
-                parts.push(serde_json::json!({
-                    "type": "image_url",
-                    "image_url": { "url": format!("data:{mime};base64,{b64}") }
-                }));
-            }
-            serde_json::Value::Array(parts)
-        };
-
-        let messages = vec![
-            ChatMessage {
-                role: "system".into(),
-                content: serde_json::Value::String(system_prompt),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: "user".into(),
-                content: user_message_content,
-                tool_calls: None,
-                tool_call_id: None,
-            },
-        ];
-
-        let body = ChatRequest {
-            model: &self.model,
-            messages,
-            tools: tool_definitions,
-            tool_choice: if require_initial_tool_call {
-                Some("required")
-            } else {
-                None
-            },
-        };
-
         let _permit = if let Some(sem) = &self.semaphore {
             Some(sem.acquire().await.expect("semaphore closed"))
         } else {
             None
         };
 
-        let url = format!("{}/chat/completions", self.base_url);
-        debug!(url = %url, model = %self.model, "Sending OpenRouter request");
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| InboxError::Llm(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(InboxError::Llm(format!(
-                "OpenRouter API error {status}: {text}"
-            )));
-        }
-
-        let chat: ChatResponse = resp
-            .json()
-            .await
-            .map_err(|e| InboxError::Llm(format!("OpenRouter parse error: {e}")))?;
-
-        let choice = chat
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| InboxError::Llm("OpenRouter returned no choices".into()))?;
-
-        // Tool calls?
-        if let Some(tool_calls) = choice.message.tool_calls {
-            info!(
-                tool_count = tool_calls.len(),
-                tool_names = ?tool_calls
-                    .iter()
-                    .map(|tc| tc.function.name.clone())
-                    .collect::<Vec<_>>(),
-                "OpenRouter returned tool calls"
-            );
-            let calls = tool_calls
-                .into_iter()
-                .map(|tc| ToolCall {
-                    id: tc.id,
-                    name: tc.function.name,
-                    arguments: serde_json::from_str(&tc.function.arguments)
-                        .unwrap_or(serde_json::Value::Null),
-                })
-                .collect();
-            return Ok(LlmCompletion::ToolCalls(calls));
-        }
-
-        // Text response — parse JSON
-        let text = choice.message.content.unwrap_or_default();
-        debug!(
-            response_len = text.len(),
-            response_preview = %truncate_for_log(&text, 1200),
-            "OpenRouter returned assistant text"
-        );
-
-        parse_llm_json_response(&text, "openrouter").map(LlmCompletion::Message)
+        call_chat_completion(
+            &self.client,
+            &self.base_url,
+            &self.api_key,
+            &self.model,
+            &req,
+            "openrouter",
+        )
+        .await
     }
+}
+
+/// Build the OpenAI-compatible `messages` array from an `LlmRequest`, including
+/// vision content parts when image attachments are present.
+pub(crate) fn build_chat_messages(req: &LlmRequest) -> Vec<ChatMessage> {
+    let user_message_content: serde_json::Value = if req.images.is_empty() {
+        serde_json::Value::String(req.user_content.clone())
+    } else {
+        let mut parts = vec![serde_json::json!({"type": "text", "text": req.user_content.clone()})];
+        for (mime, b64) in &req.images {
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{mime};base64,{b64}") }
+            }));
+        }
+        serde_json::Value::Array(parts)
+    };
+
+    vec![
+        ChatMessage {
+            role: "system".into(),
+            content: serde_json::Value::String(req.system_prompt.clone()),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+        ChatMessage {
+            role: "user".into(),
+            content: user_message_content,
+            tool_calls: None,
+            tool_call_id: None,
+        },
+    ]
+}
+
+/// Perform a single `chat/completions` call against any OpenAI-compatible
+/// endpoint (`OpenRouter` or a per-model invocation from the free-router pool).
+///
+/// # Errors
+/// Returns `InboxError::Llm` on transport, non-2xx status, JSON parse, or empty-choices failure.
+#[instrument(skip(client, req), fields(model = %model, backend = %backend_label))]
+pub(crate) async fn call_chat_completion(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    req: &LlmRequest,
+    backend_label: &str,
+) -> Result<LlmCompletion, InboxError> {
+    let messages = build_chat_messages(req);
+    let body = ChatRequest {
+        model,
+        messages,
+        tools: req.tool_definitions.clone(),
+        tool_choice: if req.require_initial_tool_call {
+            Some("required")
+        } else {
+            None
+        },
+    };
+
+    let url = format!("{base_url}/chat/completions");
+    debug!(url = %url, model = %model, "Sending chat completion request");
+    let resp = client
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| InboxError::Llm(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(InboxError::Llm(format!(
+            "{backend_label} API error {status}: {text}"
+        )));
+    }
+
+    let chat: ChatResponse = resp
+        .json()
+        .await
+        .map_err(|e| InboxError::Llm(format!("{backend_label} parse error: {e}")))?;
+
+    let choice = chat
+        .choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| InboxError::Llm(format!("{backend_label} returned no choices")))?;
+
+    if let Some(tool_calls) = choice.message.tool_calls {
+        info!(
+            tool_count = tool_calls.len(),
+            tool_names = ?tool_calls
+                .iter()
+                .map(|tc| tc.function.name.clone())
+                .collect::<Vec<_>>(),
+            "Backend returned tool calls"
+        );
+        let calls = tool_calls
+            .into_iter()
+            .map(|tc| ToolCall {
+                id: tc.id,
+                name: tc.function.name,
+                arguments: serde_json::from_str(&tc.function.arguments)
+                    .unwrap_or(serde_json::Value::Null),
+            })
+            .collect();
+        return Ok(LlmCompletion::ToolCalls(calls));
+    }
+
+    let text = choice.message.content.unwrap_or_default();
+    debug!(
+        response_len = text.len(),
+        response_preview = %truncate_for_log(&text, 1200),
+        "Backend returned assistant text"
+    );
+
+    parse_llm_json_response(&text, backend_label).map(LlmCompletion::Message)
 }
 
 #[spec(requires: max_chars > 0)]

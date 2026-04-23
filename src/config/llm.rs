@@ -121,6 +121,9 @@ pub enum FallbackMode {
 pub struct LlmBackendConfig {
     #[serde(rename = "type")]
     pub backend_type: LlmBackendType,
+    /// Model ID. Required for `openrouter` and `ollama`; ignored by
+    /// `free_router` (which sources its models from the index API).
+    #[serde(default)]
     pub model: String,
     pub api_key: Option<String>,
     #[serde(default = "default_openrouter_base_url")]
@@ -159,6 +162,37 @@ pub struct LlmBackendConfig {
     /// the Ollama server is unreachable. Set to 0 to disable. Default: 300 seconds.
     #[serde(default = "default_circuit_open_secs")]
     pub circuit_open_secs: u64,
+    // ── Free-router fields ────────────────────────────────────────────────────
+    /// `FreeRouter` only. URL of the free-models index API. Default:
+    /// `https://shir-man.com/api/free-llm/top-models`.
+    #[serde(default = "default_free_router_api_url")]
+    pub api_url: String,
+    /// `FreeRouter` only. How many candidate models to invoke in parallel per call.
+    /// Default: 3. First successful response wins; others are cancelled.
+    #[serde(default = "default_parallel_fanout")]
+    pub parallel_fanout: usize,
+    /// `FreeRouter` only. How many attempts per model (with exponential backoff)
+    /// before moving on within a single call. Default: 2.
+    #[serde(default = "default_per_model_retries")]
+    pub per_model_retries: u32,
+    /// `FreeRouter` only. Minimum seconds between reactive pool refreshes.
+    /// Prevents refresh storms. Default: 300 seconds.
+    #[serde(default = "default_min_refresh_interval_secs")]
+    pub min_refresh_interval_secs: u64,
+    /// `FreeRouter` only. Soft preference: models with `contextLength` at or above this
+    /// receive a scoring bonus, reordering the pool. Models below are NOT dropped.
+    /// Default: 0 (no preference).
+    #[serde(default)]
+    pub min_context_length: usize,
+    /// `FreeRouter` only. Soft preference: bonus for models advertising structured-output
+    /// support. Default: false.
+    #[serde(default)]
+    pub prefer_structured_outputs: bool,
+    /// `FreeRouter` only. Soft preference: bonus for reasoning-capable models.
+    /// Also enables the `activate_thinking` tool when any pool member supports reasoning.
+    /// Default: false.
+    #[serde(default)]
+    pub prefer_reasoning: bool,
 }
 
 fn default_connect_timeout_secs() -> u64 {
@@ -179,9 +213,23 @@ fn default_timeout_secs() -> u64 {
     30
 }
 
+fn default_free_router_api_url() -> String {
+    "https://shir-man.com/api/free-llm/top-models".into()
+}
+fn default_parallel_fanout() -> usize {
+    3
+}
+fn default_per_model_retries() -> u32 {
+    2
+}
+fn default_min_refresh_interval_secs() -> u64 {
+    300
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LlmBackendType {
     Openrouter,
     Ollama,
+    FreeRouter,
 }

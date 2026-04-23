@@ -89,18 +89,56 @@ js_shell_tool_hint = "If URL content appears to be a JavaScript shell, call craw
 require_tool_for_urls = true
 url_tool_decision = "When URLs are present, decide the best retrieval tool first and call it before producing final JSON. Use crawl_url for JS-heavy/app-shell pages, scrape_page for normal readable pages, and download_file for direct file links. URLs: {urls}"
 
-# Primary backend: OpenRouter
+# Backend ordering: the chain tries each [[llm.backends]] entry in the order
+# they appear, only escalating to the next when the current one exhausts its
+# retries. Recommended order for mixed setups:
+#   1. free_router — quality-ranked free cloud models with hedged dispatch
+#   2. ollama      — offline fallback for when the internet is unreachable
+#   3. openrouter  — optional final resort pinned to a paid model
+
+# Primary backend: free-router cloud pool.
+#
+# Fetches a curated index of *free* OpenRouter models, partitions them by
+# tool-call capability, and races several candidates in parallel per call.
+# Still requires an OpenRouter API key because the chat-completions endpoint
+# is OpenRouter's own.
 [[llm.backends]]
-type         = "openrouter"
-model        = "openai/gpt-4o-mini"
+type         = "free_router"
 api_key      = "${OPENROUTER_API_KEY}"
+# Model index. Default: https://shir-man.com/api/free-llm/top-models
+# api_url    = "https://shir-man.com/api/free-llm/top-models"
+# Chat-completions endpoint. Default: https://openrouter.ai/api/v1
+# base_url   = "https://openrouter.ai/api/v1"
+retries             = 1        # inner fanout + per-model retries handle most failures
+timeout_secs        = 30
+connect_timeout_secs = 10
+# Number of candidate models raced in parallel per call. First valid wins.
+# parallel_fanout          = 3
+# Attempts per model (with exponential backoff) before moving on for this call.
+# per_model_retries        = 2
+# Total in-flight calls across all hedged requests (omit = unlimited).
+# max_concurrent           = 8
+# Minimum seconds between reactive pool refreshes (prevents refresh storms).
+# min_refresh_interval_secs = 300
+# Soft preferences — reorder the pool but never drop models. All optional.
+# min_context_length         = 16384
+# prefer_structured_outputs  = true
+# prefer_reasoning           = false
+
+# Alternative cloud backend: pinned OpenRouter model (commented out by default
+# — prefer free_router above for free models, or keep both with openrouter
+# as a deterministic fallback).
+# [[llm.backends]]
+# type         = "openrouter"
+# model        = "openai/gpt-4o-mini"
+# api_key      = "${OPENROUTER_API_KEY}"
 # base_url defaults to "https://openrouter.ai/api/v1"; override for compatible APIs.
 # base_url   = "https://openrouter.ai/api/v1"
-retries             = 3
-timeout_secs        = 30
+# retries             = 3
+# timeout_secs        = 30
 # connect_timeout_secs = 10   # TCP connect timeout (default 10s); separate from read timeout
 
-# Fallback backend: local Ollama (comment out if not available)
+# Offline fallback: local Ollama (comment out if not available).
 # [[llm.backends]]
 # type           = "ollama"
 # model          = "llama3.2"

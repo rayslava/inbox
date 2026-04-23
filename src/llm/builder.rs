@@ -79,5 +79,8 @@ fn build_backend(cfg: &LlmBackendConfig) -> Box<dyn LlmClient> {
             Box::new(super::openrouter::OpenRouterClient::from_config(cfg))
         }
         LlmBackendType::Ollama => Box::new(super::ollama::OllamaClient::from_config(cfg)),
+        LlmBackendType::FreeRouter => {
+            Box::new(super::free_router::FreeRouterClient::from_config(cfg))
+        }
     }
 }

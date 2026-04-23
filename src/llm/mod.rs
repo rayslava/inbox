@@ -8,6 +8,7 @@ use crate::config::{FallbackMode, LlmConfig};
 use crate::error::InboxError;
 use crate::message::{EnrichedMessage, LlmResponse};
 
+pub mod free_router;
 pub mod ollama;
 pub mod openrouter;
 pub mod tools;

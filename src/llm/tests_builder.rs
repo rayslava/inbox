@@ -54,6 +54,13 @@ fn openrouter_backend() -> LlmBackendConfig {
         context_size: None,
         connect_timeout_secs: 10,
         circuit_open_secs: 0,
+        api_url: "https://shir-man.com/api/free-llm/top-models".into(),
+        parallel_fanout: 3,
+        per_model_retries: 2,
+        min_refresh_interval_secs: 300,
+        min_context_length: 0,
+        prefer_structured_outputs: false,
+        prefer_reasoning: false,
     }
 }
 
@@ -72,6 +79,13 @@ fn ollama_backend() -> LlmBackendConfig {
         context_size: Some(4096),
         connect_timeout_secs: 10,
         circuit_open_secs: 0,
+        api_url: "https://shir-man.com/api/free-llm/top-models".into(),
+        parallel_fanout: 3,
+        per_model_retries: 2,
+        min_refresh_interval_secs: 300,
+        min_context_length: 0,
+        prefer_structured_outputs: false,
+        prefer_reasoning: false,
     }
 }
 
