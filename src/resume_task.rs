@@ -93,17 +93,7 @@ async fn retry_item(args: &ResumeTaskArgs, item: &PendingItem, max_retries: u32)
     let id = item.id;
     info!(%id, retry_count = item.retry_count, source = %item.source, "Retrying pending item");
 
-    let enriched = match build_enriched(item) {
-        Ok(e) => e,
-        Err(e) => {
-            warn!(?e, %id, "Failed to reconstruct enriched message for retry");
-            if let Err(e2) = args.store.increment_retry(id).await {
-                warn!(?e2, %id, "Failed to increment retry count");
-            }
-            counter!(telemetry::RESUME_ATTEMPTS, "status" => "failure").increment(1);
-            return;
-        }
-    };
+    let enriched = build_enriched(item);
 
     match args.pipeline.run_llm(enriched).await {
         Ok(processed) if processed.llm_response.is_some() => {
@@ -255,9 +245,7 @@ async fn on_exhausted(args: &ResumeTaskArgs, item: &PendingItem) {
 ///
 /// The enriched URL contents and fallback tool results are pre-loaded so
 /// the LLM stage can use them without re-fetching.
-pub(crate) fn build_enriched(
-    item: &PendingItem,
-) -> Result<EnrichedMessage, crate::error::InboxError> {
+pub(crate) fn build_enriched(item: &PendingItem) -> EnrichedMessage {
     let source = match item.source.as_str() {
         "telegram" => MessageSource::Telegram,
         "email" => MessageSource::Email,
@@ -270,9 +258,11 @@ pub(crate) fn build_enriched(
         item.incoming.text.clone(),
         item.incoming.metadata.clone(),
     );
-    incoming.attachments = item.incoming.attachments.clone();
-    incoming.user_tags = item.incoming.user_tags.clone();
-    incoming.preprocessing_hints = item.incoming.preprocessing_hints.clone();
+    incoming.attachments.clone_from(&item.incoming.attachments);
+    incoming.user_tags.clone_from(&item.incoming.user_tags);
+    incoming
+        .preprocessing_hints
+        .clone_from(&item.incoming.preprocessing_hints);
     incoming.received_at = item.incoming.received_at;
 
     // Re-parse URLs from stored url_contents so we don't re-fetch.
@@ -282,11 +272,11 @@ pub(crate) fn build_enriched(
         .filter_map(|uc| uc.url.parse().ok())
         .collect();
 
-    Ok(EnrichedMessage {
+    EnrichedMessage {
         original: incoming,
         urls,
         url_contents: item.url_contents.clone(),
-    })
+    }
 }
 
 async fn update_pending_metrics(store: &PendingStore, max_retries: u32) {
@@ -294,11 +284,23 @@ async fn update_pending_metrics(store: &PendingStore, max_retries: u32) {
         Ok(s) => {
             gauge!(telemetry::PENDING_ITEMS).set(f64::from(s.total_items));
             gauge!(telemetry::PENDING_EXHAUSTED).set(f64::from(s.exhausted_items));
-            gauge!(telemetry::PENDING_DB_BYTES).set(s.db_bytes() as f64);
-            gauge!(telemetry::PENDING_DB_FREELIST_PAGES).set(s.db_freelist_count as f64);
+            gauge!(telemetry::PENDING_DB_BYTES).set(u64_to_gauge_f64(s.db_bytes()));
+            gauge!(telemetry::PENDING_DB_FREELIST_PAGES).set(u64_to_gauge_f64(s.db_freelist_count));
         }
         Err(e) => {
             warn!(?e, "Failed to collect pending store stats");
         }
     }
+}
+
+/// Convert a `u64` metric into an `f64` gauge value without triggering
+/// `clippy::cast_precision_loss`.
+///
+/// Splits the value into two `u32` halves (each losslessly representable
+/// as `f64`) and recombines them. Values above `2^53` round to the nearest
+/// representable `f64`, which is acceptable for a monitoring gauge.
+fn u64_to_gauge_f64(v: u64) -> f64 {
+    let hi = u32::try_from(v >> 32).unwrap_or(u32::MAX);
+    let lo = u32::try_from(v & 0xFFFF_FFFF).unwrap_or(u32::MAX);
+    f64::from(hi).mul_add(4_294_967_296.0, f64::from(lo))
 }

@@ -90,6 +90,13 @@ pub const RESUME_ATTEMPTS: &str = "inbox_resume_attempts_total";
 
 /// Call once at startup to register metric descriptions with the recorder.
 pub fn describe_metrics() {
+    describe_core_metrics();
+    describe_memory_metrics();
+    describe_feedback_metrics();
+    describe_pending_metrics();
+}
+
+fn describe_core_metrics() {
     describe_counter!(
         MESSAGES_RECEIVED,
         Unit::Count,
@@ -135,17 +142,23 @@ pub fn describe_metrics() {
         "URL fetch duration by kind"
     );
     describe_histogram!(WRITE_DURATION, Unit::Seconds, "Output write duration");
+    describe_gauge!(
+        QUEUE_DEPTH,
+        Unit::Count,
+        "Current number of messages waiting in the pipeline queue"
+    );
+}
+
+fn describe_memory_metrics() {
     describe_counter!(MEMORY_OPS, Unit::Count, "Total memory store operations");
     describe_histogram!(
         MEMORY_DURATION,
         Unit::Seconds,
         "Memory store operation duration"
     );
-    describe_gauge!(
-        QUEUE_DEPTH,
-        Unit::Count,
-        "Current number of messages waiting in the pipeline queue"
-    );
+}
+
+fn describe_feedback_metrics() {
     describe_counter!(
         FEEDBACK_TOTAL,
         Unit::Count,
@@ -166,6 +179,9 @@ pub fn describe_metrics() {
         Unit::Count,
         "Current feedback count per rating level"
     );
+}
+
+fn describe_pending_metrics() {
     describe_gauge!(
         PENDING_ITEMS,
         Unit::Count,

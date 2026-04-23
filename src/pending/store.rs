@@ -56,6 +56,9 @@ impl PendingStore {
     /// Open (or create) the pending-items database at `path`.
     ///
     /// Runs embedded migrations on first open. Enables WAL mode.
+    ///
+    /// # Errors
+    /// Returns an error if the database cannot be opened or migrations fail.
     pub async fn open(path: &Path) -> Result<Self, InboxError> {
         let opts = SqliteConnectOptions::new()
             .filename(path)
@@ -190,7 +193,7 @@ impl PendingStore {
             items.push(PendingItem {
                 id,
                 created_at,
-                retry_count: row.get::<i64, _>("retry_count") as u32,
+                retry_count: u32::try_from(row.get::<i64, _>("retry_count")).unwrap_or(u32::MAX),
                 last_retry_at,
                 incoming,
                 url_contents,
@@ -199,16 +202,21 @@ impl PendingStore {
                 fallback_title: row.get("fallback_title"),
                 telegram_status_msg_id: row
                     .get::<Option<i64>, _>("telegram_status_msg_id")
-                    .map(|v| v as i32),
+                    .map(|v| i32::try_from(v).unwrap_or(i32::MAX)),
                 source: row.get::<Option<String>, _>("source").unwrap_or_default(),
-                url_count: row.get::<Option<i64>, _>("url_count").unwrap_or(0) as u32,
-                tool_count: row.get::<Option<i64>, _>("tool_count").unwrap_or(0) as u32,
+                url_count: u32::try_from(row.get::<Option<i64>, _>("url_count").unwrap_or(0))
+                    .unwrap_or(u32::MAX),
+                tool_count: u32::try_from(row.get::<Option<i64>, _>("tool_count").unwrap_or(0))
+                    .unwrap_or(u32::MAX),
             });
         }
         Ok(items)
     }
 
     /// Increment the retry counter and record the timestamp of this attempt.
+    ///
+    /// # Errors
+    /// Returns an error if the database update fails.
     pub async fn increment_retry(&self, id: Uuid) -> Result<(), InboxError> {
         let id_str = id.to_string();
         sqlx::query(
@@ -227,6 +235,9 @@ impl PendingStore {
     }
 
     /// Remove a successfully processed pending item.
+    ///
+    /// # Errors
+    /// Returns an error if the database delete fails.
     pub async fn remove(&self, id: Uuid) -> Result<(), InboxError> {
         let id_str = id.to_string();
         sqlx::query("DELETE FROM pending_items WHERE id = ?")
@@ -238,6 +249,9 @@ impl PendingStore {
     }
 
     /// Collect queue statistics including `SQLite` PRAGMA values.
+    ///
+    /// # Errors
+    /// Returns an error if any of the backing queries or PRAGMAs fail.
     pub async fn stats(&self, max_retries: u32) -> Result<PendingStats, InboxError> {
         let row = sqlx::query(
             r"
@@ -268,11 +282,12 @@ impl PendingStore {
             .map_err(|e| InboxError::Pipeline(format!("pragma freelist_count: {e}")))?;
 
         Ok(PendingStats {
-            total_items: row.get::<i64, _>("total_items") as u32,
-            exhausted_items: row.get::<i64, _>("exhausted_items") as u32,
-            db_page_count: page_count as u64,
-            db_page_size: page_size as u64,
-            db_freelist_count: freelist as u64,
+            total_items: u32::try_from(row.get::<i64, _>("total_items")).unwrap_or(u32::MAX),
+            exhausted_items: u32::try_from(row.get::<i64, _>("exhausted_items"))
+                .unwrap_or(u32::MAX),
+            db_page_count: u64::try_from(page_count).unwrap_or(0),
+            db_page_size: u64::try_from(page_size).unwrap_or(0),
+            db_freelist_count: u64::try_from(freelist).unwrap_or(0),
         })
     }
 

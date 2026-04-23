@@ -1,7 +1,7 @@
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::message::{MessageSource, RetryableMessage, SourceMetadata};
+use crate::message::{MessageSource, ProcessingHints, RetryableMessage, SourceMetadata};
 use crate::pending::PendingItem;
 use crate::resume_task::build_enriched;
 use crate::url_content::UrlContent;
@@ -20,7 +20,7 @@ fn dummy_pending(source: &str) -> PendingItem {
             },
             attachments: vec![],
             user_tags: vec!["tag1".into()],
-            preprocessing_hints: Default::default(),
+            preprocessing_hints: ProcessingHints::default(),
             received_at: Utc::now(),
         },
         url_contents: vec![UrlContent {
@@ -42,7 +42,7 @@ fn dummy_pending(source: &str) -> PendingItem {
 #[test]
 fn build_enriched_http_source() {
     let item = dummy_pending("http");
-    let enriched = build_enriched(&item).unwrap();
+    let enriched = build_enriched(&item);
     assert_eq!(enriched.original.source, MessageSource::Http);
     assert_eq!(enriched.original.text, "test message");
     assert_eq!(enriched.url_contents.len(), 1);
@@ -59,14 +59,14 @@ fn build_enriched_telegram_source() {
         username: None,
         forwarded_from: None,
     };
-    let enriched = build_enriched(&item).unwrap();
+    let enriched = build_enriched(&item);
     assert_eq!(enriched.original.source, MessageSource::Telegram);
 }
 
 #[test]
 fn build_enriched_email_source() {
     let item = dummy_pending("email");
-    let enriched = build_enriched(&item).unwrap();
+    let enriched = build_enriched(&item);
     assert_eq!(enriched.original.source, MessageSource::Email);
 }
 
@@ -74,7 +74,7 @@ fn build_enriched_email_source() {
 fn build_enriched_preserves_id() {
     let item = dummy_pending("http");
     let id = item.id;
-    let enriched = build_enriched(&item).unwrap();
+    let enriched = build_enriched(&item);
     assert_eq!(enriched.original.id, id);
 }
 
@@ -95,7 +95,7 @@ fn build_enriched_skips_invalid_urls() {
             headings: vec![],
         },
     ];
-    let enriched = build_enriched(&item).unwrap();
+    let enriched = build_enriched(&item);
     // Only the valid URL is parsed into enriched.urls; url_contents keeps both.
     assert_eq!(enriched.urls.len(), 1);
     assert_eq!(enriched.url_contents.len(), 2);

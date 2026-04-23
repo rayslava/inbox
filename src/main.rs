@@ -1,3 +1,5 @@
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -84,27 +86,7 @@ async fn main() -> Result<()> {
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
 
-    // Open the pending store if resume is enabled.
-    let pending_store: Option<Arc<PendingStore>> = if cfg.pipeline.resume.enabled {
-        let db_path = cfg
-            .pipeline
-            .resume
-            .db_path
-            .clone()
-            .unwrap_or_else(|| cfg.general.attachments_dir.join("pending.db"));
-        match PendingStore::open(&db_path).await {
-            Ok(s) => {
-                info!(?db_path, "Pending store opened");
-                Some(Arc::new(s))
-            }
-            Err(e) => {
-                warn!(?e, "Failed to open pending store — resume disabled");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let pending_store = open_pending_store(&cfg).await;
 
     let pipeline = Arc::new(Pipeline::new(
         Arc::clone(&cfg),
@@ -137,30 +119,16 @@ async fn main() -> Result<()> {
     // Spawn adapters
     spawn_adapters(&cfg, &tx, &shutdown, memory_store.as_ref());
 
-    // Admin server
-    {
-        let admin_addr = cfg.admin.bind_addr;
-        let admin_router = web::admin_router(web::AdminRouterArgs {
-            cfg: Arc::clone(&cfg),
-            readiness: readiness.clone(),
-            session_store,
-            metrics_handle: prometheus_handle,
-            log_store: Arc::clone(&log_store),
-            tracker: Arc::clone(&tracker),
-            inbox_tx: Some(tx.clone()),
-            attachments_dir: cfg.general.attachments_dir.clone(),
-            memory_store: memory_store.clone(),
-        });
-        tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(admin_addr)
-                .await
-                .expect("Failed to bind admin server");
-            info!(%admin_addr, "Admin server listening");
-            axum::serve(listener, admin_router)
-                .await
-                .expect("Admin server error");
-        });
-    }
+    spawn_admin_server(AdminServerArgs {
+        cfg: Arc::clone(&cfg),
+        readiness: readiness.clone(),
+        session_store,
+        prometheus_handle,
+        log_store: Arc::clone(&log_store),
+        tracker: Arc::clone(&tracker),
+        inbox_tx: tx.clone(),
+        memory_store: memory_store.clone(),
+    });
 
     // Mark ready
     readiness.set_ready();
@@ -205,6 +173,67 @@ fn init_logging(format: &str, level: &str, log_store: std::sync::Arc<log_capture
     } else {
         registry.with(fmt::layer().pretty()).init();
     }
+}
+
+async fn open_pending_store(cfg: &Arc<config::Config>) -> Option<Arc<PendingStore>> {
+    if !cfg.pipeline.resume.enabled {
+        return None;
+    }
+    let db_path = cfg
+        .pipeline
+        .resume
+        .db_path
+        .clone()
+        .unwrap_or_else(|| cfg.general.attachments_dir.join("pending.db"));
+    match PendingStore::open(&db_path).await {
+        Ok(s) => {
+            info!(?db_path, "Pending store opened");
+            Some(Arc::new(s))
+        }
+        Err(e) => {
+            warn!(?e, "Failed to open pending store — resume disabled");
+            None
+        }
+    }
+}
+
+struct AdminServerArgs {
+    cfg: Arc<config::Config>,
+    readiness: ReadinessState,
+    session_store: Arc<web::auth::SessionStore>,
+    prometheus_handle: metrics_exporter_prometheus::PrometheusHandle,
+    log_store: Arc<log_capture::LogStore>,
+    tracker: Arc<ProcessingTracker>,
+    inbox_tx: mpsc::Sender<inbox::message::IncomingMessage>,
+    memory_store: Option<Arc<inbox::memory::MemoryStore>>,
+}
+
+fn spawn_admin_server(args: AdminServerArgs) {
+    let admin_addr = args.cfg.admin.bind_addr;
+    let admin_router = web::admin_router(web::AdminRouterArgs {
+        cfg: Arc::clone(&args.cfg),
+        readiness: args.readiness,
+        session_store: args.session_store,
+        metrics_handle: args.prometheus_handle,
+        log_store: args.log_store,
+        tracker: args.tracker,
+        inbox_tx: Some(args.inbox_tx),
+        attachments_dir: args.cfg.general.attachments_dir.clone(),
+        memory_store: args.memory_store,
+    });
+    tokio::spawn(async move {
+        match tokio::net::TcpListener::bind(admin_addr).await {
+            Ok(listener) => {
+                info!(%admin_addr, "Admin server listening");
+                if let Err(e) = axum::serve(listener, admin_router).await {
+                    warn!(?e, "Admin server exited with error");
+                }
+            }
+            Err(e) => {
+                warn!(?e, %admin_addr, "Failed to bind admin server");
+            }
+        }
+    });
 }
 
 fn spawn_adapters(
@@ -263,10 +292,20 @@ async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
-        tokio::select! {
-            _ = signal::ctrl_c() => {},
-            _ = sigterm.recv() => {},
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    _ = signal::ctrl_c() => {},
+                    _ = sigterm.recv() => {},
+                }
+            }
+            Err(e) => {
+                warn!(
+                    ?e,
+                    "Failed to install SIGTERM handler; waiting for SIGINT only"
+                );
+                let _ = signal::ctrl_c().await;
+            }
         }
     }
     #[cfg(not(unix))]

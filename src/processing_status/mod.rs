@@ -91,7 +91,7 @@ impl ProcessingTracker {
         self.update_gauge();
         let mut result: Vec<InFlightEntry> =
             self.entries.iter().map(|e| e.value().clone()).collect();
-        result.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        result.sort_by_key(|e| std::cmp::Reverse(e.started_at));
         result
     }
 

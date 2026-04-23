@@ -208,7 +208,7 @@ pub(super) fn get_recent_feedback(
     }
 
     // Sort by created_at descending (Grafeo may not support ORDER BY).
-    entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.created_at));
     entries.truncate(limit);
 
     Ok(entries)
