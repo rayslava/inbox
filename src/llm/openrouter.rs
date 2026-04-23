@@ -178,7 +178,10 @@ pub(crate) fn build_chat_messages(req: &LlmRequest) -> Vec<ChatMessage> {
 ///
 /// # Errors
 /// Returns `InboxError::Llm` on transport, non-2xx status, JSON parse, or empty-choices failure.
-#[instrument(skip(client, req), fields(model = %model, backend = %backend_label))]
+#[instrument(
+    skip(client, api_key, req),
+    fields(model = %model, backend = %backend_label)
+)]
 pub(crate) async fn call_chat_completion(
     client: &reqwest::Client,
     base_url: &str,
