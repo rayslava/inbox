@@ -279,3 +279,173 @@ async fn fallback_item_inserted_into_pending_store() {
     assert_eq!(items.len(), 1, "one item should be in the pending store");
     assert_eq!(items[0].incoming.text, "test pending insertion");
 }
+
+// ── Pipeline::process end-to-end tests ────────────────────────────────────────
+
+fn make_msg(text: &str) -> IncomingMessage {
+    IncomingMessage::new(
+        MessageSource::Http,
+        text.into(),
+        SourceMetadata::Http {
+            remote_addr: None,
+            user_agent: None,
+        },
+    )
+}
+
+fn enriched_from(msg: IncomingMessage) -> EnrichedMessage {
+    EnrichedMessage {
+        original: msg,
+        urls: vec![],
+        url_contents: vec![],
+    }
+}
+
+#[tokio::test]
+async fn process_success_path_writes_and_marks_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(crate::config::JsShellPolicy::Allow);
+    cfg.general.attachments_dir = dir.path().to_path_buf();
+    cfg.general.output_file = dir.path().join("inbox.org");
+    cfg.url_fetch.enabled = false;
+    let cfg = Arc::new(cfg);
+
+    let llm = crate::test_helpers::mock_llm_chain(crate::test_helpers::default_llm_response());
+    let writer = Arc::new(crate::output::NullWriter);
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Pipeline::new(cfg, llm, writer, tracker, None, None);
+
+    pipeline.process(make_msg("hello world")).await.unwrap();
+}
+
+#[derive(Default)]
+struct CapturingWriter {
+    captured_tags: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl crate::output::OutputWriter for CapturingWriter {
+    async fn write(
+        &self,
+        msg: &crate::message::ProcessedMessage,
+        _cfg: &Config,
+    ) -> Result<(), crate::error::InboxError> {
+        *self.captured_tags.lock().unwrap() = msg.enriched.original.user_tags.clone();
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn process_extracts_user_tags_from_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(crate::config::JsShellPolicy::Allow);
+    cfg.general.attachments_dir = dir.path().to_path_buf();
+    cfg.general.output_file = dir.path().join("inbox.org");
+    cfg.url_fetch.enabled = false;
+    let cfg = Arc::new(cfg);
+
+    let capture = Arc::new(CapturingWriter::default());
+    let llm = crate::test_helpers::mock_llm_chain(crate::test_helpers::default_llm_response());
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Pipeline::new(
+        cfg,
+        llm,
+        Arc::clone(&capture) as Arc<dyn crate::output::OutputWriter>,
+        tracker,
+        None,
+        None,
+    );
+
+    pipeline
+        .process(make_msg("check this out #rust #inbox"))
+        .await
+        .unwrap();
+
+    let tags = capture.captured_tags.lock().unwrap().clone();
+    assert!(
+        tags.iter().any(|t| t == "rust") && tags.iter().any(|t| t == "inbox"),
+        "user_tags should be extracted and propagated: {tags:?}"
+    );
+}
+
+#[tokio::test]
+async fn process_persists_pending_item_on_raw_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(crate::config::JsShellPolicy::Allow);
+    cfg.general.attachments_dir = dir.path().to_path_buf();
+    cfg.general.output_file = dir.path().join("inbox.org");
+    cfg.url_fetch.enabled = false;
+    let cfg = Arc::new(cfg);
+
+    let db_path = dir.path().join("pending.db");
+    let store = Arc::new(PendingStore::open(&db_path).await.unwrap());
+
+    let failing_llm = crate::test_helpers::always_fail_llm_chain();
+    let writer = Arc::new(crate::output::NullWriter);
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Pipeline::new(
+        cfg,
+        failing_llm,
+        writer,
+        tracker,
+        None,
+        Some(Arc::clone(&store)),
+    );
+
+    pipeline
+        .process(make_msg("this message should be pending"))
+        .await
+        .unwrap();
+
+    let items = store.list(5, 10).await.unwrap();
+    assert_eq!(items.len(), 1, "pending store should have one entry");
+    assert_eq!(items[0].incoming.text, "this message should be pending");
+}
+
+#[tokio::test]
+async fn process_propagates_error_on_discard_fallback() {
+    use crate::config::FallbackMode;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(crate::config::JsShellPolicy::Allow);
+    cfg.general.attachments_dir = dir.path().to_path_buf();
+    cfg.general.output_file = dir.path().join("inbox.org");
+    cfg.url_fetch.enabled = false;
+    cfg.llm.fallback = FallbackMode::Discard;
+    let cfg = Arc::new(cfg);
+
+    // A chain built with FallbackMode::Discard inside LlmChain propagates
+    // Err — mirroring production behavior.
+    let failing_llm = crate::test_helpers::failing_llm_chain("simulated LLM failure");
+    let writer = Arc::new(crate::output::NullWriter);
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Pipeline::new(cfg, failing_llm, writer, tracker, None, None);
+
+    let result = pipeline.process(make_msg("drop me")).await;
+    assert!(result.is_err(), "Discard fallback must surface as Err");
+}
+
+#[tokio::test]
+async fn run_llm_raw_fallback_with_existing_text_skips_title_regeneration() {
+    // When the message has non-empty text, fallback_title stays None —
+    // the pipeline doesn't invoke complete_text.
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(crate::config::JsShellPolicy::Allow);
+    cfg.general.attachments_dir = dir.path().to_path_buf();
+    cfg.general.output_file = dir.path().join("inbox.org");
+    cfg.url_fetch.enabled = false;
+    let cfg = Arc::new(cfg);
+
+    let failing_llm = crate::test_helpers::always_fail_llm_chain();
+    let writer = Arc::new(crate::output::NullWriter);
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Pipeline::new(cfg, failing_llm, writer, tracker, None, None);
+
+    let enriched = enriched_from(make_msg("plain text, not empty"));
+    let processed = pipeline.run_llm(enriched).await.unwrap();
+    assert!(processed.llm_response.is_none());
+    assert!(
+        processed.fallback_title.is_none(),
+        "title regeneration should not happen when text is non-empty"
+    );
+}
