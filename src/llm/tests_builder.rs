@@ -4,7 +4,7 @@ use crate::config::{
     UrlFetchConfig, WebUiConfig,
 };
 
-use super::builder::{BuildResult, build_chain};
+use super::builder::{BuildResult, build_chain, open_memory_with_retry};
 
 fn test_config(backends: Vec<LlmBackendConfig>, memory_enabled: bool) -> Config {
     Config {
@@ -146,6 +146,21 @@ async fn build_chain_with_memory_custom_db_path() {
     let result = build_chain(&cfg);
     assert!(result.memory_store.is_some());
     assert_eq!(result.chain.max_tool_turns(), 5);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_memory_with_retry_bails_fast_on_non_lock_error() {
+    // Parent directory does not exist → non-lock io error → should not retry.
+    let bogus = std::path::PathBuf::from("/nonexistent-dir-for-test/memory.grafeo");
+    let cfg = crate::config::MemoryConfig {
+        enabled: true,
+        ..crate::config::MemoryConfig::default()
+    };
+    let start = std::time::Instant::now();
+    let out = open_memory_with_retry(&cfg, &bogus, std::time::Duration::from_secs(30)).await;
+    assert!(out.is_none());
+    // Must return well before the 30s deadline since error is not a lock error.
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
 }
 
 #[tokio::test]
