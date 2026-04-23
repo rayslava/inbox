@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::message::{MessageSource, ProcessingHints, RetryableMessage, SourceMetadata};
 use crate::pending::PendingItem;
-use crate::resume_task::build_enriched;
+use crate::resume_task::{build_enriched, patch_pending_to_failed, u64_to_gauge_f64};
 use crate::url_content::UrlContent;
 
 fn dummy_pending(source: &str) -> PendingItem {
@@ -99,4 +99,49 @@ fn build_enriched_skips_invalid_urls() {
     // Only the valid URL is parsed into enriched.urls; url_contents keeps both.
     assert_eq!(enriched.urls.len(), 1);
     assert_eq!(enriched.url_contents.len(), 2);
+}
+
+// ── patch_pending_to_failed ───────────────────────────────────────────────────
+
+#[test]
+fn patch_pending_to_failed_replaces_first_occurrence() {
+    let input = "\
+* Title :inbox_pending:
+Body
+* Other :inbox_pending:
+";
+    let patched = patch_pending_to_failed(input).expect("should match");
+    assert!(patched.contains(":inbox_failed:"));
+    // Only the first occurrence is swapped.
+    assert_eq!(patched.matches(":inbox_failed:").count(), 1);
+    assert_eq!(patched.matches(":inbox_pending:").count(), 1);
+}
+
+#[test]
+fn patch_pending_to_failed_returns_none_when_no_tag() {
+    assert!(patch_pending_to_failed("* Title :inbox_done:\nBody").is_none());
+}
+
+// ── u64_to_gauge_f64 ──────────────────────────────────────────────────────────
+
+#[test]
+fn u64_to_gauge_f64_small_values_exact() {
+    assert!((u64_to_gauge_f64(0) - 0.0).abs() < f64::EPSILON);
+    assert!((u64_to_gauge_f64(1) - 1.0).abs() < f64::EPSILON);
+    assert!((u64_to_gauge_f64(1024 * 1024) - 1_048_576.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn u64_to_gauge_f64_large_value_within_exact_range() {
+    let v: u64 = 10 * 1024 * 1024 * 1024; // 10 GiB
+    let expected = 10.0 * 1024.0 * 1024.0 * 1024.0;
+    assert!((u64_to_gauge_f64(v) - expected).abs() < 1.0);
+}
+
+#[test]
+fn u64_to_gauge_f64_max_value_no_panic() {
+    // Must not panic; rounding loss above 2^53 is acceptable for a gauge.
+    let out = u64_to_gauge_f64(u64::MAX);
+    assert!(out.is_finite());
+    assert!(out > 0.0);
 }

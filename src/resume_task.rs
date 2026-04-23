@@ -89,6 +89,11 @@ async fn process_pending_batch(args: &ResumeTaskArgs, max_retries: u32) {
     update_pending_metrics(&args.store, max_retries).await;
 }
 
+#[cfg(any(test, feature = "test-helpers"))]
+pub async fn retry_item_for_test(args: &ResumeTaskArgs, item: &PendingItem, max_retries: u32) {
+    retry_item(args, item, max_retries).await;
+}
+
 async fn retry_item(args: &ResumeTaskArgs, item: &PendingItem, max_retries: u32) {
     let id = item.id;
     info!(%id, retry_count = item.retry_count, source = %item.source, "Retrying pending item");
@@ -196,17 +201,9 @@ async fn on_exhausted(args: &ResumeTaskArgs, item: &PendingItem) {
     let id = item.id;
     let output_path = &args.config.general.output_file;
 
-    // Read, patch the tag, write back atomically.
     match tokio::fs::read_to_string(output_path).await {
         Ok(text) => {
-            // Replace only the first occurrence associated with this entry's
-            // heading — a simple string replace across the whole file is safe
-            // because each UUID is unique, but the tag appears on the headline,
-            // not the ID line, so swap globally (there is only one per ID).
-            let needle = format!(":{PENDING_TAG}:");
-            let replacement = format!(":{FAILED_TAG}:");
-            if text.contains(&needle) {
-                let patched = text.replacen(&needle, &replacement, 1);
+            if let Some(patched) = patch_pending_to_failed(&text) {
                 let tmp = output_path.with_extension("org.tmp");
                 if let Err(e) = tokio::fs::write(&tmp, &patched).await {
                     warn!(?e, %id, "Failed to write tmp org file for exhausted patch");
@@ -224,7 +221,6 @@ async fn on_exhausted(args: &ResumeTaskArgs, item: &PendingItem) {
         Err(e) => warn!(?e, %id, "Could not read org file to patch exhausted tag"),
     }
 
-    // Telegram notification.
     if item.source == "telegram" {
         if let Some(ref notifier) = args.telegram_notifier {
             let title = item
@@ -239,6 +235,21 @@ async fn on_exhausted(args: &ResumeTaskArgs, item: &PendingItem) {
     }
 
     counter!(telemetry::RESUME_ATTEMPTS, "status" => "exhausted").increment(1);
+}
+
+/// Return the org-file body with the first occurrence of `:inbox_pending:`
+/// replaced by `:inbox_failed:`. Returns `None` when the pending tag is not
+/// present (so the caller knows there's nothing to write).
+///
+/// Each UUID is unique and the tag appears on the headline (not the ID line),
+/// so replacing the first occurrence globally is safe in practice.
+pub(crate) fn patch_pending_to_failed(text: &str) -> Option<String> {
+    let needle = format!(":{PENDING_TAG}:");
+    if !text.contains(&needle) {
+        return None;
+    }
+    let replacement = format!(":{FAILED_TAG}:");
+    Some(text.replacen(&needle, &replacement, 1))
 }
 
 /// Reconstruct an [`EnrichedMessage`] from a stored [`PendingItem`].
@@ -299,7 +310,7 @@ async fn update_pending_metrics(store: &PendingStore, max_retries: u32) {
 /// Splits the value into two `u32` halves (each losslessly representable
 /// as `f64`) and recombines them. Values above `2^53` round to the nearest
 /// representable `f64`, which is acceptable for a monitoring gauge.
-fn u64_to_gauge_f64(v: u64) -> f64 {
+pub(crate) fn u64_to_gauge_f64(v: u64) -> f64 {
     let hi = u32::try_from(v >> 32).unwrap_or(u32::MAX);
     let lo = u32::try_from(v & 0xFFFF_FFFF).unwrap_or(u32::MAX);
     f64::from(hi).mul_add(4_294_967_296.0, f64::from(lo))

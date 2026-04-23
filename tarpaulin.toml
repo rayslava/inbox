@@ -1,0 +1,11 @@
+# cargo-tarpaulin configuration.
+#
+# Usage: `cargo tarpaulin` (picks this file up automatically).
+#
+# Excludes main.rs from coverage math because it is startup wiring that is
+# exercised only by full end-to-end runs, not unit tests. Coverage numbers
+# here reflect the library surface that tests can meaningfully target.
+
+[default]
+all-features = true
+exclude-files = ["tests/*", "src/main.rs"]
