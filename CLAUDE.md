@@ -64,6 +64,7 @@ cargo run -- hash-password
 - No tests can be excluded, if the test is flaky it must be either fixed or removed
 - After the change is prepared, update the config.example.toml correspondingly
 - Use `cargo tarpaulin` to validate that code coverage is not reduced after fix
+- Keep test coverage not lower than 80% all the time
 - Never use plain `unwrap()`, `expect()`, `panic()`, we must process errors
   correctly, not just kill process
 

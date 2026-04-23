@@ -121,3 +121,139 @@ fn parse_org_nodes_second_node_has_no_excerpt() {
     let nodes = ui::parse_org_nodes(SAMPLE_ORG, Path::new("/attachments"));
     assert!(nodes[1].excerpt.is_none());
 }
+
+// ── Attachment link parsing ───────────────────────────────────────────────────
+
+const NODE_WITH_IMAGE_ATTACHMENT: &str = r"* Entry with image :photo:
+
+:PROPERTIES:
+:ID:       a1b2c3d4-0000-0000-0000-000000000001
+:CREATED:  [2024-01-15 Mon 10:30]
+:SOURCE:   telegram
+:END:
+
+Summary above.
+
+[[attachment:photo.jpg][photo.jpg]]
+";
+
+#[test]
+fn parse_org_nodes_extracts_image_attachment() {
+    let nodes = ui::parse_org_nodes(NODE_WITH_IMAGE_ATTACHMENT, Path::new("/attachments"));
+    let node = &nodes[0];
+    assert_eq!(node.attachments.len(), 1, "expected one attachment");
+    let html = &node.attachments[0].html;
+    assert!(
+        html.contains("<img "),
+        "image attachment should render <img>"
+    );
+    assert!(
+        html.contains("attachments/"),
+        "URL should be namespaced under attachments/"
+    );
+}
+
+const NODE_WITH_AUDIO_ATTACHMENT: &str = r"* Voice note :voice:
+
+:PROPERTIES:
+:ID:       a1b2c3d4-0000-0000-0000-000000000002
+:CREATED:  [2024-01-15 Mon 10:30]
+:SOURCE:   telegram
+:END:
+
+[[attachment:voice.ogg][voice.ogg]]
+";
+
+#[test]
+fn parse_org_nodes_extracts_audio_attachment() {
+    let nodes = ui::parse_org_nodes(NODE_WITH_AUDIO_ATTACHMENT, Path::new("/attachments"));
+    let html = &nodes[0].attachments[0].html;
+    assert!(
+        html.contains("<audio "),
+        "audio attachment should render <audio>"
+    );
+}
+
+const NODE_WITH_VIDEO_ATTACHMENT: &str = r"* Clip :video:
+
+:PROPERTIES:
+:ID:       a1b2c3d4-0000-0000-0000-000000000003
+:CREATED:  [2024-01-15 Mon 10:30]
+:SOURCE:   telegram
+:END:
+
+[[attachment:clip.mp4][clip.mp4]]
+";
+
+#[test]
+fn parse_org_nodes_extracts_video_attachment() {
+    let nodes = ui::parse_org_nodes(NODE_WITH_VIDEO_ATTACHMENT, Path::new("/attachments"));
+    let html = &nodes[0].attachments[0].html;
+    assert!(
+        html.contains("<video "),
+        "video attachment should render <video>"
+    );
+}
+
+const NODE_WITH_DOCUMENT_ATTACHMENT: &str = r"* Doc :doc:
+
+:PROPERTIES:
+:ID:       a1b2c3d4-0000-0000-0000-000000000004
+:CREATED:  [2024-01-15 Mon 10:30]
+:SOURCE:   http
+:END:
+
+[[attachment:report.pdf][report.pdf]]
+";
+
+#[test]
+fn parse_org_nodes_document_attachment_renders_as_link() {
+    let nodes = ui::parse_org_nodes(NODE_WITH_DOCUMENT_ATTACHMENT, Path::new("/attachments"));
+    let html = &nodes[0].attachments[0].html;
+    assert!(
+        html.contains("class=\"doc-link\""),
+        "non-media should render as a link"
+    );
+    assert!(html.contains("report.pdf"));
+}
+
+const NODE_WITH_FILE_LINK: &str = r"* Legacy file link :legacy:
+
+:PROPERTIES:
+:ID:       a1b2c3d4-0000-0000-0000-000000000005
+:CREATED:  [2024-01-15 Mon 10:30]
+:SOURCE:   http
+:END:
+
+[[file:/var/inbox/attachments/a1b2c3d4-0000-0000-0000-000000000005/thing.txt][thing.txt]]
+";
+
+#[test]
+fn parse_org_nodes_supports_legacy_file_links() {
+    let nodes = ui::parse_org_nodes(NODE_WITH_FILE_LINK, Path::new("/var/inbox/attachments"));
+    assert_eq!(
+        nodes[0].attachments.len(),
+        1,
+        "legacy file link should be detected"
+    );
+}
+
+const NODE_WITH_TRAVERSAL_ATTEMPT: &str = r"* Malicious :bad:
+
+:PROPERTIES:
+:ID:       a1b2c3d4-0000-0000-0000-000000000006
+:CREATED:  [2024-01-15 Mon 10:30]
+:SOURCE:   http
+:END:
+
+[[attachment:../../../etc/passwd][evil]]
+";
+
+#[test]
+fn parse_org_nodes_rejects_path_traversal_in_attachment() {
+    let nodes = ui::parse_org_nodes(NODE_WITH_TRAVERSAL_ATTEMPT, Path::new("/attachments"));
+    assert!(
+        nodes[0].attachments.is_empty(),
+        "attachment:../ should be rejected"
+    );
+}
