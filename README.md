@@ -13,8 +13,16 @@ It accepts messages from Telegram, HTTP, and IMAP email, enriches them with LLM 
 1. Ingest message and attachments from enabled adapters.
 2. Extract URLs and classify them (page vs file).
 3. Fetch/scrape/download URL content.
-4. Run LLM chain (OpenRouter/Ollama) with tools (`scrape_page`, `download_file`, `crawl_url`, optional `web_search`).
+4. Run LLM chain with tools (`scrape_page`, `download_file`, `crawl_url`,
+   optional `web_search`). Supported backends:
+   - `free_router` — dynamic pool of free OpenRouter models from the
+     shir-man top-models index, hedged parallel dispatch.
+   - `openrouter` — pinned paid model.
+   - `ollama` — local inference with circuit breaker.
 5. Render with Askama template and append atomically to org file.
+6. If the LLM fell back to raw mode, stash the item in a SQLite pending
+   store; a background resume task retries it later and patches the org
+   entry in place on success.
 
 ## Quick start
 
