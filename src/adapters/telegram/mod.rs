@@ -84,11 +84,20 @@ impl InputAdapter for TelegramAdapter {
                 feedback_msg_map,
             });
 
-            let mut dispatcher = Dispatcher::builder(bot, handler)
-                .dependencies(dptree::deps![tx])
-                .build();
-
             async move {
+                // Pre-flight: probe Telegram API so a startup DNS / network
+                // blip returns cleanly to the reconnect loop instead of
+                // panicking inside `Dispatcher::dispatch` (which prints a
+                // crash banner via the default panic hook).
+                if let Err(e) = bot.get_me().send().await {
+                    warn!(error = %e, "Telegram pre-flight get_me failed, will reconnect");
+                    return;
+                }
+
+                let mut dispatcher = Dispatcher::builder(bot, handler)
+                    .dependencies(dptree::deps![tx])
+                    .build();
+
                 let mut dispatch_task = tokio::task::spawn(async move {
                     dispatcher.dispatch().await;
                 });
