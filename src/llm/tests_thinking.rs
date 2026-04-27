@@ -70,7 +70,7 @@ async fn chain_activate_thinking_retries_with_think_true() {
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
     assert!(
-        matches!(outcome, LlmOutcome::Success(_)),
+        matches!(outcome, LlmOutcome::Success { .. }),
         "expected success after activate_thinking"
     );
     assert_eq!(
@@ -184,7 +184,7 @@ async fn llm_call_executes_sub_call() {
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
     assert!(
-        matches!(outcome, LlmOutcome::Success(_)),
+        matches!(outcome, LlmOutcome::Success { .. }),
         "chain should succeed after llm_call sub-request"
     );
     assert!(
@@ -214,7 +214,7 @@ async fn llm_call_not_offered_when_depth_zero() {
     assert!(
         matches!(
             outcome,
-            LlmOutcome::Success(_) | LlmOutcome::RawFallback { .. }
+            LlmOutcome::Success { .. } | LlmOutcome::RawFallback { .. }
         ),
         "should terminate"
     );

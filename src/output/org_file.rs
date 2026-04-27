@@ -117,6 +117,7 @@ mod tests {
             fallback_source_urls: vec![],
             fallback_tool_results: vec![],
             fallback_title: None,
+            enrichment: crate::message::EnrichmentMetadata::default(),
         }
     }
 

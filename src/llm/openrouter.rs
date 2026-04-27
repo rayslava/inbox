@@ -259,7 +259,10 @@ pub(crate) async fn call_chat_completion(
         "Backend returned assistant text"
     );
 
-    parse_llm_json_response(&text, backend_label).map(LlmCompletion::Message)
+    // `produced_by` is what lands in the org file's :ENRICHED_BY: drawer.
+    // Include the exact model id for observability (`free_router:openai/gpt-4o-mini`).
+    let produced_by = format!("{backend_label}:{model}");
+    parse_llm_json_response(&text, &produced_by).map(LlmCompletion::Message)
 }
 
 #[spec(requires: max_chars > 0)]

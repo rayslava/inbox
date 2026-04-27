@@ -59,7 +59,7 @@ async fn chain_max_tool_turns_attempts_forced_summary() {
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
     assert!(
-        matches!(outcome, LlmOutcome::Success(_)),
+        matches!(outcome, LlmOutcome::Success { .. }),
         "forced summary pass should result in Success, got non-success"
     );
 }
@@ -102,13 +102,14 @@ async fn chain_raw_fallback_carries_source_urls() {
         LlmOutcome::RawFallback {
             source_urls,
             tool_results,
+            ..
         } => {
             let _ = source_urls;
             let _ = tool_results;
         }
         other => panic!(
             "expected RawFallback, got something else: {:?}",
-            matches!(other, LlmOutcome::Success(_))
+            matches!(other, LlmOutcome::Success { .. })
         ),
     }
 }
@@ -225,7 +226,7 @@ async fn chain_inner_retry_succeeds_after_transient_failure() {
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
     assert!(
-        matches!(outcome, LlmOutcome::Success(_)),
+        matches!(outcome, LlmOutcome::Success { .. }),
         "inner retry should succeed after transient failure"
     );
     assert!(
@@ -435,7 +436,7 @@ async fn tool_result_truncated_in_chain() {
 
     let req = LlmRequest::simple("s", "u");
     let outcome = chain.complete(req).await;
-    assert!(matches!(outcome, LlmOutcome::Success(_)));
+    assert!(matches!(outcome, LlmOutcome::Success { .. }));
 
     let guard = captured.lock().unwrap();
     let content = guard.as_deref().unwrap_or("");

@@ -23,6 +23,7 @@ fn make_processed(text: &str, llm_response: Option<LlmResponse>) -> ProcessedMes
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     }
 }
 
@@ -78,6 +79,7 @@ fn merge_tags_deduplicates_suggested_tags() {
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     };
     let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
     // "rust" (case-insensitive dup of "Rust") should not appear twice; "async" added once.

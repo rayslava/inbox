@@ -43,6 +43,7 @@ fn dummy_processed(id: Uuid) -> ProcessedMessage {
         fallback_source_urls: vec!["https://found.example".into()],
         fallback_tool_results: vec![("scrape_page".into(), "scraped content".into())],
         fallback_title: Some("Fallback Title".into()),
+        enrichment: crate::message::EnrichmentMetadata::default(),
     }
 }
 

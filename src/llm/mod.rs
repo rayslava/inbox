@@ -168,10 +168,20 @@ pub struct ToolCall {
 }
 
 pub enum LlmOutcome {
-    Success(LlmResponse),
+    Success {
+        response: LlmResponse,
+        /// `backend:model` identifiers of additional models consulted during
+        /// this run (e.g. via `llm_call` sub-calls). Primary model is in
+        /// `response.produced_by`.
+        helpers: Vec<String>,
+        /// Total tool invocations across the turn loop.
+        tool_calls_made: usize,
+    },
     RawFallback {
         source_urls: Vec<String>,
         tool_results: Vec<(String, String)>,
+        helpers: Vec<String>,
+        tool_calls_made: usize,
     },
     Discard,
 }
@@ -197,16 +207,17 @@ pub trait LlmClient: Send + Sync {
         false
     }
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError>;
-    /// Call the backend and return the plain-text result (no JSON parsing).
+    /// Call the backend and return the plain-text result plus the
+    /// `backend:model` identifier of the model that produced it.
     ///
     /// Default implementation wraps the system prompt to elicit a JSON
     /// `{"summary": "..."}` response and extracts the `summary` field.
-    async fn complete_raw(&self, mut req: LlmRequest) -> Result<String, InboxError> {
+    async fn complete_raw(&self, mut req: LlmRequest) -> Result<(String, String), InboxError> {
         req.system_prompt.push_str(
             "\n\nRespond ONLY with a JSON object: {\"summary\": \"<your complete answer here>\"}",
         );
         match self.complete(req).await? {
-            LlmCompletion::Message(resp) => Ok(resp.summary),
+            LlmCompletion::Message(resp) => Ok((resp.summary, resp.produced_by)),
             LlmCompletion::ToolCalls(_) => Err(InboxError::Llm(
                 "llm_call: unexpected tool calls in sub-request".into(),
             )),

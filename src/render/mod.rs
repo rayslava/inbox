@@ -28,6 +28,16 @@ pub struct OrgNodeTemplate<'a> {
     pub forwarded_from: Option<&'a str>,
     /// Media kinds of non-document attachments (audio/video/voice).
     pub media_kinds: &'a [&'static str],
+    /// Additional `backend:model` identifiers consulted during enrichment
+    /// (`llm_call` sub-calls, fallback-title generation). Rendered as
+    /// `:ENRICHED_WITH:` when non-empty.
+    pub enrichment_helpers: &'a [String],
+    /// Number of memories recalled from the memory store. `0` hides the property.
+    pub memories_recalled: usize,
+    /// Number of URLs the pipeline fetched for this message. `0` hides the property.
+    pub urls_fetched: usize,
+    /// Number of tool invocations the LLM made. `0` hides the property.
+    pub tool_calls_made: usize,
 }
 
 impl OrgNodeTemplate<'_> {
@@ -43,6 +53,11 @@ impl OrgNodeTemplate<'_> {
     #[must_use]
     pub fn media_kinds_str(&self) -> String {
         self.media_kinds.join(" ")
+    }
+
+    #[must_use]
+    pub fn enrichment_helpers_str(&self) -> String {
+        self.enrichment_helpers.join(", ")
     }
 }
 
@@ -202,6 +217,7 @@ pub fn render_org_node(
 
     let roam_refs = build_roam_refs(&urls, summary, excerpt, &msg.fallback_source_urls);
 
+    let enrichment = &msg.enrichment;
     let tmpl = OrgNodeTemplate {
         title,
         tags: &merged_tags,
@@ -217,6 +233,10 @@ pub fn render_org_node(
         raw_text: &original.text,
         forwarded_from,
         media_kinds: &media_kinds,
+        enrichment_helpers: &enrichment.helpers,
+        memories_recalled: enrichment.memories_recalled,
+        urls_fetched: enrichment.urls_fetched,
+        tool_calls_made: enrichment.tool_calls_made,
     };
 
     tmpl.render().map_err(InboxError::Template)

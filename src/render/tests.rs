@@ -22,6 +22,7 @@ fn make_processed(text: &str, llm_response: Option<LlmResponse>) -> ProcessedMes
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     }
 }
 
@@ -135,6 +136,10 @@ fn attachment_names_joined() {
         raw_text: "",
         forwarded_from: None,
         media_kinds: &[],
+        enrichment_helpers: &[],
+        memories_recalled: 0,
+        urls_fetched: 0,
+        tool_calls_made: 0,
     };
     assert_eq!(tmpl.attachment_names(), "a.pdf b.jpg");
 }
@@ -160,6 +165,7 @@ fn render_with_url_in_enriched() {
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     };
     let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
     assert!(result.contains("https://example.com/page"));
@@ -221,6 +227,7 @@ fn render_forwarded_from_appears_in_drawer() {
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     };
     let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
     assert!(
@@ -272,6 +279,7 @@ fn render_voice_message_media_kind_in_drawer() {
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     };
     let result = render_org_node(&processed, tmp.path()).unwrap();
     assert!(
@@ -311,6 +319,7 @@ fn render_no_media_kind_for_documents() {
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     };
     let result = render_org_node(&processed, tmp.path()).unwrap();
     assert!(
@@ -342,6 +351,7 @@ fn render_fallback_uses_tool_content_as_summary() {
             "Tool gathered summary content".to_owned(),
         )],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     };
     let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
     assert!(
@@ -377,6 +387,7 @@ fn render_fallback_source_urls_in_roam_refs() {
         ],
         fallback_tool_results: vec![],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     };
     let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
     assert!(
@@ -412,6 +423,7 @@ fn render_fallback_tool_results_joined_cleanly() {
             ("scrape_page".to_owned(), "Second result content".to_owned()),
         ],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     };
     let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
     assert!(
@@ -452,6 +464,7 @@ fn render_fallback_title_used_when_present() {
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: Some("Five Word Generated Title".to_owned()),
+        enrichment: crate::message::EnrichmentMetadata::default(),
     };
     let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
     assert!(
@@ -493,6 +506,7 @@ fn render_empty_text_image_uses_media_kind() {
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     };
     let result = render_org_node(&processed, tmp.path()).unwrap();
     assert!(
@@ -521,10 +535,90 @@ fn render_untitled_when_nothing_available() {
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,
+        enrichment: crate::message::EnrichmentMetadata::default(),
     };
     let result = render_org_node(&processed, std::path::Path::new("/tmp")).unwrap();
     assert!(
         result.contains("* (untitled)"),
         "should fall back to (untitled) when nothing available: {result}"
     );
+}
+
+// ── EnrichmentMetadata rendering ──────────────────────────────────────────────
+
+fn with_enrichment(text: &str, enrichment: crate::message::EnrichmentMetadata) -> ProcessedMessage {
+    let mut msg = make_processed(
+        text,
+        Some(LlmResponse {
+            title: "T".into(),
+            tags: vec![],
+            summary: "S".into(),
+            excerpt: None,
+            produced_by: "free_router:primary/model".into(),
+        }),
+    );
+    msg.enrichment = enrichment;
+    msg
+}
+
+#[test]
+fn render_enriched_by_contains_backend_and_model() {
+    let msg = with_enrichment("x", crate::message::EnrichmentMetadata::default());
+    let out = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+    assert!(
+        out.contains(":ENRICHED_BY: free_router:primary/model"),
+        "got:\n{out}"
+    );
+}
+
+#[test]
+fn render_enriched_with_lists_helpers_when_non_empty() {
+    let msg = with_enrichment(
+        "x",
+        crate::message::EnrichmentMetadata {
+            helpers: vec!["free_router:helper/one".into(), "ollama:llama3".into()],
+            ..Default::default()
+        },
+    );
+    let out = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+    assert!(
+        out.contains(":ENRICHED_WITH: free_router:helper/one, ollama:llama3"),
+        "expected :ENRICHED_WITH: line with both helpers, got:\n{out}"
+    );
+}
+
+#[test]
+fn render_omits_enriched_with_when_no_helpers() {
+    let msg = with_enrichment("x", crate::message::EnrichmentMetadata::default());
+    let out = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+    assert!(
+        !out.contains("ENRICHED_WITH"),
+        "no helpers should mean no property line; got:\n{out}"
+    );
+}
+
+#[test]
+fn render_stats_properties_appear_when_nonzero() {
+    let msg = with_enrichment(
+        "x",
+        crate::message::EnrichmentMetadata {
+            helpers: vec![],
+            memories_recalled: 3,
+            urls_fetched: 2,
+            tool_calls_made: 5,
+        },
+    );
+    let out = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+    assert!(out.contains(":MEMORIES_RECALLED: 3"), "got:\n{out}");
+    assert!(out.contains(":URLS_FETCHED: 2"), "got:\n{out}");
+    assert!(out.contains(":TOOL_CALLS: 5"), "got:\n{out}");
+}
+
+#[test]
+fn render_stats_properties_omitted_when_zero() {
+    let msg = with_enrichment("x", crate::message::EnrichmentMetadata::default());
+    let out = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+    assert!(!out.contains("MEMORIES_RECALLED"), "got:\n{out}");
+    assert!(!out.contains("URLS_FETCHED"), "got:\n{out}");
+    assert!(!out.contains("TOOL_CALLS"), "got:\n{out}");
 }

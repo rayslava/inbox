@@ -344,7 +344,7 @@ impl Pipeline {
             "Starting LLM processing"
         );
 
-        let preloaded_text = self.preload_memory_context(&enriched).await;
+        let (preloaded_text, memories_recalled) = self.preload_memory_context(&enriched).await;
 
         let (progress_tx, mut progress_rx) =
             tokio::sync::mpsc::unbounded_channel::<LlmTurnProgress>();
@@ -379,60 +379,41 @@ impl Pipeline {
             }
         };
 
+        let urls_fetched = enriched.url_contents.len();
+
         let (outcome, ()) = tokio::join!(self.llm.complete(req), progress_future);
 
         match outcome {
-            LlmOutcome::Success(resp) => {
-                info!(
-                    id = %enriched.original.id,
-                    title = %resp.title,
-                    tags = ?resp.tags,
-                    backend = %resp.produced_by,
-                    "LLM processing succeeded"
-                );
-                Ok(ProcessedMessage {
-                    enriched,
-                    llm_response: Some(resp),
-                    fallback_source_urls: vec![],
-                    fallback_tool_results: vec![],
-                    fallback_title: None,
-                })
-            }
+            LlmOutcome::Success {
+                response,
+                helpers,
+                tool_calls_made,
+            } => Ok(Self::processed_from_success(
+                enriched,
+                response,
+                helpers,
+                tool_calls_made,
+                memories_recalled,
+                urls_fetched,
+            )),
             LlmOutcome::RawFallback {
                 source_urls,
                 tool_results,
-            } => {
-                let text_preview: String = enriched.original.text.chars().take(120).collect();
-                info!(
-                    id = %enriched.original.id,
-                    text_preview = %text_preview,
-                    "LLM unavailable, using raw fallback"
-                );
-                let fallback_title =
-                    if enriched.original.text.is_empty() && !tool_results.is_empty() {
-                        let context = tool_results
-                            .iter()
-                            .map(|(_, t)| t.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n\n");
-                        self.llm
-                            .complete_text(
-                                "Generate a concise 5-word title for this content. \
-                                 Reply with only the title, no punctuation.",
-                                &context,
-                            )
-                            .await
-                    } else {
-                        None
-                    };
-                Ok(ProcessedMessage {
+                helpers,
+                tool_calls_made,
+            } => Ok(self
+                .processed_from_raw_fallback(
                     enriched,
-                    llm_response: None,
-                    fallback_source_urls: source_urls,
-                    fallback_tool_results: tool_results,
-                    fallback_title,
-                })
-            }
+                    RawFallbackParts {
+                        source_urls,
+                        tool_results,
+                        helpers,
+                        tool_calls_made,
+                    },
+                    memories_recalled,
+                    urls_fetched,
+                )
+                .await),
             LlmOutcome::Discard => {
                 info!(id = %enriched.original.id, "Message discarded by LLM fallback policy");
                 Err(InboxError::Pipeline(
@@ -441,6 +422,112 @@ impl Pipeline {
             }
         }
     }
+
+    fn processed_from_success(
+        enriched: EnrichedMessage,
+        response: crate::message::LlmResponse,
+        helpers: Vec<String>,
+        tool_calls_made: usize,
+        memories_recalled: usize,
+        urls_fetched: usize,
+    ) -> ProcessedMessage {
+        info!(
+            id = %enriched.original.id,
+            title = %response.title,
+            tags = ?response.tags,
+            backend = %response.produced_by,
+            helper_count = helpers.len(),
+            tool_calls = tool_calls_made,
+            memories_recalled,
+            "LLM processing succeeded"
+        );
+        let enrichment = crate::message::EnrichmentMetadata {
+            helpers,
+            memories_recalled,
+            urls_fetched,
+            tool_calls_made,
+        };
+        ProcessedMessage {
+            enriched,
+            llm_response: Some(response),
+            fallback_source_urls: vec![],
+            fallback_tool_results: vec![],
+            fallback_title: None,
+            enrichment,
+        }
+    }
+
+    async fn processed_from_raw_fallback(
+        &self,
+        enriched: EnrichedMessage,
+        parts: RawFallbackParts,
+        memories_recalled: usize,
+        urls_fetched: usize,
+    ) -> ProcessedMessage {
+        let RawFallbackParts {
+            source_urls,
+            tool_results,
+            mut helpers,
+            tool_calls_made,
+        } = parts;
+        let text_preview: String = enriched.original.text.chars().take(120).collect();
+        info!(
+            id = %enriched.original.id,
+            text_preview = %text_preview,
+            tool_calls = tool_calls_made,
+            memories_recalled,
+            "LLM unavailable, using raw fallback"
+        );
+        let fallback_title = if enriched.original.text.is_empty() && !tool_results.is_empty() {
+            let context = tool_results
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            match self
+                .llm
+                .complete_text(
+                    "Generate a concise 5-word title for this content. \
+                     Reply with only the title, no punctuation.",
+                    &context,
+                )
+                .await
+            {
+                Some((title, produced_by)) => {
+                    if !produced_by.is_empty() && !helpers.contains(&produced_by) {
+                        helpers.push(produced_by);
+                    }
+                    Some(title)
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let enrichment = crate::message::EnrichmentMetadata {
+            helpers,
+            memories_recalled,
+            urls_fetched,
+            tool_calls_made,
+        };
+        ProcessedMessage {
+            enriched,
+            llm_response: None,
+            fallback_source_urls: source_urls,
+            fallback_tool_results: tool_results,
+            fallback_title,
+            enrichment,
+        }
+    }
+}
+
+/// Grouped args for `processed_from_raw_fallback` — keeps the clippy
+/// `too_many_arguments` lint happy without sacrificing clarity.
+struct RawFallbackParts {
+    source_urls: Vec<String>,
+    tool_results: Vec<(String, String)>,
+    helpers: Vec<String>,
+    tool_calls_made: usize,
 }
 
 fn host_matches_skip_domain(host: &str, skip_domain: &str) -> bool {
@@ -464,9 +551,11 @@ fn host_matches_skip_domain(host: &str, skip_domain: &str) -> bool {
 }
 
 impl Pipeline {
-    async fn preload_memory_context(&self, enriched: &EnrichedMessage) -> String {
+    /// Returns the formatted context string and the number of memories that
+    /// were recalled (for observability in the org entry drawer).
+    async fn preload_memory_context(&self, enriched: &EnrichedMessage) -> (String, usize) {
         let Some(ref store) = self.memory_store else {
-            return String::new();
+            return (String::new(), 0);
         };
 
         let ctx = context_preload::preload_context(
@@ -478,6 +567,8 @@ impl Pipeline {
         )
         .await;
 
+        let recalled = ctx.memories.len();
+
         if !ctx.memories.is_empty() {
             let keys: Vec<String> = ctx.memories.iter().map(|m| m.key.clone()).collect();
             let source = enriched.original.source_name();
@@ -486,7 +577,7 @@ impl Pipeline {
                 .await;
         }
 
-        context_preload::format_preloaded_context(&ctx)
+        (context_preload::format_preloaded_context(&ctx), recalled)
     }
 
     fn build_llm_guidance(&self, enriched: &EnrichedMessage, preloaded_context: &str) -> String {

@@ -121,7 +121,7 @@ async fn chain_returns_success() {
     let cfg = crate::test_helpers::no_llm_config();
     let req = LlmRequest::from_enriched(&enriched, &cfg, std::path::Path::new("/tmp"), "", false);
     let outcome = chain.complete(req).await;
-    assert!(matches!(outcome, LlmOutcome::Success(_)));
+    assert!(matches!(outcome, LlmOutcome::Success { .. }));
 }
 
 #[tokio::test]

@@ -9,7 +9,11 @@
 {% endif %}{% if !urls.is_empty() %}:URLS:     {% for u in urls %}{{ u }} {% endfor %}
 {% endif %}{% if !attachments.is_empty() %}:ATTACHMENTS: {{ self.attachment_names() }}
 {% endif %}:ENRICHED_BY: {{ llm_backend }}
-:END:
+{% if !enrichment_helpers.is_empty() %}:ENRICHED_WITH: {{ self.enrichment_helpers_str() }}
+{% endif %}{% if memories_recalled > 0 %}:MEMORIES_RECALLED: {{ memories_recalled }}
+{% endif %}{% if urls_fetched > 0 %}:URLS_FETCHED: {{ urls_fetched }}
+{% endif %}{% if tool_calls_made > 0 %}:TOOL_CALLS: {{ tool_calls_made }}
+{% endif %}:END:
 
 {{ summary }}
 {% if let Some(exc) = excerpt %}

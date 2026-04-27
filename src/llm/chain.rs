@@ -62,6 +62,10 @@ impl LlmChain {
         // Fallback state persists across all backend+attempt loops.
         let mut fallback_source_urls: Vec<String> = Vec::new();
         let mut fallback_tool_results: Vec<(String, String)> = Vec::new();
+        // Helper models consulted via llm_call sub-requests (deduped, ordered by first use).
+        let mut helpers: Vec<String> = Vec::new();
+        // Total tool-call executions across every backend attempt in this run.
+        let mut tool_calls_made: usize = 0;
 
         for backend in &self.backends {
             for attempt in 0..backend.retries() {
@@ -135,10 +139,11 @@ impl LlmChain {
                                 "backend" => backend.name().to_owned()
                             )
                             .record(start.elapsed().as_secs_f64());
-                            return LlmOutcome::Success(append_missing_source_links(
-                                resp,
-                                &tool_source_urls,
-                            ));
+                            return LlmOutcome::Success {
+                                response: append_missing_source_links(resp, &tool_source_urls),
+                                helpers,
+                                tool_calls_made,
+                            };
                         }
                         Ok(LlmCompletion::ToolCalls(calls)) => {
                             // Partition: activate_thinking is handled internally
@@ -204,12 +209,14 @@ impl LlmChain {
                                             );
                                             metrics::counter!(crate::telemetry::LLM_REQUESTS, "backend" => backend.name().to_owned(), "status" => "success").increment(1);
                                             metrics::histogram!(crate::telemetry::LLM_DURATION, "backend" => backend.name().to_owned()).record(start.elapsed().as_secs_f64());
-                                            return LlmOutcome::Success(
-                                                append_missing_source_links(
+                                            return LlmOutcome::Success {
+                                                response: append_missing_source_links(
                                                     resp,
                                                     &tool_source_urls,
                                                 ),
-                                            );
+                                                helpers,
+                                                tool_calls_made,
+                                            };
                                         }
                                         _ => {
                                             warn!(
@@ -225,13 +232,19 @@ impl LlmChain {
                                 let llm_call_names: Vec<String> =
                                     llm_calls.iter().map(|c| c.name.clone()).collect();
                                 for llm_call in &llm_calls {
-                                    let result =
+                                    let (result, sub_produced_by) =
                                         self.execute_llm_tool_call(llm_call, &req_attempt).await;
                                     let _ = write!(
                                         req_attempt.user_content,
                                         "\n\ntool `llm_call` result: {result}"
                                     );
                                     accumulated_tool_results.push(("llm_call".to_owned(), result));
+                                    if !sub_produced_by.is_empty()
+                                        && !helpers.contains(&sub_produced_by)
+                                    {
+                                        helpers.push(sub_produced_by);
+                                    }
+                                    tool_calls_made += 1;
                                 }
                                 turns += 1;
                                 if let Some(tx) = &req_attempt.progress_tx {
@@ -286,10 +299,14 @@ impl LlmChain {
                                         );
                                         metrics::counter!(crate::telemetry::LLM_REQUESTS, "backend" => backend.name().to_owned(), "status" => "success").increment(1);
                                         metrics::histogram!(crate::telemetry::LLM_DURATION, "backend" => backend.name().to_owned()).record(start.elapsed().as_secs_f64());
-                                        return LlmOutcome::Success(append_missing_source_links(
-                                            resp,
-                                            &tool_source_urls,
-                                        ));
+                                        return LlmOutcome::Success {
+                                            response: append_missing_source_links(
+                                                resp,
+                                                &tool_source_urls,
+                                            ),
+                                            helpers,
+                                            tool_calls_made,
+                                        };
                                     }
                                     _ => {
                                         warn!(
@@ -315,6 +332,7 @@ impl LlmChain {
 
                             let tool_names: Vec<String> =
                                 calls.iter().map(|c| c.name.clone()).collect();
+                            tool_calls_made += calls.len();
                             let output = execute_tool_calls(
                                 executor,
                                 &calls,
@@ -389,6 +407,8 @@ impl LlmChain {
             FallbackMode::Raw => LlmOutcome::RawFallback {
                 source_urls: fallback_source_urls,
                 tool_results: fallback_tool_results,
+                helpers,
+                tool_calls_made,
             },
             FallbackMode::Discard => LlmOutcome::Discard,
         }
@@ -400,15 +420,16 @@ impl LlmChain {
     }
 
     /// One-shot text completion with no tools and no JSON structure.
-    /// Returns `None` if all backends fail or return empty text.
-    pub async fn complete_text(&self, system: &str, user: &str) -> Option<String> {
+    /// Returns the text and the `backend:model` identifier that produced it,
+    /// or `None` if all backends fail or return empty text.
+    pub async fn complete_text(&self, system: &str, user: &str) -> Option<(String, String)> {
         let req = LlmRequest::simple(system, user);
         for backend in &self.backends {
             match backend.complete_raw(req.clone()).await {
-                Ok(text) => {
+                Ok((text, produced_by)) => {
                     let trimmed = text.trim().to_owned();
                     if !trimmed.is_empty() {
-                        return Some(trimmed);
+                        return Some((trimmed, produced_by));
                     }
                 }
                 Err(e) => {
@@ -419,7 +440,13 @@ impl LlmChain {
         None
     }
 
-    async fn execute_llm_tool_call(&self, call: &ToolCall, parent_req: &LlmRequest) -> String {
+    /// Returns the sub-call's textual result together with the `backend:model`
+    /// that produced it (empty string when all backends failed).
+    async fn execute_llm_tool_call(
+        &self,
+        call: &ToolCall,
+        parent_req: &LlmRequest,
+    ) -> (String, String) {
         let system_prompt = call.arguments["system_prompt"]
             .as_str()
             .unwrap_or("You are a helpful assistant.")
@@ -447,7 +474,7 @@ impl LlmChain {
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 }
                 match backend.complete_raw(sub_req.clone()).await {
-                    Ok(text) => return text,
+                    Ok(pair) => return pair,
                     Err(e) => {
                         warn!(
                             ?e,
@@ -460,6 +487,9 @@ impl LlmChain {
             }
         }
 
-        "llm_call failed: all backends exhausted".into()
+        (
+            "llm_call failed: all backends exhausted".into(),
+            String::new(),
+        )
     }
 }

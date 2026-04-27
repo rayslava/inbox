@@ -391,7 +391,8 @@ impl LlmClient for OllamaClient {
             "Ollama returned assistant text"
         );
 
-        parse_llm_json_response(&chat.message.content, "ollama").map(LlmCompletion::Message)
+        let produced_by = format!("ollama:{}", self.model);
+        parse_llm_json_response(&chat.message.content, &produced_by).map(LlmCompletion::Message)
     }
 }
 

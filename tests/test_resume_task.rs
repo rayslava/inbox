@@ -211,7 +211,9 @@ async fn retry_item_exhausts_and_flips_tag_to_failed() {
 /// constructed `ProcessedMessage`. The store's `insert` signature requires a
 /// real `ProcessedMessage`, so assemble one from the pending-item fields.
 async fn seed_pending(store: &PendingStore, item: &PendingItem) {
-    use inbox::message::{EnrichedMessage, IncomingMessage, MessageSource, ProcessedMessage};
+    use inbox::message::{
+        EnrichedMessage, EnrichmentMetadata, IncomingMessage, MessageSource, ProcessedMessage,
+    };
 
     let mut incoming = IncomingMessage::with_id(
         item.id,
@@ -231,6 +233,7 @@ async fn seed_pending(store: &PendingStore, item: &PendingItem) {
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: item.fallback_title.clone(),
+        enrichment: EnrichmentMetadata::default(),
     };
     store.insert(item.id, &processed, None).await.unwrap();
 
