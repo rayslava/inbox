@@ -70,7 +70,24 @@ impl FreeRouterClient {
 
         let prefs = PoolPreferences::from(cfg);
         let list_timeout = Duration::from_secs(cfg.timeout_secs);
-        let initial = initial_pool(&client, &cfg.api_url, list_timeout, prefs);
+        let (initial, defer_refresh) = initial_pool(&client, &cfg.api_url, list_timeout, prefs);
+
+        let state = Arc::new(RwLock::new(PoolStateWithStamp {
+            pool: initial,
+            last_refreshed: Instant::now(),
+        }));
+
+        // Off the multi-thread runtime the synchronous fetch is skipped (it would
+        // panic via `block_in_place`), so fill the degraded seed in the
+        // background instead of blocking construction.
+        if defer_refresh && let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let state = Arc::clone(&state);
+            let client = client.clone();
+            let api_url = cfg.api_url.clone();
+            handle.spawn(async move {
+                refresh_into(&state, &client, &api_url, list_timeout, prefs).await;
+            });
+        }
 
         Ok(Self {
             api_url: cfg.api_url.clone(),
@@ -83,10 +100,7 @@ impl FreeRouterClient {
             timeout: Duration::from_secs(cfg.timeout_secs),
             list_timeout,
             prefs,
-            state: Arc::new(RwLock::new(PoolStateWithStamp {
-                pool: initial,
-                last_refreshed: Instant::now(),
-            })),
+            state,
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
         })
@@ -160,62 +174,102 @@ impl FreeRouterClient {
     /// `openrouter/free` fallback so the backend keeps serving and can later
     /// self-heal on the next successful refresh.
     async fn refresh_now(&self) {
-        match fetch_pool(&self.client, &self.api_url, self.list_timeout, self.prefs).await {
-            Ok(new_pool) if !new_pool.is_empty() => {
-                info!(
-                    tool_models = new_pool.tool_models.len(),
-                    general_models = new_pool.general_models.len(),
-                    "Free-router pool refreshed"
-                );
-                let mut guard = self.state.write().await;
-                guard.pool = new_pool;
-                guard.last_refreshed = Instant::now();
+        refresh_into(
+            &self.state,
+            &self.client,
+            &self.api_url,
+            self.list_timeout,
+            self.prefs,
+        )
+        .await;
+    }
+}
+
+/// Fetch a fresh pool and install it into `state`, ignoring the refresh
+/// interval. Shared by `refresh_now` and the deferred startup refresh.
+///
+/// An empty fetch result never replaces a non-empty pool — a transient
+/// top-models hiccup (zero healthy models for a moment) must not blank the
+/// backend. If the current pool is *also* empty we seed the degraded
+/// `openrouter/free` fallback so the backend keeps serving and can later
+/// self-heal on the next successful refresh.
+async fn refresh_into(
+    state: &RwLock<PoolStateWithStamp>,
+    client: &reqwest::Client,
+    api_url: &str,
+    list_timeout: Duration,
+    prefs: PoolPreferences,
+) {
+    match fetch_pool(client, api_url, list_timeout, prefs).await {
+        Ok(new_pool) if !new_pool.is_empty() => {
+            info!(
+                tool_models = new_pool.tool_models.len(),
+                general_models = new_pool.general_models.len(),
+                "Free-router pool refreshed"
+            );
+            let mut guard = state.write().await;
+            guard.pool = new_pool;
+            guard.last_refreshed = Instant::now();
+        }
+        Ok(_) => {
+            warn!("Free-router refresh returned no healthy models; keeping current pool");
+            let mut guard = state.write().await;
+            if guard.pool.is_empty() {
+                warn!("Free-router pool empty after refresh; seeding degraded fallback");
+                guard.pool = PoolState::degraded_fallback();
             }
-            Ok(_) => {
-                warn!("Free-router refresh returned no healthy models; keeping current pool");
-                let mut guard = self.state.write().await;
-                if guard.pool.is_empty() {
-                    warn!("Free-router pool empty after refresh; seeding degraded fallback");
-                    guard.pool = PoolState::degraded_fallback();
-                }
-                guard.last_refreshed = Instant::now();
+            guard.last_refreshed = Instant::now();
+        }
+        Err(e) => {
+            warn!(?e, "Free-router pool refresh failed; keeping current pool");
+            let mut guard = state.write().await;
+            if guard.pool.is_empty() {
+                warn!("Free-router pool empty and refresh failed; seeding degraded fallback");
+                guard.pool = PoolState::degraded_fallback();
             }
-            Err(e) => {
-                warn!(?e, "Free-router pool refresh failed; keeping current pool");
-                let mut guard = self.state.write().await;
-                if guard.pool.is_empty() {
-                    warn!("Free-router pool empty and refresh failed; seeding degraded fallback");
-                    guard.pool = PoolState::degraded_fallback();
-                }
-                guard.last_refreshed = Instant::now();
-            }
+            guard.last_refreshed = Instant::now();
         }
     }
 }
 
-/// Fetch the pool synchronously at startup by blocking on the current runtime.
-/// Degraded fallback seeds `openrouter/free` if the fetch fails.
+/// Decide the startup pool. Returns the seed plus whether the caller should
+/// spawn a background refresh to fill it.
+///
+/// The synchronous list fetch relies on `block_in_place`, which panics on a
+/// current-thread runtime; it is therefore done inline only on a multi-thread
+/// runtime. Off that (current-thread runtimes, e.g. some tests), we seed the
+/// degraded `openrouter/free` fallback and signal the caller to refresh it in
+/// the background. With no runtime at all we cannot fetch or spawn, so the
+/// degraded seed stands until the first `complete()` triggers a refresh.
 fn initial_pool(
     client: &reqwest::Client,
     api_url: &str,
     timeout: Duration,
     prefs: PoolPreferences,
-) -> PoolState {
-    let fut = fetch_pool(client, api_url, timeout, prefs);
-    let outcome = tokio::runtime::Handle::try_current()
-        .ok()
-        .map(|h| tokio::task::block_in_place(|| h.block_on(fut)));
+) -> (PoolState, bool) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        warn!("No tokio runtime available; seeding free-router with degraded fallback");
+        return (PoolState::degraded_fallback(), false);
+    };
 
-    match outcome {
-        Some(Ok(pool)) if !pool.is_empty() => {
+    if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
+        warn!(
+            "Free-router init off the multi-thread runtime; deferring pool fetch to background refresh"
+        );
+        return (PoolState::degraded_fallback(), true);
+    }
+
+    let fut = fetch_pool(client, api_url, timeout, prefs);
+    match tokio::task::block_in_place(|| handle.block_on(fut)) {
+        Ok(pool) if !pool.is_empty() => {
             info!(
                 tool_models = pool.tool_models.len(),
                 general_models = pool.general_models.len(),
                 "Free-router pool initialised"
             );
-            pool
+            (pool, false)
         }
-        Some(Ok(_)) => {
+        Ok(_) => {
             warn!(
                 "Free-router top-models list returned no healthy models; using degraded fallback"
             );
@@ -225,9 +279,9 @@ fn initial_pool(
                 "status" => "degraded",
             )
             .increment(1);
-            PoolState::degraded_fallback()
+            (PoolState::degraded_fallback(), false)
         }
-        Some(Err(e)) => {
+        Err(e) => {
             warn!(
                 ?e,
                 "Free-router initial list fetch failed; using degraded fallback"
@@ -238,11 +292,7 @@ fn initial_pool(
                 "status" => "degraded",
             )
             .increment(1);
-            PoolState::degraded_fallback()
-        }
-        None => {
-            warn!("No tokio runtime available; seeding free-router with degraded fallback");
-            PoolState::degraded_fallback()
+            (PoolState::degraded_fallback(), false)
         }
     }
 }

@@ -318,6 +318,19 @@ async fn degraded_bootstrap_when_list_unreachable() {
     assert_eq!(general_candidates.len(), 1);
 }
 
+#[tokio::test] // current-thread runtime: block_in_place would panic here
+async fn from_config_does_not_panic_on_current_thread_runtime() {
+    // The synchronous startup fetch must be skipped off the multi-thread
+    // runtime (block_in_place panics there). from_config should instead seed the
+    // degraded fallback and return a usable client without panicking.
+    let cfg = backend_cfg("http://unreachable.invalid/", "http://unused.invalid", 1);
+    let client = FreeRouterClient::from_config(&cfg).expect("from_config must not panic");
+
+    let general = client.candidate_models(false).await;
+    assert_eq!(general.len(), 1);
+    assert_eq!(general[0].id, FALLBACK_MODEL_ID);
+}
+
 #[tokio::test]
 async fn hard_error_short_circuits_retries() {
     let chat = MockServer::start().await;
