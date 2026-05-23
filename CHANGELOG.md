@@ -1,3 +1,8 @@
+## [0.3.1] - 2026-05-23
+
+### 🐛 Bug Fixes
+
+- *(deps)* Pin rand to 0.10 to stop resolver picking rand 0.8
 ## [0.3.0] - 2026-05-23
 
 ### 🐛 Bug Fixes
@@ -18,6 +23,7 @@
 ### ⚙️ Miscellaneous Tasks
 
 - *(telegram)* Test the api url before connection
+- *(release)* 0.3.0
 ## [0.2.0] - 2026-04-27
 
 ### 🚀 Features
