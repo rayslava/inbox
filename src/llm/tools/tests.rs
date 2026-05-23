@@ -301,6 +301,77 @@ fn from_tooling_builds_executor() {
 }
 
 #[tokio::test]
+async fn execute_scrape_page_internal_returns_text() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string("<html><body><p>Hello scrape world</p></body></html>"),
+        )
+        .mount(&server)
+        .await;
+
+    let tools = vec![Tool {
+        name: "scrape_page".into(),
+        description: "scrape".into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Internal { timeout_secs: 5 },
+    }];
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
+    let url = format!("{}/page", server.uri());
+    let result = executor
+        .execute(
+            "scrape_page",
+            &serde_json::json!({ "url": url }),
+            uuid::Uuid::new_v4(),
+            std::path::Path::new("/tmp"),
+            "",
+        )
+        .await
+        .unwrap();
+    assert!(result.text().contains("Hello scrape world"));
+}
+
+#[tokio::test]
+async fn execute_download_file_internal_saves_attachment() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/file.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/octet-stream")
+                .set_body_bytes(vec![1u8, 2, 3, 4]),
+        )
+        .mount(&server)
+        .await;
+
+    let tools = vec![Tool {
+        name: "download_file".into(),
+        description: "download".into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Internal { timeout_secs: 5 },
+    }];
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("{}/file.bin", server.uri());
+    let result = executor
+        .execute(
+            "download_file",
+            &serde_json::json!({ "url": url }),
+            uuid::Uuid::new_v4(),
+            dir.path(),
+            "",
+        )
+        .await
+        .unwrap();
+    assert!(result.text().contains("Downloaded"));
+}
+
+#[tokio::test]
 async fn internal_scrape_respects_timeout() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

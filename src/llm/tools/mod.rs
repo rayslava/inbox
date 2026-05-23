@@ -14,6 +14,8 @@ mod tests;
 #[cfg(test)]
 mod tests_runners;
 #[cfg(test)]
+mod tests_search_live;
+#[cfg(test)]
 mod tests_search_memory;
 
 // ── Tool definition ───────────────────────────────────────────────────────────

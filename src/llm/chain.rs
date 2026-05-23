@@ -8,6 +8,8 @@ use crate::error::InboxError;
 use super::chain_tools::{append_missing_source_links, execute_tool_calls, retry_inner};
 
 mod methods;
+#[cfg(test)]
+mod methods_tests;
 
 use super::{
     FallbackMode, LlmClient, LlmCompletion, LlmOutcome, LlmRequest, LlmTurnProgress,
