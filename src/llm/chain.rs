@@ -194,47 +194,23 @@ impl LlmChain {
                                         max_turns = self.max_tool_turns,
                                         "Max tool turns reached during llm_call"
                                     );
-                                    warn!(
-                                        backend = backend.name(),
-                                        max_turns = self.max_tool_turns,
-                                        "Max tool turns reached, attempting forced summary"
-                                    );
-                                    let mut force_req = req_attempt.clone();
-                                    force_req.tool_definitions = vec![];
-                                    let _ = write!(
-                                        force_req.user_content,
-                                        "\n\n[Tool call limit reached. Based on all information gathered above, produce your final JSON response now without calling any more tools.]"
-                                    );
-                                    match retry_inner(
-                                        backend.as_ref(),
-                                        &force_req,
-                                        self.inner_retries,
-                                    )
-                                    .await
+                                    if let Some(resp) = self
+                                        .force_summary_pass(
+                                            backend.as_ref(),
+                                            &req_attempt,
+                                            turns,
+                                            start,
+                                        )
+                                        .await
                                     {
-                                        Ok(LlmCompletion::Message(resp)) => {
-                                            info!(
-                                                backend = backend.name(),
-                                                turns,
-                                                "Forced summary pass succeeded after max tool turns"
-                                            );
-                                            metrics::counter!(crate::telemetry::LLM_REQUESTS, "backend" => backend.name().to_owned(), "status" => "success").increment(1);
-                                            metrics::histogram!(crate::telemetry::LLM_DURATION, "backend" => backend.name().to_owned()).record(start.elapsed().as_secs_f64());
-                                            return LlmOutcome::Success {
-                                                response: append_missing_source_links(
-                                                    resp,
-                                                    &tool_source_urls,
-                                                ),
-                                                helpers,
-                                                tool_calls_made,
-                                            };
-                                        }
-                                        _ => {
-                                            warn!(
-                                                backend = backend.name(),
-                                                "Forced summary pass failed, falling through to next attempt"
-                                            );
-                                        }
+                                        return LlmOutcome::Success {
+                                            response: append_missing_source_links(
+                                                resp,
+                                                &tool_source_urls,
+                                            ),
+                                            helpers,
+                                            tool_calls_made,
+                                        };
                                     }
                                     fallback_source_urls.clone_from(&tool_source_urls);
                                     fallback_tool_results.clone_from(&accumulated_tool_results);
@@ -265,13 +241,7 @@ impl LlmChain {
                                         tools_called: llm_call_names,
                                     });
                                 }
-                                let remaining = self.max_tool_turns.saturating_sub(turns);
-                                if remaining > 0 && remaining <= self.max_tool_turns / 2 {
-                                    let _ = write!(
-                                        req_attempt.user_content,
-                                        "\n\n[Tool budget: {remaining} turn(s) remaining. Prefer to consolidate and produce a final answer if you have enough information.]"
-                                    );
-                                }
+                                self.append_budget_hint(&mut req_attempt, turns);
                                 if calls.is_empty() {
                                     continue;
                                 }
@@ -288,45 +258,24 @@ impl LlmChain {
                             }
 
                             if turns >= self.max_tool_turns {
-                                warn!(
-                                    backend = backend.name(),
-                                    max_turns = self.max_tool_turns,
-                                    "Max tool turns reached, attempting forced summary"
-                                );
-                                let mut force_req = req_attempt.clone();
-                                force_req.tool_definitions = vec![];
-                                let _ = write!(
-                                    force_req.user_content,
-                                    "\n\n[Tool call limit reached. Based on all information gathered above, produce your final JSON response now without calling any more tools.]"
-                                );
-                                match retry_inner(backend.as_ref(), &force_req, self.inner_retries)
+                                if let Some(resp) = self
+                                    .force_summary_pass(
+                                        backend.as_ref(),
+                                        &req_attempt,
+                                        turns,
+                                        start,
+                                    )
                                     .await
                                 {
-                                    Ok(LlmCompletion::Message(resp)) => {
-                                        info!(
-                                            backend = backend.name(),
-                                            turns,
-                                            "Forced summary pass succeeded after max tool turns"
-                                        );
-                                        metrics::counter!(crate::telemetry::LLM_REQUESTS, "backend" => backend.name().to_owned(), "status" => "success").increment(1);
-                                        metrics::histogram!(crate::telemetry::LLM_DURATION, "backend" => backend.name().to_owned()).record(start.elapsed().as_secs_f64());
-                                        return LlmOutcome::Success {
-                                            response: append_missing_source_links(
-                                                resp,
-                                                &tool_source_urls,
-                                            ),
-                                            helpers,
-                                            tool_calls_made,
-                                        };
-                                    }
-                                    _ => {
-                                        warn!(
-                                            backend = backend.name(),
-                                            "Forced summary pass failed, falling through to next attempt"
-                                        );
-                                    }
+                                    return LlmOutcome::Success {
+                                        response: append_missing_source_links(
+                                            resp,
+                                            &tool_source_urls,
+                                        ),
+                                        helpers,
+                                        tool_calls_made,
+                                    };
                                 }
-                                // Update fallback before breaking
                                 fallback_source_urls.clone_from(&tool_source_urls);
                                 fallback_tool_results.clone_from(&accumulated_tool_results);
                                 break;
@@ -370,13 +319,7 @@ impl LlmChain {
                                     tools_called: tool_names,
                                 });
                             }
-                            let remaining = self.max_tool_turns.saturating_sub(turns);
-                            if remaining > 0 && remaining <= self.max_tool_turns / 2 {
-                                let _ = write!(
-                                    req_attempt.user_content,
-                                    "\n\n[Tool budget: {remaining} turn(s) remaining. Prefer to consolidate and produce a final answer if you have enough information.]"
-                                );
-                            }
+                            self.append_budget_hint(&mut req_attempt, turns);
                         }
                         Err(e) => {
                             let elapsed_ms = start.elapsed().as_millis();
@@ -433,6 +376,60 @@ impl LlmChain {
                 tool_calls_made,
             },
             FallbackMode::Discard => LlmOutcome::Discard,
+        }
+    }
+
+    /// Final pass once the tool-turn budget is exhausted: re-issue the request
+    /// with tools disabled and instruct the model to emit its final JSON from
+    /// the context gathered so far. Returns the parsed response on success, or
+    /// `None` if it still fails (the caller then applies the fallback policy).
+    async fn force_summary_pass(
+        &self,
+        backend: &(dyn LlmClient + 'static),
+        req_attempt: &LlmRequest,
+        turns: usize,
+        start: std::time::Instant,
+    ) -> Option<crate::message::LlmResponse> {
+        warn!(
+            backend = backend.name(),
+            max_turns = self.max_tool_turns,
+            "Max tool turns reached, attempting forced summary"
+        );
+        let mut force_req = req_attempt.clone();
+        force_req.tool_definitions = vec![];
+        let _ = write!(
+            force_req.user_content,
+            "\n\n[Tool call limit reached. Based on all information gathered above, produce your final JSON response now without calling any more tools.]"
+        );
+        if let Ok(LlmCompletion::Message(resp)) =
+            retry_inner(backend, &force_req, self.inner_retries).await
+        {
+            info!(
+                backend = backend.name(),
+                turns, "Forced summary pass succeeded after max tool turns"
+            );
+            metrics::counter!(crate::telemetry::LLM_REQUESTS, "backend" => backend.name().to_owned(), "status" => "success").increment(1);
+            metrics::histogram!(crate::telemetry::LLM_DURATION, "backend" => backend.name().to_owned()).record(start.elapsed().as_secs_f64());
+            Some(resp)
+        } else {
+            warn!(
+                backend = backend.name(),
+                "Forced summary pass failed, falling through to next attempt"
+            );
+            None
+        }
+    }
+
+    /// Append a "tool budget remaining" nudge once the loop is at or past the
+    /// halfway point of `max_tool_turns`, steering the model toward consolidating
+    /// rather than spending its last turns on more tool calls.
+    fn append_budget_hint(&self, req_attempt: &mut LlmRequest, turns: usize) {
+        let remaining = self.max_tool_turns.saturating_sub(turns);
+        if remaining > 0 && remaining <= self.max_tool_turns / 2 {
+            let _ = write!(
+                req_attempt.user_content,
+                "\n\n[Tool budget: {remaining} turn(s) remaining. Prefer to consolidate and produce a final answer if you have enough information.]"
+            );
         }
     }
 

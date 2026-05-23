@@ -41,13 +41,12 @@ impl TryFrom<u8> for FeedbackRating {
 
 impl std::fmt::Display for FeedbackRating {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let stars = match self.0 {
-            1 => "\u{2b50}",
-            2 => "\u{2b50}\u{2b50}",
-            3 => "\u{2b50}\u{2b50}\u{2b50}",
-            _ => unreachable!(),
-        };
-        f.write_str(stars)
+        // `new` constrains the rating to 1–3, so this renders 1–3 stars; the
+        // loop avoids a panicking `unreachable!` arm if that invariant ever drifts.
+        for _ in 0..self.0 {
+            f.write_str("\u{2b50}")?;
+        }
+        Ok(())
     }
 }
 

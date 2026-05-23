@@ -264,6 +264,17 @@ pub(crate) fn llm_call_tool_def() -> serde_json::Value {
     })
 }
 
+/// Exponential backoff before a retry attempt. `attempt` is the loop counter
+/// (the first retry is `attempt == 1`); returns `500ms · 2^(attempt-1)`,
+/// saturating so a large attempt count can never overflow. Shared by every LLM
+/// retry loop so the schedule stays identical across backends.
+#[must_use]
+pub(crate) fn retry_backoff(attempt: u32) -> std::time::Duration {
+    let exp = attempt.saturating_sub(1);
+    let delay_ms = 500u64.saturating_mul(2u64.saturating_pow(exp));
+    std::time::Duration::from_millis(delay_ms)
+}
+
 // ── Builder ───────────────────────────────────────────────────────────────────
 
 mod builder;

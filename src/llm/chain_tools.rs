@@ -15,8 +15,7 @@ pub(super) async fn retry_inner(
     let mut last_err = InboxError::Llm("no attempts".into());
     for attempt in 0..=retries {
         if attempt > 0 {
-            let delay_ms = 500u64.saturating_mul(2u64.pow(attempt - 1));
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            tokio::time::sleep(super::retry_backoff(attempt)).await;
         }
         match backend.complete(req.clone()).await {
             Ok(c) => return Ok(c),

@@ -361,3 +361,20 @@ fn llm_request_ignores_non_image_attachments_for_vision() {
         "audio attachment should not produce vision images"
     );
 }
+
+#[test]
+fn retry_backoff_doubles_from_500ms() {
+    use std::time::Duration;
+    assert_eq!(super::retry_backoff(1), Duration::from_millis(500));
+    assert_eq!(super::retry_backoff(2), Duration::from_millis(1000));
+    assert_eq!(super::retry_backoff(3), Duration::from_millis(2000));
+}
+
+#[test]
+fn retry_backoff_saturates_without_overflow() {
+    // A pathologically large attempt count must saturate, not panic on overflow.
+    assert_eq!(
+        super::retry_backoff(u32::MAX),
+        std::time::Duration::from_millis(u64::MAX)
+    );
+}

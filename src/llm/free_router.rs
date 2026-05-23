@@ -277,10 +277,12 @@ impl LlmClient for FreeRouterClient {
 
     #[instrument(skip(self, req), fields(backend = "free_router"))]
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
-        let _permit = if let Some(sem) = &self.semaphore {
-            Some(sem.acquire().await.expect("semaphore closed"))
-        } else {
-            None
+        // `acquire` errors only if the semaphore is closed, which never happens
+        // here (we hold the `Arc` and never call `close`). Treat the impossible
+        // error as "no permit" and proceed rather than panicking.
+        let _permit = match &self.semaphore {
+            Some(sem) => sem.acquire().await.ok(),
+            None => None,
         };
 
         let needs_tools = !req.tool_definitions.is_empty();
@@ -391,8 +393,7 @@ impl FreeRouterClient {
         let mut last_err: Option<InboxError> = None;
         for attempt in 0..total_attempts {
             if attempt > 0 {
-                let delay_ms = 500u64.saturating_mul(2u64.saturating_pow(attempt - 1));
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                tokio::time::sleep(super::retry_backoff(attempt)).await;
             }
             let start = std::time::Instant::now();
             let result = call_chat_completion(

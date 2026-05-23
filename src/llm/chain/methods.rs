@@ -59,8 +59,7 @@ impl LlmChain {
         for backend in &self.backends {
             for attempt in 0..=self.inner_retries {
                 if attempt > 0 {
-                    let delay_ms = 500u64.saturating_mul(2u64.pow(attempt - 1));
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    tokio::time::sleep(super::super::retry_backoff(attempt)).await;
                 }
                 match backend.complete_raw(sub_req.clone()).await {
                     Ok(pair) => return pair,
