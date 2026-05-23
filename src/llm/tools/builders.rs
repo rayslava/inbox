@@ -1,11 +1,14 @@
 use crate::config::{ToolBackendConfig, ToolingConfig};
+use crate::error::InboxError;
 use crate::pipeline::url_fetcher::UrlFetcher;
 
 use super::{Tool, ToolExecutor};
 
 /// Build the default tool list used when tooling config is not customized.
-#[must_use]
-pub fn default_tools(fetcher: UrlFetcher) -> ToolExecutor {
+///
+/// # Errors
+/// Returns an error if the tool HTTP client cannot be built.
+pub fn default_tools(fetcher: UrlFetcher) -> Result<ToolExecutor, InboxError> {
     let tools = vec![
         Tool {
             name: "scrape_page".into(),
@@ -70,8 +73,14 @@ fn desc_or(cfg: &str, default: &str) -> String {
     }
 }
 
-#[must_use]
-pub fn from_tooling(tooling: &ToolingConfig, fetcher: UrlFetcher) -> ToolExecutor {
+/// Build a `ToolExecutor` from tooling configuration.
+///
+/// # Errors
+/// Returns an error if the tool HTTP client cannot be built.
+pub fn from_tooling(
+    tooling: &ToolingConfig,
+    fetcher: UrlFetcher,
+) -> Result<ToolExecutor, InboxError> {
     let scrape_desc = desc_or(
         &tooling.scrape_page.description,
         "Fetch and extract readable text from a web page URL",

@@ -160,7 +160,7 @@ fn make_test_pipeline(cfg: Config) -> Arc<Pipeline> {
     let llm = crate::test_helpers::mock_llm_chain(crate::test_helpers::default_llm_response());
     let writer = Arc::new(crate::output::NullWriter);
     let tracker = Arc::new(ProcessingTracker::new());
-    Arc::new(Pipeline::new(cfg, llm, writer, tracker, None, None))
+    Arc::new(Pipeline::new(cfg, llm, writer, tracker, None, None).expect("build pipeline"))
 }
 
 fn test_enriched(text: &str, urls: Vec<url::Url>, user_tags: Vec<String>) -> EnrichedMessage {
@@ -255,14 +255,10 @@ async fn fallback_item_inserted_into_pending_store() {
     let failing_llm = crate::test_helpers::always_fail_llm_chain();
     let writer = Arc::new(crate::output::NullWriter);
     let tracker = Arc::new(ProcessingTracker::new());
-    let pipeline = Arc::new(Pipeline::new(
-        cfg,
-        failing_llm,
-        writer,
-        tracker,
-        None,
-        Some(store.clone()),
-    ));
+    let pipeline = Arc::new(
+        Pipeline::new(cfg, failing_llm, writer, tracker, None, Some(store.clone()))
+            .expect("build pipeline"),
+    );
 
     let enriched = test_enriched("test pending insertion", vec![], vec![]);
     // run_llm produces a ProcessedMessage; if LLM fails it has llm_response=None.
@@ -313,7 +309,7 @@ async fn process_success_path_writes_and_marks_done() {
     let llm = crate::test_helpers::mock_llm_chain(crate::test_helpers::default_llm_response());
     let writer = Arc::new(crate::output::NullWriter);
     let tracker = Arc::new(ProcessingTracker::new());
-    let pipeline = Pipeline::new(cfg, llm, writer, tracker, None, None);
+    let pipeline = Pipeline::new(cfg, llm, writer, tracker, None, None).expect("build pipeline");
 
     pipeline.process(make_msg("hello world")).await.unwrap();
 }
@@ -354,7 +350,8 @@ async fn process_extracts_user_tags_from_text() {
         tracker,
         None,
         None,
-    );
+    )
+    .expect("build pipeline");
 
     pipeline
         .process(make_msg("check this out #rust #inbox"))
@@ -390,7 +387,8 @@ async fn process_persists_pending_item_on_raw_fallback() {
         tracker,
         None,
         Some(Arc::clone(&store)),
-    );
+    )
+    .expect("build pipeline");
 
     pipeline
         .process(make_msg("this message should be pending"))
@@ -419,7 +417,8 @@ async fn process_propagates_error_on_discard_fallback() {
     let failing_llm = crate::test_helpers::failing_llm_chain("simulated LLM failure");
     let writer = Arc::new(crate::output::NullWriter);
     let tracker = Arc::new(ProcessingTracker::new());
-    let pipeline = Pipeline::new(cfg, failing_llm, writer, tracker, None, None);
+    let pipeline =
+        Pipeline::new(cfg, failing_llm, writer, tracker, None, None).expect("build pipeline");
 
     let result = pipeline.process(make_msg("drop me")).await;
     assert!(result.is_err(), "Discard fallback must surface as Err");
@@ -439,7 +438,8 @@ async fn run_llm_raw_fallback_with_existing_text_skips_title_regeneration() {
     let failing_llm = crate::test_helpers::always_fail_llm_chain();
     let writer = Arc::new(crate::output::NullWriter);
     let tracker = Arc::new(ProcessingTracker::new());
-    let pipeline = Pipeline::new(cfg, failing_llm, writer, tracker, None, None);
+    let pipeline =
+        Pipeline::new(cfg, failing_llm, writer, tracker, None, None).expect("build pipeline");
 
     let enriched = enriched_from(make_msg("plain text, not empty"));
     let processed = pipeline.run_llm(enriched).await.unwrap();

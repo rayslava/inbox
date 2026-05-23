@@ -52,6 +52,7 @@ pub(super) fn backend_cfg(api_url: &str, base_url: &str, fanout: usize) -> LlmBa
         thinking_supported: false,
         max_concurrent: None,
         context_size: None,
+        format: None,
         connect_timeout_secs: 5,
         circuit_open_secs: 0,
         api_url: api_url.into(),

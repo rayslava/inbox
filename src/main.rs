@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
     let llm::BuildResult {
         chain: llm_chain,
         memory_store,
-    } = llm::build_chain(&cfg);
+    } = llm::build_chain(&cfg)?;
     let llm_chain = Arc::new(llm_chain);
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
         Arc::clone(&tracker),
         memory_store.clone(),
         pending_store.clone(),
-    ));
+    )?);
 
     let (tx, rx) = mpsc::channel::<inbox::message::IncomingMessage>(256);
 

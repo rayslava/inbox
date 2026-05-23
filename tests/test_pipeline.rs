@@ -46,14 +46,9 @@ async fn pipeline_writes_org_node_for_plain_text_message() {
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
-    let pipeline = Arc::new(Pipeline::new(
-        Arc::clone(&cfg),
-        llm,
-        writer,
-        tracker,
-        None,
-        None,
-    ));
+    let pipeline = Arc::new(
+        Pipeline::new(Arc::clone(&cfg), llm, writer, tracker, None, None).expect("build pipeline"),
+    );
 
     let msg = IncomingMessage::new(
         MessageSource::Http,
@@ -87,14 +82,9 @@ async fn pipeline_handles_empty_text_gracefully() {
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
-    let pipeline = Arc::new(Pipeline::new(
-        Arc::clone(&cfg),
-        llm,
-        writer,
-        tracker,
-        None,
-        None,
-    ));
+    let pipeline = Arc::new(
+        Pipeline::new(Arc::clone(&cfg), llm, writer, tracker, None, None).expect("build pipeline"),
+    );
 
     let msg = IncomingMessage::new(
         MessageSource::Http,
@@ -121,14 +111,9 @@ async fn pipeline_appends_multiple_messages() {
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
-    let pipeline = Arc::new(Pipeline::new(
-        Arc::clone(&cfg),
-        llm,
-        writer,
-        tracker,
-        None,
-        None,
-    ));
+    let pipeline = Arc::new(
+        Pipeline::new(Arc::clone(&cfg), llm, writer, tracker, None, None).expect("build pipeline"),
+    );
 
     for i in 0..3_u8 {
         let msg = IncomingMessage::new(
@@ -158,14 +143,9 @@ async fn pipeline_llm_discard_returns_error() {
     let llm = helpers::failing_llm_chain("simulated LLM failure");
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
-    let pipeline = Arc::new(Pipeline::new(
-        Arc::clone(&cfg),
-        llm,
-        writer,
-        tracker,
-        None,
-        None,
-    ));
+    let pipeline = Arc::new(
+        Pipeline::new(Arc::clone(&cfg), llm, writer, tracker, None, None).expect("build pipeline"),
+    );
     let msg = IncomingMessage::new(
         MessageSource::Http,
         "test".into(),
@@ -191,14 +171,9 @@ async fn pipeline_output_writer_failure_returns_error() {
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
-    let pipeline = Arc::new(Pipeline::new(
-        Arc::clone(&cfg),
-        llm,
-        writer,
-        tracker,
-        None,
-        None,
-    ));
+    let pipeline = Arc::new(
+        Pipeline::new(Arc::clone(&cfg), llm, writer, tracker, None, None).expect("build pipeline"),
+    );
     let msg = IncomingMessage::new(
         MessageSource::Http,
         "test".into(),

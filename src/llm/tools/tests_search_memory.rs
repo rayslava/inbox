@@ -18,6 +18,7 @@ fn test_fetcher() -> UrlFetcher {
         skip_domains: vec![],
         nitter_base_url: None,
     })
+    .expect("build test fetcher")
 }
 
 #[tokio::test]
@@ -146,7 +147,7 @@ async fn execute_duckduckgo_search_missing_query_arg_errors() {
             max_snippet_chars: 120,
         },
     }];
-    let executor = super::ToolExecutor::new(tools, test_fetcher());
+    let executor = super::ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -169,7 +170,7 @@ async fn execute_duckduckgo_search_with_wrong_backend_errors() {
         retries: 0,
         backend: crate::config::ToolBackendConfig::Internal { timeout_secs: 15 },
     }];
-    let executor = super::ToolExecutor::new(tools, test_fetcher());
+    let executor = super::ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -187,7 +188,7 @@ async fn execute_duckduckgo_search_with_wrong_backend_errors() {
 async fn execute_memory_save_and_recall() {
     use std::sync::Arc;
     let store = Arc::new(crate::memory::MemoryStore::new_in_memory().unwrap());
-    let mut executor = default_tools(test_fetcher());
+    let mut executor = default_tools(test_fetcher()).expect("build tools");
     add_memory_tools(&mut executor, store);
 
     let id = uuid::Uuid::new_v4();
@@ -222,7 +223,7 @@ async fn execute_memory_save_and_recall() {
 async fn execute_memory_save_missing_key_errors() {
     use std::sync::Arc;
     let store = Arc::new(crate::memory::MemoryStore::new_in_memory().unwrap());
-    let mut executor = default_tools(test_fetcher());
+    let mut executor = default_tools(test_fetcher()).expect("build tools");
     add_memory_tools(&mut executor, store);
 
     let id = uuid::Uuid::new_v4();
@@ -242,7 +243,7 @@ async fn execute_memory_save_missing_key_errors() {
 async fn execute_memory_recall_missing_query_errors() {
     use std::sync::Arc;
     let store = Arc::new(crate::memory::MemoryStore::new_in_memory().unwrap());
-    let mut executor = default_tools(test_fetcher());
+    let mut executor = default_tools(test_fetcher()).expect("build tools");
     add_memory_tools(&mut executor, store);
 
     let id = uuid::Uuid::new_v4();
@@ -262,7 +263,7 @@ async fn execute_memory_recall_missing_query_errors() {
 async fn execute_memory_recall_no_results_returns_text() {
     use std::sync::Arc;
     let store = Arc::new(crate::memory::MemoryStore::new_in_memory().unwrap());
-    let mut executor = default_tools(test_fetcher());
+    let mut executor = default_tools(test_fetcher()).expect("build tools");
     add_memory_tools(&mut executor, store);
 
     let id = uuid::Uuid::new_v4();
@@ -283,7 +284,7 @@ async fn execute_memory_recall_no_results_returns_text() {
 fn add_memory_tools_registers_four_tools() {
     use std::sync::Arc;
     let store = Arc::new(crate::memory::MemoryStore::new_in_memory().unwrap());
-    let mut executor = default_tools(test_fetcher());
+    let mut executor = default_tools(test_fetcher()).expect("build tools");
     let before = executor.active_tool_definitions().len();
     add_memory_tools(&mut executor, store);
     let after = executor.active_tool_definitions().len();
@@ -299,7 +300,7 @@ async fn execute_memory_save_without_store_errors() {
         retries: 0,
         backend: crate::config::ToolBackendConfig::Memory,
     }];
-    let executor = ToolExecutor::new(tools, test_fetcher());
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let result = executor
         .execute(
             "memory_save",
@@ -321,7 +322,7 @@ async fn execute_scrape_page_with_memory_backend_errors() {
         retries: 0,
         backend: crate::config::ToolBackendConfig::Memory,
     }];
-    let executor = ToolExecutor::new(tools, test_fetcher());
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let result = executor
         .execute(
             "scrape_page",

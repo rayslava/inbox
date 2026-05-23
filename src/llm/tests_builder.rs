@@ -52,6 +52,7 @@ fn openrouter_backend() -> LlmBackendConfig {
         thinking_supported: false,
         max_concurrent: None,
         context_size: None,
+        format: None,
         connect_timeout_secs: 10,
         circuit_open_secs: 0,
         api_url: "https://shir-man.com/api/free-llm/top-models".into(),
@@ -77,6 +78,7 @@ fn ollama_backend() -> LlmBackendConfig {
         thinking_supported: false,
         max_concurrent: Some(1),
         context_size: Some(4096),
+        format: None,
         connect_timeout_secs: 10,
         circuit_open_secs: 0,
         api_url: "https://shir-man.com/api/free-llm/top-models".into(),
@@ -95,7 +97,7 @@ async fn build_chain_no_backends_no_memory() {
     let BuildResult {
         chain,
         memory_store,
-    } = build_chain(&cfg);
+    } = build_chain(&cfg).expect("build chain");
     assert!(memory_store.is_none());
     assert_eq!(chain.max_tool_turns(), 5);
 }
@@ -106,7 +108,7 @@ async fn build_chain_with_openrouter_backend() {
     let BuildResult {
         chain,
         memory_store,
-    } = build_chain(&cfg);
+    } = build_chain(&cfg).expect("build chain");
     assert!(memory_store.is_none());
     // Chain should have 1 backend.
     assert_eq!(chain.max_tool_turns(), 5);
@@ -115,14 +117,14 @@ async fn build_chain_with_openrouter_backend() {
 #[tokio::test]
 async fn build_chain_with_ollama_backend() {
     let cfg = test_config(vec![ollama_backend()], false);
-    let result = build_chain(&cfg);
+    let result = build_chain(&cfg).expect("build chain");
     assert!(result.memory_store.is_none());
 }
 
 #[tokio::test]
 async fn build_chain_multiple_backends() {
     let cfg = test_config(vec![openrouter_backend(), ollama_backend()], false);
-    let result = build_chain(&cfg);
+    let result = build_chain(&cfg).expect("build chain");
     assert!(result.memory_store.is_none());
 }
 
@@ -131,7 +133,7 @@ async fn build_chain_with_memory_enabled() {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = test_config(vec![], true);
     cfg.general.attachments_dir = dir.path().to_path_buf();
-    let result = build_chain(&cfg);
+    let result = build_chain(&cfg).expect("build chain");
     // Memory store should open successfully with local Grafeo.
     assert!(result.memory_store.is_some());
     assert_eq!(result.chain.max_tool_turns(), 5);
@@ -143,7 +145,7 @@ async fn build_chain_with_memory_custom_db_path() {
     let db_path = dir.path().join("custom.grafeo");
     let mut cfg = test_config(vec![], true);
     cfg.memory.db_path = Some(db_path.to_string_lossy().into_owned());
-    let result = build_chain(&cfg);
+    let result = build_chain(&cfg).expect("build chain");
     assert!(result.memory_store.is_some());
     assert_eq!(result.chain.max_tool_turns(), 5);
 }
@@ -166,7 +168,7 @@ async fn open_memory_with_retry_bails_fast_on_non_lock_error() {
 #[tokio::test]
 async fn build_result_fields_accessible() {
     let cfg = test_config(vec![openrouter_backend()], false);
-    let result = build_chain(&cfg);
+    let result = build_chain(&cfg).expect("build chain");
     // Verify the struct destructures properly.
     let _chain = result.chain;
     let _store = result.memory_store;

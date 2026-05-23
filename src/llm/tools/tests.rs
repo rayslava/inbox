@@ -16,6 +16,7 @@ fn test_fetcher() -> UrlFetcher {
         skip_domains: vec![],
         nitter_base_url: None,
     })
+    .expect("build test fetcher")
 }
 
 #[test]
@@ -33,7 +34,7 @@ fn tool_openai_definition_has_name() {
 
 #[test]
 fn active_tool_definitions_filters_disabled() {
-    let executor = default_tools(test_fetcher());
+    let executor = default_tools(test_fetcher()).expect("build tools");
     let defs = executor.active_tool_definitions();
     assert_eq!(defs.len(), 2);
 }
@@ -47,7 +48,7 @@ fn active_tool_definitions_empty_when_all_disabled() {
         retries: 0,
         backend: ToolBackendConfig::Internal { timeout_secs: 15 },
     }];
-    let executor = ToolExecutor::new(tools, test_fetcher());
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     assert!(executor.active_tool_definitions().is_empty());
 }
 
@@ -87,7 +88,7 @@ fn resolve_env_vars_unknown_becomes_empty() {
 
 #[tokio::test]
 async fn execute_unknown_tool_errors() {
-    let executor = default_tools(test_fetcher());
+    let executor = default_tools(test_fetcher()).expect("build tools");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -103,7 +104,7 @@ async fn execute_unknown_tool_errors() {
 
 #[tokio::test]
 async fn execute_scrape_page_missing_url_arg_errors() {
-    let executor = default_tools(test_fetcher());
+    let executor = default_tools(test_fetcher()).expect("build tools");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -119,7 +120,7 @@ async fn execute_scrape_page_missing_url_arg_errors() {
 
 #[tokio::test]
 async fn execute_download_file_missing_url_arg_errors() {
-    let executor = default_tools(test_fetcher());
+    let executor = default_tools(test_fetcher()).expect("build tools");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -147,7 +148,7 @@ async fn execute_crawl_url_missing_url_arg_errors() {
             priority: 10,
         },
     }];
-    let executor = ToolExecutor::new(tools, test_fetcher());
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -176,7 +177,7 @@ async fn execute_web_search_missing_query_arg_errors() {
             max_snippet_chars: 120,
         },
     }];
-    let executor = ToolExecutor::new(tools, test_fetcher());
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -199,7 +200,7 @@ async fn execute_crawl_url_with_wrong_backend_errors() {
         retries: 0,
         backend: ToolBackendConfig::Internal { timeout_secs: 15 },
     }];
-    let executor = ToolExecutor::new(tools, test_fetcher());
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -222,7 +223,7 @@ async fn execute_web_search_with_wrong_backend_errors() {
         retries: 0,
         backend: ToolBackendConfig::Internal { timeout_secs: 15 },
     }];
-    let executor = ToolExecutor::new(tools, test_fetcher());
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -250,7 +251,7 @@ async fn execute_scrape_page_with_crawler_backend_errors() {
             priority: 10,
         },
     }];
-    let executor = ToolExecutor::new(tools, test_fetcher());
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -278,7 +279,7 @@ async fn execute_download_file_with_crawler_backend_errors() {
             priority: 10,
         },
     }];
-    let executor = ToolExecutor::new(tools, test_fetcher());
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -295,7 +296,7 @@ async fn execute_download_file_with_crawler_backend_errors() {
 #[test]
 fn from_tooling_builds_executor() {
     let cfg = crate::config::ToolingConfig::default();
-    let executor = from_tooling(&cfg, test_fetcher());
+    let executor = from_tooling(&cfg, test_fetcher()).expect("build tools");
     assert!(!executor.active_tool_definitions().is_empty());
 }
 
@@ -319,7 +320,7 @@ async fn internal_scrape_respects_timeout() {
         retries: 0,
         backend: ToolBackendConfig::Internal { timeout_secs: 1 },
     }];
-    let executor = ToolExecutor::new(tools, test_fetcher());
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let id = uuid::Uuid::new_v4();
     let result = executor
         .execute(
@@ -358,7 +359,7 @@ async fn exponential_backoff_increases_delay() {
         retries: 1,
         backend: ToolBackendConfig::Internal { timeout_secs: 1 },
     }];
-    let executor = ToolExecutor::new(tools, test_fetcher());
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
     let id = uuid::Uuid::new_v4();
     let start = std::time::Instant::now();
     let result = executor

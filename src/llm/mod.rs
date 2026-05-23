@@ -274,6 +274,8 @@ mod tests;
 #[cfg(test)]
 mod tests_builder;
 #[cfg(test)]
+mod tests_chain_tool_exec;
+#[cfg(test)]
 mod tests_resilience;
 #[cfg(test)]
 mod tests_thinking;

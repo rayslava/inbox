@@ -301,13 +301,19 @@ impl MemoryStore {
 async fn resolve_embed_client(cfg: &MemoryConfig) -> Option<embed::EmbedClient> {
     let endpoint = cfg.embedding_endpoint.as_ref()?;
 
-    let client = embed::EmbedClient::new(
+    let client = match embed::EmbedClient::new(
         endpoint.clone(),
         cfg.embedding_model
             .clone()
             .unwrap_or_else(|| "nomic-embed-text".into()),
         cfg.embedding_api_key.clone(),
-    );
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to build embed client, disabling embeddings: {e}");
+            return None;
+        }
+    };
 
     let probe_ok = match cfg.embedding_dims {
         Some(_) => true,

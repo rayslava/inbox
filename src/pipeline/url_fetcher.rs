@@ -25,25 +25,24 @@ pub struct UrlFetcher {
 impl UrlFetcher {
     /// Create a `UrlFetcher` from config.
     ///
-    /// # Panics
-    /// Panics if the TLS backend cannot be initialised (extremely unlikely in practice).
-    #[must_use]
+    /// # Errors
+    /// Returns an error if the HTTP client cannot be built.
     #[spec(requires:
         !cfg.user_agent.trim().is_empty()
         && cfg.timeout_secs > 0
         && cfg.max_body_bytes > 0
     )]
-    pub fn new(cfg: &UrlFetchConfig) -> Self {
+    pub fn new(cfg: &UrlFetchConfig) -> Result<Self, crate::error::InboxError> {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::ACCEPT,
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-                .parse()
-                .expect("static header value"),
+            reqwest::header::HeaderValue::from_static(
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ),
         );
         headers.insert(
             reqwest::header::ACCEPT_LANGUAGE,
-            "en-US,en;q=0.5".parse().expect("static header value"),
+            reqwest::header::HeaderValue::from_static("en-US,en;q=0.5"),
         );
 
         let base = || {
@@ -56,18 +55,22 @@ impl UrlFetcher {
                 .default_headers(headers.clone())
         };
 
-        let client = base().build().expect("Failed to build HTTP client");
+        let client = base().build().map_err(|e| {
+            crate::error::InboxError::Pipeline(format!("Failed to build HTTP client: {e}"))
+        })?;
 
         let client_v4 = base()
             .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
             .build()
-            .expect("Failed to build IPv4 HTTP client");
+            .map_err(|e| {
+                crate::error::InboxError::Pipeline(format!("Failed to build IPv4 HTTP client: {e}"))
+            })?;
 
-        Self {
+        Ok(Self {
             client,
             client_v4,
             cfg: cfg.clone(),
-        }
+        })
     }
 
     /// Send a GET and return the response if successful, trying the IPv4-only
@@ -394,7 +397,7 @@ mod tests {
             skip_domains: vec![],
             nitter_base_url: Some(nitter_base),
         };
-        let fetcher = UrlFetcher::new(&cfg);
+        let fetcher = UrlFetcher::new(&cfg).expect("build fetcher");
         let original_url = Url::parse("https://twitter.com/user/status/123").unwrap();
         let content = fetcher.fetch_page(&original_url).await.unwrap();
         // URL in result should be the original Twitter URL, not the Nitter URL

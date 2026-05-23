@@ -25,23 +25,22 @@ pub struct OpenRouterClient {
 impl OpenRouterClient {
     /// Create an `OpenRouterClient` from backend config.
     ///
-    /// # Panics
-    /// Panics if the TLS backend cannot be initialised (extremely unlikely in practice).
-    #[must_use]
+    /// # Errors
+    /// Returns an error if the HTTP client cannot be built.
     #[spec(requires:
         !cfg.model.trim().is_empty()
         && !cfg.base_url.trim().is_empty()
         && cfg.timeout_secs > 0
         && cfg.retries > 0
     )]
-    pub fn from_config(cfg: &LlmBackendConfig) -> Self {
+    pub fn from_config(cfg: &LlmBackendConfig) -> Result<Self, InboxError> {
         let client = crate::tls::client_builder()
             .connect_timeout(Duration::from_secs(cfg.connect_timeout_secs))
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .build()
-            .expect("Failed to build OpenRouter HTTP client");
+            .map_err(|e| InboxError::Llm(format!("Failed to build OpenRouter HTTP client: {e}")))?;
 
-        Self {
+        Ok(Self {
             model: cfg.model.clone(),
             api_key: cfg.api_key.clone().unwrap_or_default(),
             base_url: cfg.base_url.clone(),
@@ -49,7 +48,7 @@ impl OpenRouterClient {
             timeout: Duration::from_secs(cfg.timeout_secs),
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
-        }
+        })
     }
 }
 
@@ -123,10 +122,11 @@ impl LlmClient for OpenRouterClient {
 
     #[instrument(skip(self, req), fields(model = %self.model))]
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
-        let _permit = if let Some(sem) = &self.semaphore {
-            Some(sem.acquire().await.expect("semaphore closed"))
-        } else {
-            None
+        // `acquire` errors only if the semaphore is closed, which never happens
+        // here. Treat the impossible error as "no permit" rather than panicking.
+        let _permit = match &self.semaphore {
+            Some(sem) => sem.acquire().await.ok(),
+            None => None,
         };
 
         call_chat_completion(

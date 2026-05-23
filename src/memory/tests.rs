@@ -189,7 +189,8 @@ async fn embed_client_returns_vector_on_success() {
         .mount(&server)
         .await;
 
-    let client = EmbedClient::new(server.uri(), "test-model".into(), None);
+    let client =
+        EmbedClient::new(server.uri(), "test-model".into(), None).expect("build embed client");
     let vec = client.embed("hello world").await.unwrap();
     assert_eq!(vec.len(), 3);
     assert!((vec[0] - 0.1).abs() < 1e-6);
@@ -204,7 +205,8 @@ async fn embed_client_returns_error_on_api_failure() {
         .mount(&server)
         .await;
 
-    let client = EmbedClient::new(server.uri(), "test-model".into(), None);
+    let client =
+        EmbedClient::new(server.uri(), "test-model".into(), None).expect("build embed client");
     let result = client.embed("hello").await;
     assert!(result.is_err(), "should fail on 500 response");
 }
@@ -223,7 +225,8 @@ async fn embed_client_returns_error_on_missing_embedding_field() {
         .mount(&server)
         .await;
 
-    let client = EmbedClient::new(server.uri(), "test-model".into(), None);
+    let client =
+        EmbedClient::new(server.uri(), "test-model".into(), None).expect("build embed client");
     let result = client.embed("hello").await;
     assert!(
         result.is_err(),
@@ -388,7 +391,8 @@ async fn embed_client_uses_api_key_when_set() {
         .mount(&server)
         .await;
 
-    let client = EmbedClient::new(server.uri(), "test-model".into(), Some("test-key".into()));
+    let client = EmbedClient::new(server.uri(), "test-model".into(), Some("test-key".into()))
+        .expect("build embed client");
     let result = client.embed("hello").await;
     assert!(result.is_ok(), "should succeed with valid auth header");
 }

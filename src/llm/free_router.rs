@@ -53,27 +53,26 @@ impl FreeRouterClient {
     /// (blocking) initial pool fetch using the current tokio runtime; on failure
     /// falls back to `openrouter/free`.
     ///
-    /// # Panics
-    /// Panics if the TLS backend cannot be initialised.
-    #[must_use]
+    /// # Errors
+    /// Returns an error if the HTTP client cannot be built.
     #[spec(requires:
         !cfg.api_url.trim().is_empty()
         && !cfg.base_url.trim().is_empty()
         && cfg.timeout_secs > 0
         && cfg.parallel_fanout > 0
     )]
-    pub fn from_config(cfg: &LlmBackendConfig) -> Self {
+    pub fn from_config(cfg: &LlmBackendConfig) -> Result<Self, InboxError> {
         let client = crate::tls::client_builder()
             .connect_timeout(Duration::from_secs(cfg.connect_timeout_secs))
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .build()
-            .expect("Failed to build FreeRouter HTTP client");
+            .map_err(|e| InboxError::Llm(format!("Failed to build FreeRouter HTTP client: {e}")))?;
 
         let prefs = PoolPreferences::from(cfg);
         let list_timeout = Duration::from_secs(cfg.timeout_secs);
         let initial = initial_pool(&client, &cfg.api_url, list_timeout, prefs);
 
-        Self {
+        Ok(Self {
             api_url: cfg.api_url.clone(),
             base_url: cfg.base_url.clone(),
             api_key: cfg.api_key.clone().unwrap_or_default(),
@@ -90,7 +89,7 @@ impl FreeRouterClient {
             })),
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
-        }
+        })
     }
 
     /// Construct a client with a pre-built pool. Test-only — skips the
@@ -150,8 +149,19 @@ impl FreeRouterClient {
                 return;
             }
         }
+        self.refresh_now().await;
+    }
+
+    /// Fetch a fresh pool and install it, ignoring the refresh interval.
+    ///
+    /// An empty fetch result never replaces a non-empty pool — a transient
+    /// top-models hiccup (zero healthy models for a moment) must not blank the
+    /// backend. If the current pool is *also* empty we seed the degraded
+    /// `openrouter/free` fallback so the backend keeps serving and can later
+    /// self-heal on the next successful refresh.
+    async fn refresh_now(&self) {
         match fetch_pool(&self.client, &self.api_url, self.list_timeout, self.prefs).await {
-            Ok(new_pool) => {
+            Ok(new_pool) if !new_pool.is_empty() => {
                 info!(
                     tool_models = new_pool.tool_models.len(),
                     general_models = new_pool.general_models.len(),
@@ -161,9 +171,22 @@ impl FreeRouterClient {
                 guard.pool = new_pool;
                 guard.last_refreshed = Instant::now();
             }
+            Ok(_) => {
+                warn!("Free-router refresh returned no healthy models; keeping current pool");
+                let mut guard = self.state.write().await;
+                if guard.pool.is_empty() {
+                    warn!("Free-router pool empty after refresh; seeding degraded fallback");
+                    guard.pool = PoolState::degraded_fallback();
+                }
+                guard.last_refreshed = Instant::now();
+            }
             Err(e) => {
                 warn!(?e, "Free-router pool refresh failed; keeping current pool");
                 let mut guard = self.state.write().await;
+                if guard.pool.is_empty() {
+                    warn!("Free-router pool empty and refresh failed; seeding degraded fallback");
+                    guard.pool = PoolState::degraded_fallback();
+                }
                 guard.last_refreshed = Instant::now();
             }
         }
@@ -261,11 +284,20 @@ impl LlmClient for FreeRouterClient {
         };
 
         let needs_tools = !req.tool_definitions.is_empty();
-        let candidates = self.candidate_models(needs_tools).await;
+        let mut candidates = self.candidate_models(needs_tools).await;
         if candidates.is_empty() {
-            return Err(InboxError::Llm(
-                "free-router pool is empty (both tool and general)".into(),
-            ));
+            // The pool drained (e.g. a prior refresh returned zero healthy
+            // models). complete() never reaches `maybe_refresh` on an empty pool,
+            // so without this the backend would stay dead until restart. Force a
+            // recovery refresh — bypassing the interval — and retry the read.
+            warn!("Free-router pool empty — forcing recovery refresh");
+            self.refresh_now().await;
+            candidates = self.candidate_models(needs_tools).await;
+            if candidates.is_empty() {
+                return Err(InboxError::Llm(
+                    "free-router pool is empty (both tool and general)".into(),
+                ));
+            }
         }
 
         debug!(

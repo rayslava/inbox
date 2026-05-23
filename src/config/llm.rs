@@ -151,6 +151,12 @@ pub struct LlmBackendConfig {
     /// Not used for `OpenRouter` (cloud manages context).
     #[serde(default)]
     pub context_size: Option<usize>,
+    /// Ollama only. Output format constraint sent as the `format` field
+    /// (e.g. `"json"`). Forces well-formed JSON even when the prompt instruction
+    /// is lost to context truncation. Applied only on turns with no tool calls,
+    /// so it never suppresses tool use. `None` = unconstrained. Default: `None`.
+    #[serde(default)]
+    pub format: Option<String>,
     /// TCP connection timeout in seconds, separate from the response read timeout.
     /// Allows fast failure when the server is not reachable, while still allowing
     /// `timeout_secs` to be long for slow CPU-based inference.

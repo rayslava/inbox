@@ -3,9 +3,14 @@ use std::fmt::Write as _;
 use anodized::spec;
 use tracing::{debug, info, warn};
 
+use crate::error::InboxError;
+
 use super::chain_tools::{append_missing_source_links, execute_tool_calls, retry_inner};
+
+mod methods;
+
 use super::{
-    FallbackMode, LlmClient, LlmCompletion, LlmOutcome, LlmRequest, LlmTurnProgress, ToolCall,
+    FallbackMode, LlmClient, LlmCompletion, LlmOutcome, LlmRequest, LlmTurnProgress,
     activate_thinking_tool_def, llm_call_tool_def, tools,
 };
 
@@ -68,6 +73,10 @@ impl LlmChain {
         let mut tool_calls_made: usize = 0;
 
         for backend in &self.backends {
+            // Set when a deterministic failure (e.g. a JSON parse error that will
+            // recur identically) means further retries on *this* backend are
+            // wasted — skip straight to the next backend / fallback.
+            let mut backend_giving_up = false;
             for attempt in 0..backend.retries() {
                 let start = std::time::Instant::now();
                 let mut req_attempt = req.clone();
@@ -369,6 +378,7 @@ impl LlmChain {
                         }
                         Err(e) => {
                             let elapsed_ms = start.elapsed().as_millis();
+                            let deterministic = is_deterministic_error(&e);
                             warn!(
                                 ?e,
                                 backend = backend.name(),
@@ -376,8 +386,10 @@ impl LlmChain {
                                 attempt = attempt + 1,
                                 total_attempts = backend.retries(),
                                 elapsed_ms,
+                                deterministic,
                                 "LLM attempt failed"
                             );
+                            backend_giving_up = deterministic;
                             fallback_source_urls.clone_from(&tool_source_urls);
                             fallback_tool_results.clone_from(&accumulated_tool_results);
                             break;
@@ -390,6 +402,14 @@ impl LlmChain {
                     "status" => "failure"
                 )
                 .increment(1);
+                if backend_giving_up {
+                    warn!(
+                        backend = backend.name(),
+                        model = backend.model(),
+                        "Deterministic LLM failure — skipping remaining retries for this backend"
+                    );
+                    break;
+                }
             }
             warn!(
                 backend = backend.name(),
@@ -418,78 +438,16 @@ impl LlmChain {
     pub fn max_tool_turns(&self) -> usize {
         self.max_tool_turns
     }
+}
 
-    /// One-shot text completion with no tools and no JSON structure.
-    /// Returns the text and the `backend:model` identifier that produced it,
-    /// or `None` if all backends fail or return empty text.
-    pub async fn complete_text(&self, system: &str, user: &str) -> Option<(String, String)> {
-        let req = LlmRequest::simple(system, user);
-        for backend in &self.backends {
-            match backend.complete_raw(req.clone()).await {
-                Ok((text, produced_by)) => {
-                    let trimmed = text.trim().to_owned();
-                    if !trimmed.is_empty() {
-                        return Some((trimmed, produced_by));
-                    }
-                }
-                Err(e) => {
-                    warn!(?e, backend = backend.name(), "complete_text backend failed");
-                }
-            }
-        }
-        None
-    }
-
-    /// Returns the sub-call's textual result together with the `backend:model`
-    /// that produced it (empty string when all backends failed).
-    async fn execute_llm_tool_call(
-        &self,
-        call: &ToolCall,
-        parent_req: &LlmRequest,
-    ) -> (String, String) {
-        let system_prompt = call.arguments["system_prompt"]
-            .as_str()
-            .unwrap_or("You are a helpful assistant.")
-            .to_owned();
-        let content = call.arguments["content"].as_str().unwrap_or("").to_owned();
-
-        let sub_req = LlmRequest {
-            system_prompt,
-            user_content: content,
-            msg_id: parent_req.msg_id,
-            attachments_dir: parent_req.attachments_dir.clone(),
-            tool_definitions: vec![],
-            require_initial_tool_call: false,
-            images: vec![],
-            think: None,
-            llm_depth: parent_req.llm_depth + 1,
-            progress_tx: None,
-            source_name: parent_req.source_name.clone(),
-        };
-
-        for backend in &self.backends {
-            for attempt in 0..=self.inner_retries {
-                if attempt > 0 {
-                    let delay_ms = 500u64.saturating_mul(2u64.pow(attempt - 1));
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                }
-                match backend.complete_raw(sub_req.clone()).await {
-                    Ok(pair) => return pair,
-                    Err(e) => {
-                        warn!(
-                            ?e,
-                            backend = backend.name(),
-                            attempt,
-                            "llm_call sub-request retry"
-                        );
-                    }
-                }
-            }
-        }
-
-        (
-            "llm_call failed: all backends exhausted".into(),
-            String::new(),
-        )
-    }
+/// Errors that will recur identically on a retry of the *same* backend, so
+/// burning the remaining retry budget on them is wasted time. A JSON parse
+/// failure means the model produced unparseable output (e.g. Markdown prose);
+/// re-running the same model with the same prompt yields the same result, often
+/// after minutes of slow local inference each time.
+pub(super) fn is_deterministic_error(err: &InboxError) -> bool {
+    let InboxError::Llm(msg) = err else {
+        return false;
+    };
+    msg.contains("JSON parse error")
 }

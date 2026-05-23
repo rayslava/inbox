@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
@@ -235,6 +234,103 @@ async fn chain_inner_retry_succeeds_after_transient_failure() {
     );
 }
 
+#[test]
+fn json_parse_error_is_deterministic() {
+    let e = InboxError::Llm("LLM JSON parse error: expected value at line 1".into());
+    assert!(super::chain::is_deterministic_error(&e));
+}
+
+#[test]
+fn transient_network_error_is_not_deterministic() {
+    let e = InboxError::Llm("connection reset by peer".into());
+    assert!(!super::chain::is_deterministic_error(&e));
+}
+
+#[test]
+fn non_llm_error_is_not_deterministic() {
+    let e = InboxError::Pipeline("disk full".into());
+    assert!(!super::chain::is_deterministic_error(&e));
+}
+
+struct CountingErrorLlm {
+    calls: Arc<AtomicUsize>,
+    error: String,
+    retries: u32,
+}
+
+#[async_trait]
+impl LlmClient for CountingErrorLlm {
+    fn name(&self) -> &'static str {
+        "counting_error"
+    }
+    fn model(&self) -> &'static str {
+        "test"
+    }
+    fn retries(&self) -> u32 {
+        self.retries
+    }
+    async fn complete(&self, _req: LlmRequest) -> Result<LlmCompletion, InboxError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(InboxError::Llm(self.error.clone()))
+    }
+}
+
+#[tokio::test]
+async fn chain_deterministic_error_skips_remaining_retries() {
+    // A JSON parse error recurs identically, so the chain must abandon the
+    // backend after one attempt instead of burning all 5 (each a slow call).
+    let calls = Arc::new(AtomicUsize::new(0));
+    let llm = CountingErrorLlm {
+        calls: Arc::clone(&calls),
+        error: "LLM JSON parse error: expected value at line 1 column 1".into(),
+        retries: 5,
+    };
+    let chain = LlmChain::new(
+        vec![Box::new(llm) as Box<dyn LlmClient>],
+        FallbackMode::Raw,
+        2,
+        None,
+        1,
+        0,
+        0,
+    );
+    let outcome = chain.complete(LlmRequest::simple("s", "u")).await;
+    assert!(matches!(outcome, LlmOutcome::RawFallback { .. }));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "deterministic error must not consume the retry budget"
+    );
+}
+
+#[tokio::test]
+async fn chain_transient_error_consumes_retry_budget() {
+    // A non-deterministic error (e.g. a network blip) may clear on retry, so the
+    // chain should still exhaust its outer attempts.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let llm = CountingErrorLlm {
+        calls: Arc::clone(&calls),
+        error: "connection reset by peer".into(),
+        retries: 3,
+    };
+    let chain = LlmChain::new(
+        vec![Box::new(llm) as Box<dyn LlmClient>],
+        FallbackMode::Raw,
+        2,
+        None,
+        1,
+        0,
+        0,
+    );
+    let outcome = chain.complete(LlmRequest::simple("s", "u")).await;
+    assert!(matches!(outcome, LlmOutcome::RawFallback { .. }));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "transient error should use all outer attempts"
+    );
+}
+
 struct AlwaysToolCallsLlm;
 
 #[async_trait]
@@ -337,111 +433,4 @@ async fn chain_sends_progress_events_via_channel() {
         received.push(evt);
     }
     drop(received);
-}
-
-struct CaptureTurn2Llm {
-    turn: Arc<AtomicUsize>,
-    scrape_url: String,
-    captured: Arc<Mutex<Option<String>>>,
-    response: crate::message::LlmResponse,
-}
-
-#[async_trait]
-impl LlmClient for CaptureTurn2Llm {
-    fn name(&self) -> &'static str {
-        "capture_turn2"
-    }
-    fn model(&self) -> &'static str {
-        "test"
-    }
-    fn retries(&self) -> u32 {
-        1
-    }
-    async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
-        let n = self.turn.fetch_add(1, Ordering::SeqCst);
-        if n == 0 {
-            Ok(LlmCompletion::ToolCalls(vec![ToolCall {
-                id: "t1".into(),
-                name: "scrape_page".into(),
-                arguments: serde_json::json!({"url": self.scrape_url}),
-            }]))
-        } else {
-            *self.captured.lock().unwrap() = Some(req.user_content.clone());
-            Ok(LlmCompletion::Message(self.response.clone()))
-        }
-    }
-}
-
-#[tokio::test]
-async fn tool_result_truncated_in_chain() {
-    use crate::config::{ToolBackendConfig, UrlFetchConfig};
-    use crate::llm::tools::{Tool, ToolExecutor};
-    use crate::pipeline::url_fetcher::UrlFetcher;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    let content_server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/page"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/html")
-                .set_body_string(format!(
-                    "<html><body><p>{}</p></body></html>",
-                    "x".repeat(200)
-                )),
-        )
-        .mount(&content_server)
-        .await;
-
-    let scrape_url = format!("{}/page", content_server.uri());
-    let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-
-    let turn_count = Arc::new(AtomicUsize::new(0));
-    let llm = CaptureTurn2Llm {
-        turn: Arc::clone(&turn_count),
-        scrape_url,
-        captured: Arc::clone(&captured),
-        response: crate::test_helpers::default_llm_response(),
-    };
-
-    let fetcher = UrlFetcher::new(&UrlFetchConfig {
-        enabled: true,
-        user_agent: "test/1.0".into(),
-        timeout_secs: 5,
-        max_redirects: 3,
-        max_body_bytes: 1024 * 1024,
-        skip_domains: vec![],
-        nitter_base_url: None,
-    });
-
-    let tools = vec![Tool {
-        name: "scrape_page".into(),
-        description: "scrape".into(),
-        enabled: true,
-        retries: 0,
-        backend: ToolBackendConfig::Internal { timeout_secs: 5 },
-    }];
-    let executor = ToolExecutor::new(tools, fetcher);
-
-    let chain = LlmChain::new(
-        vec![Box::new(llm) as Box<dyn LlmClient>],
-        FallbackMode::Raw,
-        5,
-        Some(executor),
-        1,
-        0,
-        50,
-    );
-
-    let req = LlmRequest::simple("s", "u");
-    let outcome = chain.complete(req).await;
-    assert!(matches!(outcome, LlmOutcome::Success { .. }));
-
-    let guard = captured.lock().unwrap();
-    let content = guard.as_deref().unwrap_or("");
-    assert!(
-        content.contains("[truncated to 50 chars]"),
-        "expected truncation notice in turn-2 content, got: {content}"
-    );
 }

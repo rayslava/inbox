@@ -116,14 +116,17 @@ async fn retry_item_success_removes_pending_and_patches_org() {
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
-    let pipeline = Arc::new(Pipeline::new(
-        Arc::clone(&cfg),
-        llm,
-        writer,
-        Arc::clone(&tracker),
-        None,
-        Some(Arc::clone(&store)),
-    ));
+    let pipeline = Arc::new(
+        Pipeline::new(
+            Arc::clone(&cfg),
+            llm,
+            writer,
+            Arc::clone(&tracker),
+            None,
+            Some(Arc::clone(&store)),
+        )
+        .expect("build pipeline"),
+    );
 
     let args = ResumeTaskArgs {
         store: Arc::clone(&store),
@@ -177,14 +180,17 @@ async fn retry_item_exhausts_and_flips_tag_to_failed() {
     let llm = helpers::always_fail_llm_chain();
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
-    let pipeline = Arc::new(Pipeline::new(
-        Arc::clone(&cfg),
-        llm,
-        writer,
-        Arc::clone(&tracker),
-        None,
-        Some(Arc::clone(&store)),
-    ));
+    let pipeline = Arc::new(
+        Pipeline::new(
+            Arc::clone(&cfg),
+            llm,
+            writer,
+            Arc::clone(&tracker),
+            None,
+            Some(Arc::clone(&store)),
+        )
+        .expect("build pipeline"),
+    );
 
     let args = ResumeTaskArgs {
         store: Arc::clone(&store),

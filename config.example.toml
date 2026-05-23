@@ -149,7 +149,14 @@ connect_timeout_secs = 10
 # think_timeout_secs = 300    # timeout for thinking requests (default: timeout_secs)
 # thinking_supported = true   # allow model to call activate_thinking (Ollama only; default: false)
 # max_concurrent     = 1      # serialize requests to avoid overloading the local model (omit = unlimited)
-# context_size   = 2048       # num_ctx for Ollama (KV cache / context window size); also used to truncate over-long requests client-side
+# context_size   = 16384      # num_ctx for Ollama (KV cache / context window). Must fit the system
+#                             # prompt + ALL enabled tool schemas + content; Ollama silently
+#                             # left-truncates anything past num_ctx, evicting the system prompt
+#                             # (and its JSON-output instruction) first. 2048 is far too small once
+#                             # tools are enabled — use 16384+ for tool-calling models.
+# format         = "json"     # Constrain Ollama output to valid JSON. Applied only on turns with no
+#                             # tools, so it never suppresses tool calls. Recommended for small models
+#                             # that tend to drift into Markdown prose.
 # circuit_open_secs = 300     # After a TCP connection failure, skip this backend for N seconds (0 = disabled)
 
 # ── Adapters ──────────────────────────────────────────────────────────────────

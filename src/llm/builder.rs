@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::{Config, LlmBackendConfig, LlmBackendType, MemoryConfig};
+use crate::error::InboxError;
 use crate::memory::MemoryStore;
 use crate::pipeline::url_fetcher::UrlFetcher;
 
@@ -21,12 +22,20 @@ pub struct BuildResult {
     pub memory_store: Option<Arc<MemoryStore>>,
 }
 
-#[must_use]
+/// Build the LLM chain and (optionally) the shared memory store.
+///
+/// # Errors
+/// Returns an error if any backend or tool HTTP client cannot be built.
 #[anodized::spec(requires: cfg.llm.max_tool_turns > 0)]
-pub fn build_chain(cfg: &Config) -> BuildResult {
-    let backends: Vec<Box<dyn LlmClient>> = cfg.llm.backends.iter().map(build_backend).collect();
+pub fn build_chain(cfg: &Config) -> Result<BuildResult, InboxError> {
+    let backends: Vec<Box<dyn LlmClient>> = cfg
+        .llm
+        .backends
+        .iter()
+        .map(build_backend)
+        .collect::<Result<_, _>>()?;
 
-    let mut tool_executor = tools::from_tooling(&cfg.tooling, UrlFetcher::new(&cfg.url_fetch));
+    let mut tool_executor = tools::from_tooling(&cfg.tooling, UrlFetcher::new(&cfg.url_fetch)?)?;
 
     let memory_store = if cfg.memory.enabled {
         wire_memory(cfg, &mut tool_executor)
@@ -44,10 +53,10 @@ pub fn build_chain(cfg: &Config) -> BuildResult {
         cfg.llm.tool_result_max_chars,
     );
 
-    BuildResult {
+    Ok(BuildResult {
         chain,
         memory_store,
-    }
+    })
 }
 
 fn wire_memory(cfg: &Config, executor: &mut tools::ToolExecutor) -> Option<Arc<MemoryStore>> {
@@ -122,14 +131,14 @@ pub(super) async fn open_memory_with_retry(
     }
 }
 
-fn build_backend(cfg: &LlmBackendConfig) -> Box<dyn LlmClient> {
-    match cfg.backend_type {
+fn build_backend(cfg: &LlmBackendConfig) -> Result<Box<dyn LlmClient>, InboxError> {
+    Ok(match cfg.backend_type {
         LlmBackendType::Openrouter => {
-            Box::new(super::openrouter::OpenRouterClient::from_config(cfg))
+            Box::new(super::openrouter::OpenRouterClient::from_config(cfg)?)
         }
-        LlmBackendType::Ollama => Box::new(super::ollama::OllamaClient::from_config(cfg)),
+        LlmBackendType::Ollama => Box::new(super::ollama::OllamaClient::from_config(cfg)?),
         LlmBackendType::FreeRouter => {
-            Box::new(super::free_router::FreeRouterClient::from_config(cfg))
+            Box::new(super::free_router::FreeRouterClient::from_config(cfg)?)
         }
-    }
+    })
 }

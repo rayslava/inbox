@@ -176,6 +176,106 @@ async fn all_fail_triggers_refresh_and_retry() {
 }
 
 #[tokio::test]
+async fn empty_pool_recovers_via_forced_refresh() {
+    // A drained pool must not be a death sentence: complete() never reaches the
+    // post-batch refresh on an empty pool, so it force-refreshes up front and
+    // serves from the freshly fetched models.
+    let list = MockServer::start().await;
+    let chat = MockServer::start().await;
+
+    let refreshed_list = json!({
+        "models": [{
+            "id": "fresh/model", "score": 1500, "contextLength": 32000,
+            "supportsTools": true, "supportsToolChoice": true,
+            "supportsStructuredOutputs": false, "supportsReasoning": false,
+            "healthStatus": "passed"
+        }]
+    });
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(refreshed_list),
+        )
+        .mount(&list)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_partial_json(json!({ "model": "fresh/model" })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json_choice(
+                    r#"{"title":"RECOVERED","tags":[],"summary":"S"}"#,
+                )),
+        )
+        .expect(1)
+        .mount(&chat)
+        .await;
+
+    let cfg = backend_cfg(&format!("{}/", list.uri()), &chat.uri(), 1);
+    let client = FreeRouterClient::with_pool(&cfg, PoolState::default());
+
+    let mut req = LlmRequest::simple("sys", "user");
+    req.tool_definitions = vec![json!({"type":"function","function":{"name":"x","parameters":{}}})];
+    let result = client.complete(req).await.unwrap();
+    match result {
+        LlmCompletion::Message(r) => assert_eq!(r.title, "RECOVERED"),
+        LlmCompletion::ToolCalls(_) => panic!("unexpected tool call result"),
+    }
+}
+
+#[tokio::test]
+async fn empty_pool_seeds_degraded_fallback_when_list_unhealthy() {
+    // Empty pool + a refresh that returns zero healthy models must seed the
+    // degraded `openrouter/free` fallback rather than stay dead.
+    let list = MockServer::start().await;
+    let chat = MockServer::start().await;
+
+    let unhealthy_list = json!({
+        "models": [{
+            "id": "broken/model", "score": 10, "contextLength": 8000,
+            "supportsTools": true, "supportsToolChoice": true,
+            "supportsStructuredOutputs": false, "supportsReasoning": false,
+            "healthStatus": "failed"
+        }]
+    });
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(unhealthy_list),
+        )
+        .mount(&list)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_partial_json(json!({ "model": FALLBACK_MODEL_ID })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json_choice(
+                    r#"{"title":"FALLBACK","tags":[],"summary":"S"}"#,
+                )),
+        )
+        .expect(1)
+        .mount(&chat)
+        .await;
+
+    let cfg = backend_cfg(&format!("{}/", list.uri()), &chat.uri(), 1);
+    let client = FreeRouterClient::with_pool(&cfg, PoolState::default());
+
+    let req = LlmRequest::simple("sys", "user"); // no tools → general pool
+    let result = client.complete(req).await.unwrap();
+    match result {
+        LlmCompletion::Message(r) => assert_eq!(r.title, "FALLBACK"),
+        LlmCompletion::ToolCalls(_) => panic!("unexpected tool call result"),
+    }
+}
+
+#[tokio::test]
 async fn exhaustion_without_refresh_change_propagates_error() {
     let list = MockServer::start().await;
     let chat = MockServer::start().await;
@@ -209,7 +309,7 @@ async fn degraded_bootstrap_when_list_unreachable() {
         .await;
 
     let cfg = backend_cfg(&format!("{}/", list.uri()), "http://unused.invalid", 1);
-    let client = FreeRouterClient::from_config(&cfg);
+    let client = FreeRouterClient::from_config(&cfg).expect("from_config");
 
     let tool_candidates = client.candidate_models(true).await;
     let general_candidates = client.candidate_models(false).await;

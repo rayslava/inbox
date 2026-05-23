@@ -41,7 +41,7 @@ async fn fetcher_scrapes_html_page() {
         .mount(&server)
         .await;
 
-    let fetcher = UrlFetcher::new(&test_fetch_cfg());
+    let fetcher = UrlFetcher::new(&test_fetch_cfg()).expect("build fetcher");
     let url = format!("{}/article", server.uri()).parse().unwrap();
 
     let result = fetcher.fetch_page(&url).await;
@@ -70,7 +70,7 @@ async fn fetcher_head_returns_page_kind_for_html() {
         .mount(&server)
         .await;
 
-    let fetcher = UrlFetcher::new(&test_fetch_cfg());
+    let fetcher = UrlFetcher::new(&test_fetch_cfg()).expect("build fetcher");
     let url = format!("{}/page", server.uri()).parse().unwrap();
 
     let kind = inbox::pipeline::url_classifier::classify_url(&url, &fetcher).await;
@@ -90,7 +90,7 @@ async fn fetcher_head_returns_file_kind_for_pdf() {
         .mount(&server)
         .await;
 
-    let fetcher = UrlFetcher::new(&test_fetch_cfg());
+    let fetcher = UrlFetcher::new(&test_fetch_cfg()).expect("build fetcher");
     let url = format!("{}/doc.pdf", server.uri()).parse().unwrap();
 
     let kind = inbox::pipeline::url_classifier::classify_url(&url, &fetcher).await;
@@ -110,7 +110,7 @@ async fn fetcher_returns_none_for_server_error() {
         .mount(&server)
         .await;
 
-    let fetcher = UrlFetcher::new(&test_fetch_cfg());
+    let fetcher = UrlFetcher::new(&test_fetch_cfg()).expect("build fetcher");
     let url = format!("{}/broken", server.uri()).parse().unwrap();
 
     let result = fetcher.fetch_page(&url).await;
@@ -143,7 +143,7 @@ async fn fetcher_follows_redirect() {
         .mount(&server)
         .await;
 
-    let fetcher = UrlFetcher::new(&test_fetch_cfg());
+    let fetcher = UrlFetcher::new(&test_fetch_cfg()).expect("build fetcher");
     let url = format!("{}/old", server.uri()).parse().unwrap();
 
     let result = fetcher.fetch_page(&url).await;
@@ -182,7 +182,7 @@ async fn fetcher_decodes_gzip_body() {
         .mount(&server)
         .await;
 
-    let fetcher = UrlFetcher::new(&test_fetch_cfg());
+    let fetcher = UrlFetcher::new(&test_fetch_cfg()).expect("build fetcher");
     let url = format!("{}/gz", server.uri()).parse().unwrap();
 
     let result = fetcher.fetch_page(&url).await;
@@ -212,7 +212,7 @@ async fn fetcher_download_file_writes_attachment() {
         .mount(&server)
         .await;
 
-    let fetcher = UrlFetcher::new(&test_fetch_cfg());
+    let fetcher = UrlFetcher::new(&test_fetch_cfg()).expect("build fetcher");
     let tmp = tempfile::tempdir().unwrap();
     let msg_id = Uuid::new_v4();
     let url = format!("{}/data/report.pdf", server.uri()).parse().unwrap();
@@ -243,7 +243,7 @@ async fn fetcher_download_file_returns_none_on_500() {
         .mount(&server)
         .await;
 
-    let fetcher = UrlFetcher::new(&test_fetch_cfg());
+    let fetcher = UrlFetcher::new(&test_fetch_cfg()).expect("build fetcher");
     let tmp = tempfile::tempdir().unwrap();
     let url = format!("{}/fail", server.uri()).parse().unwrap();
 
@@ -268,7 +268,7 @@ async fn fetcher_download_file_strips_mime_parameters() {
         .mount(&server)
         .await;
 
-    let fetcher = UrlFetcher::new(&test_fetch_cfg());
+    let fetcher = UrlFetcher::new(&test_fetch_cfg()).expect("build fetcher");
     let tmp = tempfile::tempdir().unwrap();
     let url = format!("{}/song.mp3", server.uri()).parse().unwrap();
 
@@ -300,7 +300,7 @@ async fn fetcher_respects_max_body_bytes() {
 
     let mut cfg = test_fetch_cfg();
     cfg.max_body_bytes = 64; // truncate aggressively so the body is clipped
-    let fetcher = UrlFetcher::new(&cfg);
+    let fetcher = UrlFetcher::new(&cfg).expect("build fetcher");
     let url = format!("{}/big", server.uri()).parse().unwrap();
 
     // With only 64 bytes of the response available, HTML parsing extracts
@@ -369,7 +369,8 @@ async fn fetcher_live_https_example_com() {
         max_body_bytes: 1024 * 1024,
         skip_domains: vec![],
         nitter_base_url: None,
-    });
+    })
+    .expect("build fetcher");
 
     let url = "https://example.com".parse().unwrap();
     let result = fetcher.fetch_page(&url).await;

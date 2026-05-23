@@ -24,6 +24,10 @@ pub struct OllamaClient {
     pub thinking_supported: bool,
     /// KV-cache context window size in tokens. Sent as `options.num_ctx` when set.
     pub context_size: Option<usize>,
+    /// Ollama `format` constraint (e.g. `"json"`). Applied only on turns with no
+    /// tool definitions, so it never suppresses tool calls mid-loop. `None` =
+    /// unconstrained free-text output.
+    pub format: Option<String>,
     /// Seconds to skip this backend after a connection failure (circuit breaker).
     /// 0 disables the circuit breaker.
     circuit_open_secs: u64,
@@ -72,23 +76,22 @@ impl OllamaClient {
 
     /// Create an `OllamaClient` from backend config.
     ///
-    /// # Panics
-    /// Panics if the TLS backend cannot be initialised (extremely unlikely in practice).
-    #[must_use]
+    /// # Errors
+    /// Returns an error if the HTTP client cannot be built.
     #[spec(requires:
         !cfg.model.trim().is_empty()
         && !cfg.base_url.trim().is_empty()
         && cfg.timeout_secs > 0
         && cfg.retries > 0
     )]
-    pub fn from_config(cfg: &LlmBackendConfig) -> Self {
+    pub fn from_config(cfg: &LlmBackendConfig) -> Result<Self, InboxError> {
         let client = crate::tls::client_builder()
             .connect_timeout(Duration::from_secs(cfg.connect_timeout_secs))
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .build()
-            .expect("Failed to build Ollama HTTP client");
+            .map_err(|e| InboxError::Llm(format!("Failed to build Ollama HTTP client: {e}")))?;
 
-        Self {
+        Ok(Self {
             model: cfg.model.clone(),
             base_url: cfg.base_url.clone(),
             retries: cfg.retries,
@@ -97,11 +100,12 @@ impl OllamaClient {
             think_timeout: cfg.think_timeout_secs.map(Duration::from_secs),
             thinking_supported: cfg.thinking_supported,
             context_size: cfg.context_size,
+            format: cfg.format.clone(),
             circuit_open_secs: cfg.circuit_open_secs,
             last_connection_failure: Arc::new(Mutex::new(None)),
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
-        }
+        })
     }
 
     /// Record a connection failure and open the circuit breaker.
@@ -109,7 +113,7 @@ impl OllamaClient {
         *self
             .last_connection_failure
             .lock()
-            .expect("circuit mutex poisoned") = Some(Instant::now());
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
     }
 
     /// Clear the circuit breaker (called on successful response).
@@ -117,7 +121,7 @@ impl OllamaClient {
         *self
             .last_connection_failure
             .lock()
-            .expect("circuit mutex poisoned") = None;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Returns `true` when the circuit is open and requests should be skipped.
@@ -128,12 +132,14 @@ impl OllamaClient {
         let guard = self
             .last_connection_failure
             .lock()
-            .expect("circuit mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(failed_at) = *guard {
             let elapsed = failed_at.elapsed();
             let limit = Duration::from_secs(self.circuit_open_secs);
             if elapsed < limit {
-                return Some(limit.checked_sub(elapsed).unwrap());
+                // `elapsed < limit` guarantees a positive remainder; checked_sub
+                // returns None only on the boundary, which maps to "not open".
+                return limit.checked_sub(elapsed);
             }
         }
         None
@@ -157,6 +163,8 @@ struct OllamaChatRequest<'a> {
     tools: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     think: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<OllamaOptions>,
 }
@@ -270,19 +278,31 @@ impl LlmClient for OllamaClient {
             PsResult::Unknown => {}
         }
 
-        // Guard: truncate user_content if estimated tokens exceed the configured context window.
-        let estimated_tokens = user_content.len() / 4;
+        // Guard: keep the whole request inside the configured context window.
+        // The system prompt and tool schemas are non-negotiable (truncating them
+        // would drop the JSON output instruction or break tool calls), so only
+        // the user content is trimmed — but the budget accounts for all three,
+        // since Ollama left-truncates anything past `num_ctx` (silently evicting
+        // the system prompt first).
         if let Some(ctx) = self.context_size {
-            if estimated_tokens > ctx {
+            let tool_chars: usize = tool_definitions.iter().map(|t| t.to_string().len()).sum();
+            let overhead_tokens = (system_prompt.len() + tool_chars) / 4;
+            let user_tokens = user_content.len() / 4;
+            let total_tokens = overhead_tokens + user_tokens;
+            if total_tokens > ctx {
+                let user_budget_tokens = ctx.saturating_sub(overhead_tokens);
                 warn!(
-                    estimated_tokens,
+                    total_tokens,
+                    overhead_tokens,
+                    user_tokens,
                     context_size = ctx,
-                    "Content exceeds context window — truncating"
+                    user_budget_tokens,
+                    "Request exceeds context window — truncating user content (raise context_size if the model supports it)"
                 );
-                let char_limit = ctx.saturating_mul(4);
+                let char_limit = user_budget_tokens.saturating_mul(4);
                 let truncated: String = user_content.chars().take(char_limit).collect();
                 user_content = format!(
-                    "{truncated}\n... [context truncated: ~{estimated_tokens} tokens > context_size {ctx}]"
+                    "{truncated}\n... [context truncated: ~{total_tokens} tokens > context_size {ctx}]"
                 );
             }
         }
@@ -315,19 +335,32 @@ impl LlmClient for OllamaClient {
             .context_size
             .map(|n| OllamaOptions { num_ctx: Some(n) });
 
+        // Apply the format constraint (e.g. `json`) only when no tools are
+        // offered — on tool-bearing turns the model must be free to emit
+        // tool_calls, which `format` would suppress. The chain's forced-summary
+        // pass clears tool_definitions, so the final JSON answer is covered.
+        let format = if tool_definitions.is_empty() {
+            self.format.as_deref()
+        } else {
+            None
+        };
+
         let body = OllamaChatRequest {
             model: &self.model,
             messages,
             stream: false,
             tools: tool_definitions,
             think: effective_think,
+            format,
             options,
         };
 
-        let _permit = if let Some(sem) = &self.semaphore {
-            Some(sem.acquire().await.expect("semaphore closed"))
-        } else {
-            None
+        // `acquire` errors only if the semaphore is closed, which never happens
+        // here (we hold the `Arc` and never call `close`). Treat the impossible
+        // error as "no permit" and proceed rather than panicking.
+        let _permit = match &self.semaphore {
+            Some(sem) => sem.acquire().await.ok(),
+            None => None,
         };
 
         let url = format!("{}/api/chat", self.base_url);
@@ -408,386 +441,4 @@ fn truncate_for_log(s: &str, max_chars: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{Duration, Instant};
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn make_client(base_url: &str) -> OllamaClient {
-        OllamaClient {
-            model: "llama3".into(),
-            base_url: base_url.to_owned(),
-            retries: 1,
-            timeout: std::time::Duration::from_secs(5),
-            think: None,
-            think_timeout: None,
-            thinking_supported: false,
-            context_size: None,
-            circuit_open_secs: 0,
-            last_connection_failure: Arc::new(Mutex::new(None)),
-            semaphore: None,
-            client: reqwest::Client::new(),
-        }
-    }
-
-    #[tokio::test]
-    async fn complete_success() {
-        let server = MockServer::start().await;
-        let body = serde_json::json!({
-            "message": {
-                "role": "assistant",
-                "content": r#"{"title":"T","tags":[],"summary":"S"}"#
-            }
-        });
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(body),
-            )
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri());
-        let req = LlmRequest::simple("sys", "user");
-        let result = client.complete(req).await.unwrap();
-        assert!(matches!(result, LlmCompletion::Message(_)));
-    }
-
-    #[tokio::test]
-    async fn complete_error_status() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri());
-        let req = LlmRequest::simple("sys", "user");
-        assert!(client.complete(req).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn complete_tool_calls() {
-        let server = MockServer::start().await;
-        let body = serde_json::json!({
-            "message": {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "function": { "name": "scrape_page", "arguments": {"url": "http://x.com"} }
-                }]
-            }
-        });
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(body),
-            )
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri());
-        let req = LlmRequest::simple("sys", "user");
-        let result = client.complete(req).await.unwrap();
-        assert!(matches!(result, LlmCompletion::ToolCalls(_)));
-    }
-
-    #[tokio::test]
-    async fn complete_with_images_sends_images_field() {
-        use wiremock::matchers::body_partial_json;
-
-        let server = MockServer::start().await;
-        let body = serde_json::json!({
-            "message": { "role": "assistant", "content": r#"{"title":"T","tags":[],"summary":"S"}"# }
-        });
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .and(body_partial_json(serde_json::json!({
-                "messages": [
-                    { "role": "system" },
-                    { "role": "user", "images": ["aGVsbG8="] }
-                ]
-            })))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(body),
-            )
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri());
-        let mut req = LlmRequest::simple("sys", "user");
-        req.images = vec![("image/png".into(), "aGVsbG8=".into())];
-        let result = client.complete(req).await.unwrap();
-        assert!(matches!(result, LlmCompletion::Message(_)));
-    }
-
-    #[tokio::test]
-    async fn context_size_sends_options_num_ctx() {
-        use wiremock::matchers::body_partial_json;
-
-        let server = MockServer::start().await;
-        let body = serde_json::json!({
-            "message": { "role": "assistant", "content": r#"{"title":"T","tags":[],"summary":"S"}"# }
-        });
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .and(body_partial_json(serde_json::json!({
-                "options": { "num_ctx": 16384 }
-            })))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(body),
-            )
-            .mount(&server)
-            .await;
-
-        let mut client = make_client(&server.uri());
-        client.context_size = Some(16384);
-        let req = LlmRequest::simple("sys", "user");
-        let result = client.complete(req).await.unwrap();
-        assert!(matches!(result, LlmCompletion::Message(_)));
-    }
-
-    #[tokio::test]
-    async fn no_context_size_omits_options() {
-        let server = MockServer::start().await;
-        let body = serde_json::json!({
-            "message": { "role": "assistant", "content": r#"{"title":"T","tags":[],"summary":"S"}"# }
-        });
-        // If options were present with num_ctx, this mock would only match that specific body.
-        // By NOT using body_partial_json for options, we verify the basic path still works.
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(body),
-            )
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri()); // context_size = None
-        let req = LlmRequest::simple("sys", "user");
-        let result = client.complete(req).await.unwrap();
-        assert!(matches!(result, LlmCompletion::Message(_)));
-    }
-
-    fn chat_response_body() -> serde_json::Value {
-        serde_json::json!({
-            "message": { "role": "assistant", "content": r#"{"title":"T","tags":[],"summary":"S"}"# }
-        })
-    }
-
-    #[tokio::test]
-    async fn preflight_model_loaded_proceeds() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/ps"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(serde_json::json!({
-                        "models": [{"name": "llama3", "size_vram": 4_294_967_296_u64}]
-                    })),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(chat_response_body()),
-            )
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri());
-        let req = LlmRequest::simple("sys", "user");
-        let result = client.complete(req).await.unwrap();
-        assert!(matches!(result, LlmCompletion::Message(_)));
-    }
-
-    #[tokio::test]
-    async fn preflight_empty_models_proceeds() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/ps"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(serde_json::json!({"models": []})),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(chat_response_body()),
-            )
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri());
-        let req = LlmRequest::simple("sys", "user");
-        let result = client.complete(req).await.unwrap();
-        assert!(matches!(result, LlmCompletion::Message(_)));
-    }
-
-    #[tokio::test]
-    async fn preflight_error_ignored_proceeds() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/ps"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(chat_response_body()),
-            )
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri());
-        let req = LlmRequest::simple("sys", "user");
-        let result = client.complete(req).await.unwrap();
-        assert!(matches!(result, LlmCompletion::Message(_)));
-    }
-
-    #[tokio::test]
-    async fn circuit_open_skips_request() {
-        // Pre-set a recent connection failure; subsequent call should return
-        // a circuit-open error without making any HTTP requests.
-        let server = MockServer::start().await;
-        // No mocks registered — any HTTP hit would be an unexpected request.
-
-        let mut client = make_client(&server.uri());
-        client.circuit_open_secs = 300;
-        *client.last_connection_failure.lock().expect("mutex") = Some(Instant::now());
-
-        let result = client.complete(LlmRequest::simple("sys", "user")).await;
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("circuit"),
-            "expected circuit-open error, got: {msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn circuit_clears_on_success() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/ps"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(serde_json::json!({"models": []})),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(chat_response_body()),
-            )
-            .mount(&server)
-            .await;
-
-        let mut client = make_client(&server.uri());
-        // Artificially open a stale circuit from 1000s ago (expired).
-        client.circuit_open_secs = 1;
-        *client.last_connection_failure.lock().expect("mutex") =
-            Some(Instant::now().checked_sub(Duration::from_secs(10)).unwrap());
-
-        // Circuit should be expired — request succeeds and clears failure.
-        let result = client.complete(LlmRequest::simple("sys", "user")).await;
-        assert!(result.is_ok());
-        assert!(
-            client
-                .last_connection_failure
-                .lock()
-                .expect("mutex")
-                .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn preflight_cold_start_proceeds() {
-        // Empty /api/ps (model not loaded) — should proceed with a cold-start warning,
-        // not fail.
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/ps"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(serde_json::json!({"models": []})),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(chat_response_body()),
-            )
-            .mount(&server)
-            .await;
-
-        let result = make_client(&server.uri())
-            .complete(LlmRequest::simple("sys", "user"))
-            .await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn context_overflow_truncates_content() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/ps"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(serde_json::json!({"models": []})),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/json")
-                    .set_body_json(chat_response_body()),
-            )
-            .mount(&server)
-            .await;
-
-        let mut client = make_client(&server.uri());
-        // context_size = 1 token → char_limit = 4 chars; content of 100 chars triggers truncation
-        client.context_size = Some(1);
-        let long_content = "a".repeat(100);
-        let req = LlmRequest::simple("sys", &long_content);
-        let result = client.complete(req).await;
-        // Truncation fires but request still completes normally
-        assert!(result.is_ok());
-    }
-}
+mod tests;

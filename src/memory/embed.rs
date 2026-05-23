@@ -10,20 +10,23 @@ pub struct EmbedClient {
 }
 
 impl EmbedClient {
-    /// # Panics
-    /// Panics if the TLS backend cannot be initialised (extremely unlikely in practice).
-    #[must_use]
-    pub fn new(endpoint: String, model: String, api_key: Option<String>) -> Self {
+    /// # Errors
+    /// Returns an error if the HTTP client cannot be built.
+    pub fn new(
+        endpoint: String,
+        model: String,
+        api_key: Option<String>,
+    ) -> Result<Self, InboxError> {
         let client = crate::tls::client_builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .expect("Failed to build embed HTTP client");
-        Self {
+            .map_err(|e| InboxError::Memory(format!("Failed to build embed HTTP client: {e}")))?;
+        Ok(Self {
             endpoint,
             model,
             api_key,
             client,
-        }
+        })
     }
 
     /// Embed `text` and return the embedding vector.
