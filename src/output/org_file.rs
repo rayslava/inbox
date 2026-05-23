@@ -58,9 +58,13 @@ async fn append_to_file(path: &Path, content: &str) -> Result<(), std::io::Error
 }
 
 pub(crate) async fn trigger_syncthing_rescans(cfg: &SyncthingConfig) {
-    let client = crate::tls::client_builder()
-        .build()
-        .expect("Failed to build Syncthing HTTP client");
+    let client = match crate::tls::client_builder().build() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(?e, "Failed to build Syncthing HTTP client; skipping rescan");
+            return;
+        }
+    };
     rescan_folder(&client, cfg, &cfg.org_folder_id).await;
 
     if let Some(att_folder) = &cfg.attachments_folder_id

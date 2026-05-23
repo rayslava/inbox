@@ -34,7 +34,9 @@ pub fn extract_text(html: &str) -> ExtractedPage {
 }
 
 fn extract_headings(doc: &Html) -> Vec<String> {
-    let sel = Selector::parse("h1, h2").unwrap();
+    let Ok(sel) = Selector::parse("h1, h2") else {
+        return Vec::new();
+    };
     doc.select(&sel)
         .filter_map(|el| {
             let t: String = el.text().collect();
@@ -60,12 +62,11 @@ fn extract_title(doc: &Html) -> Option<String> {
 }
 
 fn extract_body_text(doc: &Html) -> String {
-    // Remove script, style, nav, footer, header to reduce noise.
-    let _noise_sel = Selector::parse("script, style, nav, footer, header, aside").unwrap();
-
     // Collect text from meaningful elements.
-    let text_sel =
-        Selector::parse("p, h1, h2, h3, h4, h5, h6, li, td, th, pre, blockquote").unwrap();
+    let Ok(text_sel) = Selector::parse("p, h1, h2, h3, h4, h5, h6, li, td, th, pre, blockquote")
+    else {
+        return String::new();
+    };
 
     // We'll gather text from elements that are NOT descendants of noise elements.
     // scraper doesn't have an :not-ancestor selector, so we collect all text nodes

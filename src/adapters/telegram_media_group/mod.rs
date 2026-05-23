@@ -73,7 +73,10 @@ pub(crate) fn set_metadata(
     forwarded_from: Option<String>,
     sent_status_id: Option<teloxide::types::MessageId>,
 ) {
-    let mut inner = state.inner.lock().expect("media group mutex poisoned");
+    let mut inner = state
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     inner.chat_id = chat_id;
     inner.first_message_id = message_id;
     inner.username = username;
@@ -83,7 +86,10 @@ pub(crate) fn set_metadata(
 
 /// Append extracted content from one part of the media group.
 pub(crate) fn add_content(state: &MediaGroupState, text: String, attachments: Vec<Attachment>) {
-    let mut inner = state.inner.lock().expect("media group mutex poisoned");
+    let mut inner = state
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !text.is_empty() {
         if inner.text.is_empty() {
             inner.text = text;
@@ -151,7 +157,10 @@ async fn flush(
         feedback_msg_map,
     } = ctx;
     let (incoming_base, sent_status_id, chat_id) = {
-        let inner = state.inner.lock().expect("media group mutex poisoned");
+        let inner = state
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let n_attachments = inner.attachments.len();
         info!(
             media_group_id = group_id,

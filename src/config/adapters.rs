@@ -92,7 +92,7 @@ impl Default for HttpAdapterConfig {
 }
 
 fn default_http_bind() -> SocketAddr {
-    "0.0.0.0:8080".parse().unwrap()
+    SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 8080))
 }
 
 #[derive(Debug, Clone, Deserialize)]

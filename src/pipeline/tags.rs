@@ -1,15 +1,10 @@
-use std::sync::OnceLock;
-
 use regex::Regex;
 
-static HASHTAG_RE: OnceLock<Regex> = OnceLock::new();
-
 fn hashtag_re() -> &'static Regex {
-    HASHTAG_RE.get_or_init(|| {
-        // Match #tag preceded by start-of-string or whitespace.
-        // Group 1: the leading whitespace (kept). Group 2: the tag word (removed).
-        Regex::new(r"(^|\s)#([a-zA-Z][a-zA-Z0-9_-]*)").expect("valid regex")
-    })
+    // Match #tag preceded by start-of-string or whitespace.
+    // Group 1: the leading whitespace (kept). Group 2: the tag word (removed).
+    // Compile-checked at build time by `lazy_regex::regex!`.
+    lazy_regex::regex!(r"(^|\s)#([a-zA-Z][a-zA-Z0-9_-]*)")
 }
 
 /// Extract `#hashtag` tokens from `text`.

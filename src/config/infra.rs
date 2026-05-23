@@ -52,7 +52,7 @@ impl Default for AdminConfig {
 }
 
 fn default_admin_bind() -> SocketAddr {
-    "0.0.0.0:9090".parse().unwrap()
+    SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 9090))
 }
 fn default_admin_user() -> String {
     "admin".into()

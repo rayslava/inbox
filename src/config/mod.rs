@@ -63,7 +63,7 @@ pub fn load(path: &std::path::Path) -> Result<Config, InboxError> {
 /// Replace `${VAR_NAME}` occurrences with the value of the named env var.
 /// Unknown variables are left as-is (to avoid masking typos as empty strings).
 fn interpolate_env(s: &str) -> String {
-    let re = regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
+    let re = lazy_regex::regex!(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}");
     re.replace_all(s, |caps: &regex::Captures<'_>| {
         let var = &caps[1];
         std::env::var(var).unwrap_or_else(|_| caps[0].to_owned())

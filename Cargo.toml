@@ -36,6 +36,7 @@ toml                = "1"
 askama              = "0"
 url                 = "2"
 regex               = "1"
+lazy-regex          = "3"
 scraper             = "0"
 chrono              = { version = "0", features = ["serde"] }
 uuid                = { version = "1", features = ["v4", "serde"] }

@@ -30,10 +30,11 @@ impl LogStore {
         })
     }
 
-    /// # Panics
-    /// Panics if the internal mutex is poisoned (only possible after a previous panic).
     pub fn push(&self, entry: LogEntry) {
-        let mut guard = self.entries.lock().expect("log store mutex poisoned");
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if guard.len() >= self.capacity {
             guard.pop_front();
         }
@@ -41,14 +42,11 @@ impl LogStore {
     }
 
     /// Returns entries newest-first.
-    ///
-    /// # Panics
-    /// Panics if the internal mutex is poisoned (only possible after a previous panic).
     #[must_use]
     pub fn recent(&self) -> Vec<LogEntry> {
         self.entries
             .lock()
-            .expect("log store mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .rev()
             .cloned()

@@ -64,12 +64,8 @@ impl InputAdapter for TelegramAdapter {
             let feedback_msg_map = feedback_msg_map.clone();
             let token = token.clone();
 
-            let client = crate::tls::client_builder()
-                .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
-                .build()
-                .expect("Failed to build IPv4-only Telegram client");
-            let bot = Bot::with_client(&self.cfg.bot_token, client);
-            let handler = build_handler(HandlerConfig {
+            let bot_token = self.cfg.bot_token.clone();
+            let handler_cfg = HandlerConfig {
                 allowed_user_ids: self.cfg.allowed_user_ids.clone(),
                 attachments_dir: self.attachments_dir.clone(),
                 file_download_timeout_secs: self.cfg.file_download_timeout_secs,
@@ -82,9 +78,25 @@ impl InputAdapter for TelegramAdapter {
                 retry_store,
                 memory_store: self.memory_store.clone(),
                 feedback_msg_map,
-            });
+            };
 
             async move {
+                // Bind an IPv4 local address to avoid IPv6 connectivity issues
+                // in some environments. A build failure (not possible in
+                // practice) returns cleanly to the reconnect loop.
+                let client = match crate::tls::client_builder()
+                    .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!(error = %e, "Failed to build Telegram HTTP client, will reconnect");
+                        return;
+                    }
+                };
+                let bot = Bot::with_client(&bot_token, client);
+                let handler = build_handler(handler_cfg);
+
                 // Pre-flight: probe Telegram API so a startup DNS / network
                 // blip returns cleanly to the reconnect loop instead of
                 // panicking inside `Dispatcher::dispatch` (which prints a

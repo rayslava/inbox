@@ -74,7 +74,7 @@ pub(super) async fn handle_message(
         let msg_id = state
             .inner
             .lock()
-            .expect("media group mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .msg_id;
 
         if is_first {

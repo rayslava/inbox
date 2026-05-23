@@ -1,15 +1,11 @@
 use regex::Regex;
-use std::sync::OnceLock;
 use tracing::{debug, instrument};
 use url::Url;
 
-static URL_RE: OnceLock<Regex> = OnceLock::new();
-
 fn url_re() -> &'static Regex {
-    URL_RE.get_or_init(|| {
-        // Match http(s):// URLs, stopping at whitespace or common sentence punctuation.
-        Regex::new(r#"https?://[^\s<>"'\]\[)]+"#).unwrap()
-    })
+    // Match http(s):// URLs, stopping at whitespace or common sentence
+    // punctuation. Compile-checked at build time by `lazy_regex::regex!`.
+    lazy_regex::regex!(r#"https?://[^\s<>"'\]\[)]+"#)
 }
 
 /// Extract all HTTP(S) URLs from a text string as raw strings.
