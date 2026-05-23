@@ -171,7 +171,7 @@ async fn login_post(
         .header(header::LOCATION, "ui")
         .header(header::SET_COOKIE, cookie)
         .body(axum::body::Body::empty())
-        .unwrap()
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn logout_handler(State(state): State<AdminState>, headers: HeaderMap) -> Response {
@@ -180,10 +180,8 @@ async fn logout_handler(State(state): State<AdminState>, headers: HeaderMap) -> 
     }
     let clear = "session=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/";
     let mut resp = Redirect::to("login").into_response();
-    resp.headers_mut().insert(
-        header::SET_COOKIE,
-        header::HeaderValue::from_str(clear).expect("static cookie value"),
-    );
+    resp.headers_mut()
+        .insert(header::SET_COOKIE, header::HeaderValue::from_static(clear));
     resp
 }
 
@@ -284,5 +282,7 @@ fn html_response(body: String) -> Response {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_feedback;
 #[cfg(test)]
 mod tests_proxy;

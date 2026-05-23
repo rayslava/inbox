@@ -261,3 +261,5 @@ pub mod resume;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_resume;

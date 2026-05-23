@@ -252,4 +252,6 @@ fn relative_path(path: &std::path::Path, base: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_fallback;
+#[cfg(test)]
 mod tests_pending;
