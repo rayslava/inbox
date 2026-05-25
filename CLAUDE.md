@@ -74,6 +74,10 @@ cargo run -- hash-password
 - Keep test coverage not lower than 80% all the time
 - Never use plain `unwrap()`, `expect()`, `panic()`, we must process errors
   correctly, not just kill process
+- Comments should be short and concise, do not create long and detailed
+  descriptions inside functions. The rustdoc-related descriptions should
+  conform the requirements but also only contain the required info
+- Do not create obvious comments for the places understandable from the code
 
 ## SQL style
 
