@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::adapters::telegram_media_group::{self, MediaGroupMap};
@@ -191,9 +191,9 @@ pub(super) async fn handle_callback_query(
     let data_str = data.as_deref().unwrap_or("");
 
     if data_str.starts_with("fb:") {
-        bot.answer_callback_query(callback_id).await?;
         handle_feedback_callback(
             &bot,
+            callback_id,
             data_str,
             message.as_ref(),
             memory_store.as_ref(),
@@ -260,8 +260,10 @@ pub(super) async fn handle_callback_query(
     Ok(())
 }
 
+#[anodized::spec(requires: data_str.starts_with("fb:"))]
 pub(super) async fn handle_feedback_callback(
     bot: &teloxide::Bot,
+    callback_id: teloxide::types::CallbackQueryId,
     data_str: &str,
     message: Option<&teloxide::types::MaybeInaccessibleMessage>,
     memory_store: Option<&Arc<MemoryStore>>,
@@ -269,55 +271,105 @@ pub(super) async fn handle_feedback_callback(
 ) {
     use crate::feedback::{FeedbackEntry, FeedbackRating};
     use chrono::Utc;
-    use teloxide::payloads::EditMessageTextSetters;
+    use teloxide::payloads::{
+        AnswerCallbackQuerySetters, EditMessageTextSetters, SendMessageSetters,
+    };
     use teloxide::prelude::Requester;
 
+    debug!(data = data_str, "Telegram feedback callback received");
+
     let parts: Vec<&str> = data_str.splitn(3, ':').collect();
-    if parts.len() < 3 {
-        return;
-    }
-    let Ok(rating_val) = parts[1].parse::<u8>() else {
-        return;
-    };
-    let Some(rating) = FeedbackRating::new(rating_val) else {
-        return;
-    };
-    let Ok(inbox_id) = Uuid::parse_str(parts[2]) else {
-        return;
-    };
+    let parsed = (parts.len() >= 3)
+        .then(|| {
+            let rating = parts[1].parse::<u8>().ok().and_then(FeedbackRating::new)?;
+            let inbox_id = Uuid::parse_str(parts[2]).ok()?;
+            Some((rating, inbox_id))
+        })
+        .flatten();
 
-    let Some(store) = memory_store else {
-        warn!("Feedback callback received but memory store is not enabled");
+    let Some((rating, inbox_id)) = parsed else {
+        warn!(data = data_str, "Malformed feedback callback data");
+        // Malformed callback data: still acknowledge so the client spinner clears.
+        if let Err(e) = bot.answer_callback_query(callback_id).await {
+            warn!(?e, "Failed to answer malformed feedback callback");
+        }
         return;
     };
-
-    let entry = FeedbackEntry {
-        message_id: inbox_id.to_string(),
-        rating: rating.value(),
-        comment: String::new(),
-        created_at: Utc::now(),
-        source: "telegram".into(),
-        title: String::new(),
-    };
-
-    if let Err(e) = store.save_feedback(&entry).await {
-        warn!(?e, "Failed to save Telegram feedback");
-        return;
-    }
-
-    if let Some(teloxide::types::MaybeInaccessibleMessage::Regular(m)) = message {
-        feedback_msg_map.insert(m.id.0, inbox_id);
-    }
 
     let stars = rating.to_string();
+    let rating_val = rating.value();
+    debug!(%inbox_id, rating = rating_val, "Feedback parsed");
+
+    // Always confirm to the user with a toast, regardless of storage outcome.
+    if let Err(e) = bot
+        .answer_callback_query(callback_id)
+        .text(format!("Thanks! Rated {stars}"))
+        .await
+    {
+        warn!(?e, "Failed to answer feedback callback");
+    } else {
+        debug!(%inbox_id, "Feedback toast acknowledged");
+    }
+
+    // Persist the rating only when a memory store is configured.
+    if let Some(store) = memory_store {
+        let entry = FeedbackEntry {
+            message_id: inbox_id.to_string(),
+            rating: rating_val,
+            comment: String::new(),
+            created_at: Utc::now(),
+            source: "telegram".into(),
+            title: String::new(),
+        };
+        debug!(%inbox_id, rating = rating_val, "Saving Telegram feedback");
+        if let Err(e) = store.save_feedback(&entry).await {
+            warn!(?e, %inbox_id, "Failed to save Telegram feedback");
+        } else {
+            debug!(%inbox_id, "Telegram feedback saved");
+            if let Some(teloxide::types::MaybeInaccessibleMessage::Regular(m)) = message {
+                feedback_msg_map.insert(m.id.0, inbox_id);
+                debug!(
+                    %inbox_id,
+                    msg_id = m.id.0,
+                    "Registered Telegram message for reply-as-comment"
+                );
+            }
+        }
+    } else {
+        warn!(%inbox_id, "Feedback callback received but memory store is not enabled");
+    }
+
+    // Always drop the buttons and reflect the rating in the message.
+    // If the message can no longer be edited (e.g. older than Telegram's 48h
+    // edit window, or the bot lacks edit rights), fall back to sending a reply
+    // so the user still has a record of the rating.
     if let Some(teloxide::types::MaybeInaccessibleMessage::Regular(m)) = message {
         let text = format!("{}\n\nRated: {stars}", m.text().unwrap_or(""));
-        if let Err(e) = bot
+        debug!(%inbox_id, msg_id = m.id.0, "Editing message to clear feedback buttons");
+        let edit_result = bot
             .edit_message_text(m.chat.id, m.id, text)
             .reply_markup(teloxide::types::InlineKeyboardMarkup::default())
-            .await
-        {
-            warn!(?e, "Failed to edit message after feedback");
+            .await;
+        match edit_result {
+            Ok(_) => debug!(%inbox_id, msg_id = m.id.0, "Feedback buttons cleared"),
+            Err(e) => {
+                warn!(
+                    ?e,
+                    %inbox_id,
+                    msg_id = m.id.0,
+                    "Failed to edit message after feedback; replying instead"
+                );
+                match bot
+                    .send_message(m.chat.id, format!("Rated: {stars}"))
+                    .reply_parameters(teloxide::types::ReplyParameters::new(m.id))
+                    .await
+                {
+                    Ok(_) => debug!(%inbox_id, "Sent fallback feedback reply"),
+                    Err(e2) => warn!(?e2, %inbox_id, "Fallback feedback reply also failed"),
+                }
+            }
         }
+    } else {
+        debug!(%inbox_id, "Feedback callback has no regular message; skipping edit");
     }
 }

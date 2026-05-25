@@ -160,6 +160,34 @@
       .hidden {
         display: none;
       }
+      .feedback {
+        margin-top: 0.6rem;
+        display: flex;
+        gap: 0.3rem;
+      }
+      .fb-btn {
+        background: transparent;
+        border: 1px solid #e5e7eb;
+        border-radius: 4px;
+        padding: 0.15rem 0.5rem;
+        font-size: 0.95rem;
+        cursor: pointer;
+      }
+      .fb-btn:hover {
+        background: #f3f4f6;
+      }
+      .fb-btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+      .feedback-done {
+        font-size: 0.85rem;
+        color: #16a34a;
+      }
+      .feedback-err {
+        font-size: 0.85rem;
+        color: #dc2626;
+      }
       .status-panel {
         background: #fffbeb;
         border: 1px solid #fcd34d;
@@ -307,6 +335,33 @@
         } catch (_) {}
       }
       setInterval(pollNodes, 30000);
+
+      document.addEventListener("click", async (e) => {
+        const btn = e.target.closest(".fb-btn");
+        if (!btn || btn.disabled) return;
+        const box = btn.closest(".feedback");
+        if (!box) return;
+        const msgId = box.dataset.msgId;
+        const rating = parseInt(btn.dataset.rating, 10);
+        box.querySelectorAll("button").forEach((b) => (b.disabled = true));
+        try {
+          const resp = await fetch("feedback", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "HX-Request": "true",
+            },
+            body: JSON.stringify({ message_id: msgId, rating }),
+          });
+          if (resp.ok) {
+            box.innerHTML = await resp.text();
+          } else {
+            box.innerHTML = `<span class="feedback-err">Error ${resp.status}</span>`;
+          }
+        } catch (err) {
+          box.innerHTML = `<span class="feedback-err">${err.message}</span>`;
+        }
+      });
 
       function filter(q) {
         q = q.toLowerCase();

@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use teloxide::payloads::{EditMessageTextSetters, SendMessageSetters};
 use teloxide::prelude::Requester;
 use teloxide::types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup, MessageId};
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::adapters::telegram::FeedbackMessageMap;
@@ -74,6 +74,11 @@ impl TelegramResumeNotifier {
 
         self.feedback_msg_map.insert(final_msg_id.0, inbox_id);
         self.retry_store.remove(&inbox_id);
+        debug!(
+            %inbox_id,
+            msg_id = final_msg_id.0,
+            "Attached feedback buttons on resume"
+        );
         Ok(())
     }
 

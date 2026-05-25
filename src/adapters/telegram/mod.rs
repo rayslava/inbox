@@ -20,6 +20,8 @@ use super::InputAdapter;
 
 mod files;
 mod handlers;
+#[cfg(test)]
+mod tests;
 
 pub(crate) type FeedbackMessageMap = Arc<DashMap<i32, Uuid>>;
 

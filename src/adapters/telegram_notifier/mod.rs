@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use teloxide::payloads::{EditMessageTextSetters, SendMessageSetters};
 use teloxide::prelude::Requester;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::adapters::telegram::FeedbackMessageMap;
@@ -177,6 +177,11 @@ impl StatusNotifier for TelegramNotifier {
         if is_done {
             if let Some(ref map) = self.feedback_msg_map {
                 map.insert(self.sent_msg_id.0, self.retry_key);
+                debug!(
+                    inbox_id = %self.retry_key,
+                    msg_id = self.sent_msg_id.0,
+                    "Attached feedback buttons on Done"
+                );
             }
         }
     }

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use tracing::debug;
+
 use crate::error::InboxError;
 
 use super::feedback;
@@ -42,7 +44,16 @@ impl MemoryStore {
         .await
         .map_err(|e| InboxError::Memory(e.to_string()))?;
 
+        let elapsed = start.elapsed();
         let status = if result.is_ok() { "success" } else { "failure" };
+        debug!(
+            message_id = entry.message_id,
+            rating = entry.rating,
+            source = entry.source,
+            ?elapsed,
+            ok = result.is_ok(),
+            "MemoryStore::save_feedback"
+        );
         metrics::counter!(crate::telemetry::FEEDBACK_TOTAL, "rating" => rating_str.clone(), "source" => source_label, "status" => status)
             .increment(1);
         metrics::histogram!(crate::telemetry::FEEDBACK_DURATION, "op" => "save")
@@ -70,7 +81,16 @@ impl MemoryStore {
             .await
             .map_err(|e| InboxError::Memory(e.to_string()))?;
 
+        let elapsed = start.elapsed();
         let status = if result.is_ok() { "success" } else { "failure" };
+        let hit = matches!(result, Ok(Some(_)));
+        debug!(
+            message_id,
+            ?elapsed,
+            ok = result.is_ok(),
+            hit,
+            "MemoryStore::query_feedback"
+        );
         metrics::counter!(crate::telemetry::MEMORY_OPS, "op" => "feedback_query", "status" => status)
             .increment(1);
         metrics::histogram!(crate::telemetry::FEEDBACK_DURATION, "op" => "query")
@@ -118,7 +138,17 @@ impl MemoryStore {
                 .await
                 .map_err(|e| InboxError::Memory(e.to_string()))?;
 
+        let elapsed = start.elapsed();
         let status = if result.is_ok() { "success" } else { "failure" };
+        let updated = matches!(result, Ok(true));
+        debug!(
+            message_id,
+            comment_len = comment.len(),
+            ?elapsed,
+            ok = result.is_ok(),
+            updated,
+            "MemoryStore::update_feedback_comment"
+        );
         metrics::counter!(crate::telemetry::FEEDBACK_COMMENTS_TOTAL, "source" => "direct", "status" => status)
             .increment(1);
         metrics::histogram!(crate::telemetry::FEEDBACK_DURATION, "op" => "update_comment")
