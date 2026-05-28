@@ -144,6 +144,217 @@ impl OllamaClient {
         }
         None
     }
+
+    /// Short-circuit when a recent connection failure is still within the
+    /// circuit-breaker cooldown.
+    fn enforce_circuit(&self) -> Result<(), InboxError> {
+        if let Some(remaining) = self.is_circuit_open() {
+            warn!(
+                model = %self.model,
+                remaining_secs = remaining.as_secs(),
+                "Ollama circuit open — skipping request"
+            );
+            return Err(InboxError::Llm(format!(
+                "Ollama circuit open: backend unreachable, retry in {}s",
+                remaining.as_secs()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Pre-flight via `/api/ps` to log model readiness and trip the circuit
+    /// breaker if the daemon is unreachable.
+    async fn preflight_ps(&self) -> Result<(), InboxError> {
+        match self.query_ps().await {
+            PsResult::Unreachable => {
+                self.record_connection_failure();
+                warn!(model = %self.model, "Ollama unreachable (connection refused) — opening circuit");
+                Err(InboxError::Llm(
+                    "Ollama unreachable (connection refused)".into(),
+                ))
+            }
+            PsResult::ColdStart => {
+                warn!(
+                    model = %self.model,
+                    "Ollama model not loaded — cold start expected, first request will be slow"
+                );
+                Ok(())
+            }
+            PsResult::Ready { vram_mb } => {
+                info!(model = %self.model, vram_mb, "Ollama model loaded and warm");
+                Ok(())
+            }
+            PsResult::Unknown => Ok(()),
+        }
+    }
+
+    /// Trim user content if the rough token budget (system + tools + user)
+    /// would exceed `context_size`. Ollama silently left-truncates past
+    /// `num_ctx`, often dropping the system prompt — we'd rather drop tail
+    /// context than the JSON instruction.
+    fn truncate_user_to_context(
+        &self,
+        mut user_content: String,
+        system_prompt: &str,
+        tool_definitions: &[serde_json::Value],
+    ) -> String {
+        let Some(ctx) = self.context_size else {
+            return user_content;
+        };
+        let tool_chars: usize = tool_definitions.iter().map(|t| t.to_string().len()).sum();
+        let overhead_tokens = (system_prompt.len() + tool_chars) / 4;
+        let user_tokens = user_content.len() / 4;
+        let total_tokens = overhead_tokens + user_tokens;
+        if total_tokens <= ctx {
+            return user_content;
+        }
+        let user_budget_tokens = ctx.saturating_sub(overhead_tokens);
+        warn!(
+            total_tokens,
+            overhead_tokens,
+            user_tokens,
+            context_size = ctx,
+            user_budget_tokens,
+            "Request exceeds context window — truncating user content (raise context_size if the model supports it)"
+        );
+        let char_limit = user_budget_tokens.saturating_mul(4);
+        let truncated: String = user_content.chars().take(char_limit).collect();
+        user_content = format!(
+            "{truncated}\n... [context truncated: ~{total_tokens} tokens > context_size {ctx}]"
+        );
+        user_content
+    }
+
+    /// Assemble the `/api/chat` body. `format` is suppressed when tools are
+    /// offered so the model is free to emit `tool_calls` instead of JSON.
+    fn build_chat_request<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        user_content: String,
+        images: Vec<(String, String)>,
+        tool_definitions: Vec<serde_json::Value>,
+        effective_think: Option<bool>,
+    ) -> OllamaChatRequest<'a> {
+        let image_b64s: Option<Vec<String>> = if images.is_empty() {
+            None
+        } else {
+            Some(images.into_iter().map(|(_, b64)| b64).collect())
+        };
+        let messages = vec![
+            OllamaMessage {
+                role: "system".into(),
+                content: system_prompt.to_owned(),
+                tool_calls: None,
+                images: None,
+            },
+            OllamaMessage {
+                role: "user".into(),
+                content: user_content,
+                tool_calls: None,
+                images: image_b64s,
+            },
+        ];
+        let options = self
+            .context_size
+            .map(|n| OllamaOptions { num_ctx: Some(n) });
+        let format = if tool_definitions.is_empty() {
+            self.format.as_deref()
+        } else {
+            None
+        };
+        OllamaChatRequest {
+            model: &self.model,
+            messages,
+            stream: false,
+            tools: tool_definitions,
+            think: effective_think,
+            format,
+            options,
+        }
+    }
+
+    /// Send the prepared body and return the parsed chat response on a 2xx.
+    async fn send_chat(
+        &self,
+        body: &OllamaChatRequest<'_>,
+        effective_think: Option<bool>,
+    ) -> Result<OllamaChatResponse, InboxError> {
+        // `acquire` errors only if the semaphore is closed, which never happens
+        // here (we hold the `Arc` and never call `close`). Treat the impossible
+        // error as "no permit" and proceed rather than panicking.
+        let _permit = match &self.semaphore {
+            Some(sem) => sem.acquire().await.ok(),
+            None => None,
+        };
+
+        let url = format!("{}/api/chat", self.base_url);
+        debug!(url = %url, model = %self.model, think = ?effective_think, "Sending Ollama request");
+        let request = self.client.post(&url).json(body);
+        let request = match (effective_think, self.think_timeout) {
+            (Some(true), Some(timeout)) => request.timeout(timeout),
+            _ => request,
+        };
+        let resp = request
+            .send()
+            .await
+            .map_err(|e| InboxError::Llm(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(InboxError::Llm(format!(
+                "Ollama API error {status}: {text}"
+            )));
+        }
+
+        resp.json::<OllamaChatResponse>()
+            .await
+            .map_err(|e| InboxError::Llm(format!("Ollama parse error: {e}")))
+    }
+
+    /// Convert a chat response into either a `ToolCalls` or a parsed JSON
+    /// `Message`. Resets the circuit on success.
+    fn parse_chat_response(
+        &self,
+        chat: OllamaChatResponse,
+    ) -> Result<LlmCompletion, InboxError> {
+        if let Some(thinking) = &chat.message.thinking
+            && !thinking.is_empty()
+        {
+            debug!(thinking = %truncate_for_log(thinking, 2000), "Ollama model thinking trace");
+        }
+
+        self.clear_circuit();
+
+        if let Some(tool_calls) = chat.message.tool_calls {
+            info!(
+                tool_count = tool_calls.len(),
+                tool_names = ?tool_calls
+                    .iter()
+                    .map(|tc| tc.function.name.clone())
+                    .collect::<Vec<_>>(),
+                "Ollama returned tool calls"
+            );
+            let calls = tool_calls
+                .into_iter()
+                .map(|tc| ToolCall {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name: tc.function.name,
+                    arguments: tc.function.arguments,
+                })
+                .collect();
+            return Ok(LlmCompletion::ToolCalls(calls));
+        }
+
+        debug!(
+            response_len = chat.message.content.len(),
+            response_preview = %truncate_for_log(&chat.message.content, 1200),
+            "Ollama returned assistant text"
+        );
+
+        let produced_by = format!("ollama:{}", self.model);
+        parse_llm_json_response(&chat.message.content, &produced_by).map(LlmCompletion::Message)
+    }
 }
 
 // ── Wire types ────────────────────────────────────────────────────────────────
@@ -237,195 +448,32 @@ impl LlmClient for OllamaClient {
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
         let LlmRequest {
             system_prompt,
-            mut user_content,
+            user_content,
             tool_definitions,
             images,
             think: req_think,
             ..
         } = req;
 
-        // Circuit breaker: skip immediately if a recent connection failure is still within cooldown.
-        if let Some(remaining) = self.is_circuit_open() {
-            warn!(
-                model = %self.model,
-                remaining_secs = remaining.as_secs(),
-                "Ollama circuit open — skipping request"
-            );
-            return Err(InboxError::Llm(format!(
-                "Ollama circuit open: backend unreachable, retry in {}s",
-                remaining.as_secs()
-            )));
-        }
+        self.enforce_circuit()?;
+        self.preflight_ps().await?;
 
-        // Pre-flight: determine model readiness via /api/ps.
-        match self.query_ps().await {
-            PsResult::Unreachable => {
-                self.record_connection_failure();
-                warn!(model = %self.model, "Ollama unreachable (connection refused) — opening circuit");
-                return Err(InboxError::Llm(
-                    "Ollama unreachable (connection refused)".into(),
-                ));
-            }
-            PsResult::ColdStart => {
-                warn!(
-                    model = %self.model,
-                    "Ollama model not loaded — cold start expected, first request will be slow"
-                );
-            }
-            PsResult::Ready { vram_mb } => {
-                info!(model = %self.model, vram_mb, "Ollama model loaded and warm");
-            }
-            PsResult::Unknown => {}
-        }
-
-        // Guard: keep the whole request inside the configured context window.
-        // The system prompt and tool schemas are non-negotiable (truncating them
-        // would drop the JSON output instruction or break tool calls), so only
-        // the user content is trimmed — but the budget accounts for all three,
-        // since Ollama left-truncates anything past `num_ctx` (silently evicting
-        // the system prompt first).
-        if let Some(ctx) = self.context_size {
-            let tool_chars: usize = tool_definitions.iter().map(|t| t.to_string().len()).sum();
-            let overhead_tokens = (system_prompt.len() + tool_chars) / 4;
-            let user_tokens = user_content.len() / 4;
-            let total_tokens = overhead_tokens + user_tokens;
-            if total_tokens > ctx {
-                let user_budget_tokens = ctx.saturating_sub(overhead_tokens);
-                warn!(
-                    total_tokens,
-                    overhead_tokens,
-                    user_tokens,
-                    context_size = ctx,
-                    user_budget_tokens,
-                    "Request exceeds context window — truncating user content (raise context_size if the model supports it)"
-                );
-                let char_limit = user_budget_tokens.saturating_mul(4);
-                let truncated: String = user_content.chars().take(char_limit).collect();
-                user_content = format!(
-                    "{truncated}\n... [context truncated: ~{total_tokens} tokens > context_size {ctx}]"
-                );
-            }
-        }
-
-        // Per-request think flag takes precedence over backend default.
+        let user_content = self.truncate_user_to_context(
+            user_content,
+            &system_prompt,
+            &tool_definitions,
+        );
         let effective_think = req_think.or(self.think);
-
-        let image_b64s: Option<Vec<String>> = if images.is_empty() {
-            None
-        } else {
-            Some(images.into_iter().map(|(_, b64)| b64).collect())
-        };
-
-        let messages = vec![
-            OllamaMessage {
-                role: "system".into(),
-                content: system_prompt,
-                tool_calls: None,
-                images: None,
-            },
-            OllamaMessage {
-                role: "user".into(),
-                content: user_content,
-                tool_calls: None,
-                images: image_b64s,
-            },
-        ];
-
-        let options = self
-            .context_size
-            .map(|n| OllamaOptions { num_ctx: Some(n) });
-
-        // Apply the format constraint (e.g. `json`) only when no tools are
-        // offered — on tool-bearing turns the model must be free to emit
-        // tool_calls, which `format` would suppress. The chain's forced-summary
-        // pass clears tool_definitions, so the final JSON answer is covered.
-        let format = if tool_definitions.is_empty() {
-            self.format.as_deref()
-        } else {
-            None
-        };
-
-        let body = OllamaChatRequest {
-            model: &self.model,
-            messages,
-            stream: false,
-            tools: tool_definitions,
-            think: effective_think,
-            format,
-            options,
-        };
-
-        // `acquire` errors only if the semaphore is closed, which never happens
-        // here (we hold the `Arc` and never call `close`). Treat the impossible
-        // error as "no permit" and proceed rather than panicking.
-        let _permit = match &self.semaphore {
-            Some(sem) => sem.acquire().await.ok(),
-            None => None,
-        };
-
-        let url = format!("{}/api/chat", self.base_url);
-        debug!(url = %url, model = %self.model, think = ?effective_think, "Sending Ollama request");
-        let request = self.client.post(&url).json(&body);
-        let request = match (effective_think, self.think_timeout) {
-            (Some(true), Some(timeout)) => request.timeout(timeout),
-            _ => request,
-        };
-        let resp = request
-            .send()
-            .await
-            .map_err(|e| InboxError::Llm(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(InboxError::Llm(format!(
-                "Ollama API error {status}: {text}"
-            )));
-        }
-
-        let chat: OllamaChatResponse = resp
-            .json()
-            .await
-            .map_err(|e| InboxError::Llm(format!("Ollama parse error: {e}")))?;
-
-        if let Some(thinking) = &chat.message.thinking
-            && !thinking.is_empty()
-        {
-            debug!(thinking = %truncate_for_log(thinking, 2000), "Ollama model thinking trace");
-        }
-
-        // Successful response — clear any previous connection failure.
-        self.clear_circuit();
-
-        // Tool calls?
-        if let Some(tool_calls) = chat.message.tool_calls {
-            info!(
-                tool_count = tool_calls.len(),
-                tool_names = ?tool_calls
-                    .iter()
-                    .map(|tc| tc.function.name.clone())
-                    .collect::<Vec<_>>(),
-                "Ollama returned tool calls"
-            );
-            let calls = tool_calls
-                .into_iter()
-                .map(|tc| ToolCall {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    name: tc.function.name,
-                    arguments: tc.function.arguments,
-                })
-                .collect();
-            return Ok(LlmCompletion::ToolCalls(calls));
-        }
-
-        debug!(
-            response_len = chat.message.content.len(),
-            response_preview = %truncate_for_log(&chat.message.content, 1200),
-            "Ollama returned assistant text"
+        let body = self.build_chat_request(
+            &system_prompt,
+            user_content,
+            images,
+            tool_definitions,
+            effective_think,
         );
 
-        let produced_by = format!("ollama:{}", self.model);
-        parse_llm_json_response(&chat.message.content, &produced_by).map(LlmCompletion::Message)
+        let chat = self.send_chat(&body, effective_think).await?;
+        self.parse_chat_response(chat)
     }
 }
 
