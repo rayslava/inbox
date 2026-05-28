@@ -152,91 +152,101 @@ pub async fn preload_context(
 #[must_use]
 pub fn format_preloaded_context(ctx: &PreloadedContext) -> String {
     if ctx.memories.is_empty() && ctx.feedback.is_empty() {
-        if ctx.recall_quality == RecallQuality::Empty {
-            return "--- Memory context: no relevant memories found ---\n\
-                    No existing memories match this message. If this content contains notable facts, \
-                    preferences, or patterns, use memory_save to persist them for future reference."
-                .to_owned();
-        }
-        return String::new();
+        return empty_context_message(ctx.recall_quality);
     }
 
     let mut out = String::new();
-
     if !ctx.memories.is_empty() {
-        let quality_label = match ctx.recall_quality {
-            RecallQuality::Strong => "strong",
-            RecallQuality::Weak => "weak",
-            RecallQuality::Empty => "none",
+        write_memories_section(&mut out, ctx);
+    }
+    if !ctx.feedback.is_empty() {
+        write_feedback_section(&mut out, &ctx.feedback);
+    }
+    out
+}
+
+fn empty_context_message(recall_quality: RecallQuality) -> String {
+    if recall_quality == RecallQuality::Empty {
+        "--- Memory context: no relevant memories found ---\n\
+         No existing memories match this message. If this content contains notable facts, \
+         preferences, or patterns, use memory_save to persist them for future reference."
+            .to_owned()
+    } else {
+        String::new()
+    }
+}
+
+fn write_memories_section(out: &mut String, ctx: &PreloadedContext) {
+    let quality_label = match ctx.recall_quality {
+        RecallQuality::Strong => "strong",
+        RecallQuality::Weak => "weak",
+        RecallQuality::Empty => "none",
+    };
+    let _ = writeln!(
+        out,
+        "--- Memory context (recall quality: {quality_label}, {} matches) ---",
+        ctx.memories.len()
+    );
+    for mem in &ctx.memories {
+        write_memory_line(out, mem);
+    }
+    out.push_str(
+        "Use memory_save to update outdated memories. \
+         Use memory_link to connect new insights to existing knowledge.\n",
+    );
+}
+
+fn write_memory_line(out: &mut String, mem: &RecalledMemory) {
+    let _ = write!(out, "[{:.2}] {}: {}", mem.score, mem.key, mem.value);
+    if let Some(ref outcome) = mem.outcome {
+        let _ = write!(
+            out,
+            " (used {} times, avg rating {:.1}{})",
+            outcome.times_recalled,
+            outcome.avg_rating,
+            if outcome.avg_rating < 2.0 { " ⚠" } else { "" }
+        );
+    }
+    out.push('\n');
+
+    for rel in &mem.related {
+        let arrow = if rel.direction == "outgoing" {
+            "→"
+        } else {
+            "←"
+        };
+        let label = if rel.relation.is_empty() {
+            "CONNECTED"
+        } else {
+            rel.relation.as_str()
+        };
+        let _ = writeln!(out, "  {arrow} {label} {arrow} {}: {}", rel.key, rel.value);
+    }
+
+    if let Some(ref outcome) = mem.outcome {
+        for comment in &outcome.sample_comments {
+            let _ = writeln!(out, "  Feedback: \"{comment}\"");
+        }
+    }
+}
+
+fn write_feedback_section(out: &mut String, feedback: &[crate::feedback::FeedbackEntry]) {
+    let _ = writeln!(
+        out,
+        "\n--- User feedback on previous outputs (last {} low-rated) ---",
+        feedback.len()
+    );
+    for fb in feedback {
+        let comment_part = if fb.comment.is_empty() {
+            String::new()
+        } else {
+            format!(": \"{}\"", fb.comment)
         };
         let _ = writeln!(
             out,
-            "--- Memory context (recall quality: {quality_label}, {} matches) ---",
-            ctx.memories.len()
-        );
-
-        for mem in &ctx.memories {
-            let _ = write!(out, "[{:.2}] {}: {}", mem.score, mem.key, mem.value);
-            if let Some(ref outcome) = mem.outcome {
-                let _ = write!(
-                    out,
-                    " (used {} times, avg rating {:.1}{})",
-                    outcome.times_recalled,
-                    outcome.avg_rating,
-                    if outcome.avg_rating < 2.0 { " ⚠" } else { "" }
-                );
-            }
-            out.push('\n');
-
-            for rel in &mem.related {
-                let arrow = if rel.direction == "outgoing" {
-                    "→"
-                } else {
-                    "←"
-                };
-                let label = if rel.relation.is_empty() {
-                    "CONNECTED".to_owned()
-                } else {
-                    rel.relation.clone()
-                };
-                let _ = writeln!(out, "  {arrow} {label} {arrow} {}: {}", rel.key, rel.value);
-            }
-
-            if let Some(ref outcome) = mem.outcome {
-                for comment in &outcome.sample_comments {
-                    let _ = writeln!(out, "  Feedback: \"{comment}\"");
-                }
-            }
-        }
-
-        out.push_str(
-            "Use memory_save to update outdated memories. \
-             Use memory_link to connect new insights to existing knowledge.\n",
+            "- \"{}\" rated {}/3{}",
+            fb.title, fb.rating, comment_part
         );
     }
-
-    if !ctx.feedback.is_empty() {
-        let _ = writeln!(
-            out,
-            "\n--- User feedback on previous outputs (last {} low-rated) ---",
-            ctx.feedback.len()
-        );
-        for fb in &ctx.feedback {
-            let comment_part = if fb.comment.is_empty() {
-                String::new()
-            } else {
-                format!(": \"{}\"", fb.comment)
-            };
-            let _ = writeln!(
-                out,
-                "- \"{}\" rated {}/3{}",
-                fb.title, fb.rating, comment_part
-            );
-        }
-        out.push_str(
-            "Avoid patterns that received low ratings. Apply lessons from this feedback.\n",
-        );
-    }
-
-    out
+    out.push_str("Avoid patterns that received low ratings. Apply lessons from this feedback.\n");
 }
