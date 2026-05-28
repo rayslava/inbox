@@ -12,13 +12,13 @@ fn value_to_i64(v: &grafeo::Value) -> i64 {
         return i;
     }
     // Fallback for Grafeo returning small integers as floats (ratings 1-3).
-    if let Some(f) = v.as_float64() {
-        if f.is_finite() {
-            // Parse the rounded float's string representation to avoid truncation casts.
-            let s = format!("{:.0}", f.round());
-            if let Ok(i) = s.parse::<i64>() {
-                return i;
-            }
+    if let Some(f) = v.as_float64()
+        && f.is_finite()
+    {
+        // Parse the rounded float's string representation to avoid truncation casts.
+        let s = format!("{:.0}", f.round());
+        if let Ok(i) = s.parse::<i64>() {
+            return i;
         }
     }
     0

@@ -145,8 +145,8 @@ pub(super) fn recall_entries(
     query_vec: Option<&[f32]>,
     limit: usize,
 ) -> Result<Vec<MemoryEntry>, InboxError> {
-    if query_vec.is_some() {
-        if let Ok(results) = db.hybrid_search(
+    if query_vec.is_some()
+        && let Ok(results) = db.hybrid_search(
             "Memory",
             "value",
             "embedding",
@@ -154,19 +154,17 @@ pub(super) fn recall_entries(
             query_vec,
             limit,
             None,
-        ) {
-            if !results.is_empty() {
-                return Ok(node_ids_to_entries(db, &results));
-            }
-        }
+        )
+        && !results.is_empty()
+    {
+        return Ok(node_ids_to_entries(db, &results));
     }
 
-    if !query.trim().is_empty() {
-        if let Ok(results) = db.text_search("Memory", "value", query, limit) {
-            if !results.is_empty() {
-                return Ok(node_ids_to_entries(db, &results));
-            }
-        }
+    if !query.trim().is_empty()
+        && let Ok(results) = db.text_search("Memory", "value", query, limit)
+        && !results.is_empty()
+    {
+        return Ok(node_ids_to_entries(db, &results));
     }
 
     if let Some(qvec) = query_vec {
@@ -339,10 +337,10 @@ fn resolve_direct_relations(db: &GrafeoDB, memory_key: &str, entries: &mut [Rela
                 if row.len() >= 2 {
                     let nk = value_to_string(&row[0]);
                     let label = value_to_string(&row[1]);
-                    if let Some(entry) = entries.iter_mut().find(|e| e.key == nk) {
-                        if entry.relation.is_empty() {
-                            entry.relation = label;
-                        }
+                    if let Some(entry) = entries.iter_mut().find(|e| e.key == nk)
+                        && entry.relation.is_empty()
+                    {
+                        entry.relation = label;
                     }
                 }
             }

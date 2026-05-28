@@ -44,10 +44,10 @@ impl EmbedClient {
         });
 
         let mut req = self.client.post(&url).json(&body);
-        if let Some(key) = &self.api_key {
-            if !key.is_empty() {
-                req = req.bearer_auth(key);
-            }
+        if let Some(key) = &self.api_key
+            && !key.is_empty()
+        {
+            req = req.bearer_auth(key);
         }
 
         let resp = req

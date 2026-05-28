@@ -62,10 +62,10 @@ pub async fn reconnect_loop<F, Fut>(
         first = false;
 
         // Reset backoff if the operation ran long enough to be considered stable.
-        if let Some(threshold) = policy.stable_threshold {
-            if started.elapsed() >= threshold {
-                backoff = policy.initial_backoff;
-            }
+        if let Some(threshold) = policy.stable_threshold
+            && started.elapsed() >= threshold
+        {
+            backoff = policy.initial_backoff;
         }
 
         warn!(

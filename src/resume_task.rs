@@ -179,12 +179,11 @@ async fn on_success(
     counter!(telemetry::RESUME_ATTEMPTS, "status" => "success").increment(1);
 
     // Notify Telegram if applicable.
-    if item.source == "telegram" {
-        if let Some(ref notifier) = args.telegram_notifier {
-            if let Err(e) = notifier.notify_done(item, &title, id).await {
-                warn!(?e, %id, "Failed to send Telegram resume notification");
-            }
-        }
+    if item.source == "telegram"
+        && let Some(ref notifier) = args.telegram_notifier
+        && let Err(e) = notifier.notify_done(item, &title, id).await
+    {
+        warn!(?e, %id, "Failed to send Telegram resume notification");
     }
 
     // Trigger Syncthing rescan if configured.
@@ -221,16 +220,16 @@ async fn on_exhausted(args: &ResumeTaskArgs, item: &PendingItem) {
         Err(e) => warn!(?e, %id, "Could not read org file to patch exhausted tag"),
     }
 
-    if item.source == "telegram" {
-        if let Some(ref notifier) = args.telegram_notifier {
-            let title = item
-                .fallback_title
-                .as_deref()
-                .unwrap_or("(unknown)")
-                .to_owned();
-            if let Err(e) = notifier.notify_done(item, &title, id).await {
-                warn!(?e, %id, "Failed to send Telegram exhausted notification");
-            }
+    if item.source == "telegram"
+        && let Some(ref notifier) = args.telegram_notifier
+    {
+        let title = item
+            .fallback_title
+            .as_deref()
+            .unwrap_or("(unknown)")
+            .to_owned();
+        if let Err(e) = notifier.notify_done(item, &title, id).await {
+            warn!(?e, %id, "Failed to send Telegram exhausted notification");
         }
     }
 

@@ -160,12 +160,12 @@ impl Pipeline {
         .await?;
 
         // Persist fallback items for background LLM retry.
-        if processed.llm_response.is_none() {
-            if let Some(ref store) = self.pending {
-                let tg_msg_id = notifier.as_ref().and_then(|n| n.telegram_status_msg_id());
-                if let Err(e) = store.insert(id, &processed, tg_msg_id).await {
-                    warn!(?e, %id, "Failed to persist pending item — resume unavailable for this message");
-                }
+        if processed.llm_response.is_none()
+            && let Some(ref store) = self.pending
+        {
+            let tg_msg_id = notifier.as_ref().and_then(|n| n.telegram_status_msg_id());
+            if let Err(e) = store.insert(id, &processed, tg_msg_id).await {
+                warn!(?e, %id, "Failed to persist pending item — resume unavailable for this message");
             }
         }
 
