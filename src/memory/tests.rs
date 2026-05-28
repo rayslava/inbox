@@ -1,7 +1,7 @@
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{MemoryStore, embed::EmbedClient};
+use super::{MemoryStore, embed::EmbedClient, resolve_embed_client};
 
 #[tokio::test]
 async fn save_and_recall() {
@@ -395,4 +395,125 @@ async fn embed_client_uses_api_key_when_set() {
         .expect("build embed client");
     let result = client.embed("hello").await;
     assert!(result.is_ok(), "should succeed with valid auth header");
+}
+
+// ── resolve_embed_client tests ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn resolve_embed_client_returns_none_when_endpoint_missing() {
+    let cfg = crate::config::MemoryConfig::default();
+    assert!(resolve_embed_client(&cfg).await.is_none());
+}
+
+#[tokio::test]
+async fn resolve_embed_client_skips_probe_when_dims_set() {
+    // No mock server is mounted: success here proves the probe was not issued.
+    let cfg = crate::config::MemoryConfig {
+        embedding_endpoint: Some("http://127.0.0.1:1/unreachable".into()),
+        embedding_dims: Some(384),
+        ..Default::default()
+    };
+
+    assert!(resolve_embed_client(&cfg).await.is_some());
+}
+
+#[tokio::test]
+async fn resolve_embed_client_returns_some_on_probe_success() {
+    let server = MockServer::start().await;
+    let body = serde_json::json!({"embeddings": [[0.1f32, 0.2f32]]});
+    Mock::given(method("POST"))
+        .and(path("/api/embed"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(body),
+        )
+        .mount(&server)
+        .await;
+
+    let cfg = crate::config::MemoryConfig {
+        embedding_endpoint: Some(server.uri()),
+        ..Default::default()
+    };
+
+    assert!(resolve_embed_client(&cfg).await.is_some());
+}
+
+// ── recall_entries vector-path tests ─────────────────────────────────────────
+
+fn build_db_with_embedded_memory(key: &str, value: &str, embedding: &[f32]) -> grafeo::GrafeoDB {
+    let db = grafeo::GrafeoDB::new_in_memory();
+    db.create_text_index("Memory", "value").ok();
+    super::queries::create_indexes(&db, embedding.len());
+    super::queries::upsert_memory(&db, key, value, Some(embedding)).expect("upsert with embedding");
+    db
+}
+
+#[test]
+fn recall_entries_hybrid_search_returns_match_when_query_text_matches() {
+    let db = build_db_with_embedded_memory("rust", "Rust is a systems language", &[0.1, 0.2, 0.3]);
+
+    let results =
+        super::queries::recall_entries(&db, "Rust", Some(&[0.1, 0.2, 0.3]), 5).expect("recall ok");
+
+    assert!(!results.is_empty(), "hybrid search should return entry");
+    assert_eq!(results[0].key, "rust");
+}
+
+#[test]
+fn recall_entries_vector_only_path_when_query_text_empty() {
+    // Empty query text skips both BM25 and the hybrid path's text component;
+    // the raw cosine_similarity branch on lines 172-198 fires.
+    let db = build_db_with_embedded_memory("topic", "irrelevant text", &[1.0, 0.0, 0.0]);
+
+    let results =
+        super::queries::recall_entries(&db, "", Some(&[1.0, 0.0, 0.0]), 5).expect("recall ok");
+
+    assert!(
+        !results.is_empty(),
+        "vector-only path should match identical embedding"
+    );
+    assert_eq!(results[0].key, "topic");
+}
+
+#[test]
+fn recall_entries_vector_path_filters_by_similarity_threshold() {
+    // Orthogonal vectors → cosine 0 < 0.5 threshold → vector path returns no hits,
+    // and with empty query string we hit fallback_recent which still returns the entry.
+    let db = build_db_with_embedded_memory("topic", "hello", &[1.0, 0.0, 0.0]);
+
+    let results =
+        super::queries::recall_entries(&db, "", Some(&[0.0, 1.0, 0.0]), 5).expect("recall ok");
+
+    // fallback_recent returns all Memory nodes regardless of similarity.
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].key, "topic");
+}
+
+#[test]
+fn recall_entries_falls_back_to_recent_when_nothing_matches() {
+    let db = grafeo::GrafeoDB::new_in_memory();
+    db.create_text_index("Memory", "value").ok();
+    super::queries::upsert_memory(&db, "k1", "first", None).unwrap();
+    super::queries::upsert_memory(&db, "k2", "second", None).unwrap();
+
+    let results = super::queries::recall_entries(&db, "", None, 10).expect("recall ok");
+    assert_eq!(results.len(), 2);
+}
+
+#[tokio::test]
+async fn resolve_embed_client_returns_none_on_probe_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/embed"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let cfg = crate::config::MemoryConfig {
+        embedding_endpoint: Some(server.uri()),
+        ..Default::default()
+    };
+
+    assert!(resolve_embed_client(&cfg).await.is_none());
 }
