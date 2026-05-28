@@ -3,6 +3,9 @@
 A personal capture daemon that ingests content from Telegram, HTTP, and IMAP email,
 processes it through a URL + LLM pipeline, and writes structured org-mode nodes.
 
+Use the `agent-skills-rayslava/rust-dev` skill for this project, apply all the
+rules defined by the skill.
+
 ## Architecture
 
 - Input adapters: `telegram`, `http`, `email`
