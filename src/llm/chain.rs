@@ -63,6 +63,15 @@ enum AttemptOutcome {
     Deterministic,
 }
 
+/// Borrow bundle threaded through tool-call helpers so they don't each take
+/// `backend` + `start` separately. Both fields are immutable for the
+/// duration of one attempt.
+#[derive(Clone, Copy)]
+struct BackendCtx<'a> {
+    backend: &'a (dyn LlmClient + 'static),
+    start: std::time::Instant,
+}
+
 /// Decision after the chain handles one turn's response from a backend.
 enum TurnAction {
     /// Loop again on the same attempt (more tools to dispatch, or thinking
@@ -170,7 +179,10 @@ impl LlmChain {
         attempt: u32,
         run_state: &mut ChainRunState,
     ) -> AttemptOutcome {
-        let start = std::time::Instant::now();
+        let ctx = BackendCtx {
+            backend,
+            start: std::time::Instant::now(),
+        };
         let mut req_attempt = req.clone();
         req_attempt.tool_definitions = tool_defs.to_vec();
         let mut state = AttemptState::default();
@@ -201,7 +213,7 @@ impl LlmChain {
                         crate::telemetry::LLM_DURATION,
                         "backend" => backend.name().to_owned()
                     )
-                    .record(start.elapsed().as_secs_f64());
+                    .record(ctx.start.elapsed().as_secs_f64());
                     return AttemptOutcome::Success(LlmOutcome::Success {
                         response: append_missing_source_links(resp, &state.tool_source_urls),
                         helpers: std::mem::take(&mut run_state.helpers),
@@ -215,8 +227,7 @@ impl LlmChain {
                             &mut req_attempt,
                             &mut state,
                             run_state,
-                            backend,
-                            start,
+                            ctx,
                         )
                         .await
                     {
@@ -235,30 +246,7 @@ impl LlmChain {
                     }
                 }
                 Err(e) => {
-                    let elapsed_ms = start.elapsed().as_millis();
-                    let deterministic = is_deterministic_error(&e);
-                    warn!(
-                        ?e,
-                        backend = backend.name(),
-                        model = backend.model(),
-                        attempt = attempt + 1,
-                        total_attempts = backend.retries(),
-                        elapsed_ms,
-                        deterministic,
-                        "LLM attempt failed"
-                    );
-                    commit_fallback_state(&state, run_state);
-                    metrics::counter!(
-                        crate::telemetry::LLM_REQUESTS,
-                        "backend" => backend.name().to_owned(),
-                        "status" => "failure"
-                    )
-                    .increment(1);
-                    return if deterministic {
-                        AttemptOutcome::Deterministic
-                    } else {
-                        AttemptOutcome::Soft
-                    };
+                    return record_attempt_error(&e, ctx, attempt, &state, run_state);
                 }
             }
         }
@@ -284,78 +272,48 @@ impl LlmChain {
         req_attempt: &mut LlmRequest,
         state: &mut AttemptState,
         run_state: &mut ChainRunState,
-        backend: &(dyn LlmClient + 'static),
-        start: std::time::Instant,
+        ctx: BackendCtx<'_>,
     ) -> TurnAction {
         let (thinking_calls, calls): (Vec<_>, Vec<_>) = calls
             .into_iter()
             .partition(|c| c.name == "activate_thinking");
-
-        if !thinking_calls.is_empty() {
-            if req_attempt.think.is_none() {
-                info!(backend = backend.name(), "LLM activated thinking mode");
-                req_attempt.think = Some(true);
-            }
-            state.thinking_activations += 1;
-            if calls.is_empty() {
-                if state.thinking_activations >= self.max_tool_turns {
-                    warn!(
-                        backend = backend.name(),
-                        max = self.max_tool_turns,
-                        "activate_thinking loop limit reached"
-                    );
-                    return TurnAction::Break;
-                }
-                return TurnAction::Continue;
-            }
+        if !thinking_calls.is_empty()
+            && let Some(action) = self.handle_thinking_activation(&calls, req_attempt, state, ctx)
+        {
+            return action;
         }
 
         let (llm_calls, calls): (Vec<_>, Vec<_>) =
             calls.into_iter().partition(|c| c.name == "llm_call");
-
-        if !llm_calls.is_empty() {
-            if state.turns >= self.max_tool_turns {
-                warn!(
-                    backend = backend.name(),
-                    max_turns = self.max_tool_turns,
-                    "Max tool turns reached during llm_call"
-                );
-                if let Some(resp) = self
-                    .force_summary_pass(backend, req_attempt, state.turns, start)
-                    .await
-                {
-                    return TurnAction::Done(resp);
-                }
-                return TurnAction::Break;
-            }
-            self.dispatch_llm_subcalls(&llm_calls, req_attempt, state, run_state)
-                .await;
-            if calls.is_empty() {
-                return TurnAction::Continue;
-            }
+        if !llm_calls.is_empty()
+            && let Some(action) = self
+                .handle_llm_subcalls(&llm_calls, &calls, req_attempt, state, run_state, ctx)
+                .await
+        {
+            return action;
         }
 
         if calls.is_empty() {
             warn!(
-                backend = backend.name(),
+                backend = ctx.backend.name(),
                 "LLM returned empty tool call list"
             );
             return TurnAction::Break;
         }
 
         if state.turns >= self.max_tool_turns {
-            if let Some(resp) = self
-                .force_summary_pass(backend, req_attempt, state.turns, start)
+            return match self
+                .force_summary_pass(ctx.backend, req_attempt, state.turns, ctx.start)
                 .await
             {
-                return TurnAction::Done(resp);
-            }
-            return TurnAction::Break;
+                Some(resp) => TurnAction::Done(resp),
+                None => TurnAction::Break,
+            };
         }
 
         let Some(executor) = &self.tool_executor else {
             warn!(
-                backend = backend.name(),
+                backend = ctx.backend.name(),
                 "Tool call requested but no executor configured"
             );
             return TurnAction::Break;
@@ -386,6 +344,71 @@ impl LlmChain {
         }
         self.append_budget_hint(req_attempt, state.turns);
         TurnAction::Continue
+    }
+
+    /// React to one or more `activate_thinking` calls in the batch. Returns
+    /// `Some` only when the chain should short-circuit the rest of this turn
+    /// (regular tool calls also pending → `None` so the caller falls through).
+    fn handle_thinking_activation(
+        &self,
+        remaining_calls: &[super::ToolCall],
+        req_attempt: &mut LlmRequest,
+        state: &mut AttemptState,
+        ctx: BackendCtx<'_>,
+    ) -> Option<TurnAction> {
+        if req_attempt.think.is_none() {
+            info!(backend = ctx.backend.name(), "LLM activated thinking mode");
+            req_attempt.think = Some(true);
+        }
+        state.thinking_activations += 1;
+        if !remaining_calls.is_empty() {
+            return None;
+        }
+        if state.thinking_activations >= self.max_tool_turns {
+            warn!(
+                backend = ctx.backend.name(),
+                max = self.max_tool_turns,
+                "activate_thinking loop limit reached"
+            );
+            return Some(TurnAction::Break);
+        }
+        Some(TurnAction::Continue)
+    }
+
+    /// Drive `llm_call` sub-requests. Returns `Some` only when the chain
+    /// should short-circuit (turn budget already exhausted, or every call in
+    /// the batch was `llm_call` and there are no regular tool calls left).
+    async fn handle_llm_subcalls(
+        &self,
+        llm_calls: &[super::ToolCall],
+        remaining_calls: &[super::ToolCall],
+        req_attempt: &mut LlmRequest,
+        state: &mut AttemptState,
+        run_state: &mut ChainRunState,
+        ctx: BackendCtx<'_>,
+    ) -> Option<TurnAction> {
+        if state.turns >= self.max_tool_turns {
+            warn!(
+                backend = ctx.backend.name(),
+                max_turns = self.max_tool_turns,
+                "Max tool turns reached during llm_call"
+            );
+            return Some(
+                match self
+                    .force_summary_pass(ctx.backend, req_attempt, state.turns, ctx.start)
+                    .await
+                {
+                    Some(resp) => TurnAction::Done(resp),
+                    None => TurnAction::Break,
+                },
+            );
+        }
+        self.dispatch_llm_subcalls(llm_calls, req_attempt, state, run_state)
+            .await;
+        if remaining_calls.is_empty() {
+            return Some(TurnAction::Continue);
+        }
+        None
     }
 
     /// Run every `llm_call` in the batch and append its result back into the
@@ -527,6 +550,42 @@ fn handle_message_turn(
         "Required initial tool call was not produced"
     );
     Some(TurnAction::Break)
+}
+
+/// Log the failed attempt, snapshot fallback state, bump the failure counter,
+/// and return the appropriate outcome (Deterministic skips remaining retries
+/// for this backend; Soft tries the next attempt).
+fn record_attempt_error(
+    err: &InboxError,
+    ctx: BackendCtx<'_>,
+    attempt: u32,
+    state: &AttemptState,
+    run_state: &mut ChainRunState,
+) -> AttemptOutcome {
+    let elapsed_ms = ctx.start.elapsed().as_millis();
+    let deterministic = is_deterministic_error(err);
+    warn!(
+        ?err,
+        backend = ctx.backend.name(),
+        model = ctx.backend.model(),
+        attempt = attempt + 1,
+        total_attempts = ctx.backend.retries(),
+        elapsed_ms,
+        deterministic,
+        "LLM attempt failed"
+    );
+    commit_fallback_state(state, run_state);
+    metrics::counter!(
+        crate::telemetry::LLM_REQUESTS,
+        "backend" => ctx.backend.name().to_owned(),
+        "status" => "failure"
+    )
+    .increment(1);
+    if deterministic {
+        AttemptOutcome::Deterministic
+    } else {
+        AttemptOutcome::Soft
+    }
 }
 
 /// Snapshot the attempt's source URLs and tool results into the run-level
