@@ -121,7 +121,9 @@ impl ToolExecutor {
                     .await
             }
             "crawl_url" => self.run_crawl_call(&tool.backend, args).await,
-            "web_search" | "duckduckgo_search" => self.run_web_search_call(&tool.backend, args).await,
+            "web_search" | "duckduckgo_search" => {
+                self.run_web_search_call(&tool.backend, args).await
+            }
             _ => Err(InboxError::LlmTool(format!("No handler for tool: {name}"))),
         }
     }
@@ -147,10 +149,7 @@ impl ToolExecutor {
         Ok(ToolResult::Text(format!("Saved memory: {key}")))
     }
 
-    async fn run_memory_recall(
-        &self,
-        args: &serde_json::Value,
-    ) -> Result<ToolResult, InboxError> {
+    async fn run_memory_recall(&self, args: &serde_json::Value) -> Result<ToolResult, InboxError> {
         let query = required_str(args, "query", "memory_recall")?;
         let store = self.require_memory_store("memory_recall")?;
         let entries = store
@@ -163,10 +162,7 @@ impl ToolExecutor {
         )))
     }
 
-    async fn run_memory_link(
-        &self,
-        args: &serde_json::Value,
-    ) -> Result<ToolResult, InboxError> {
+    async fn run_memory_link(&self, args: &serde_json::Value) -> Result<ToolResult, InboxError> {
         let from_key = required_str(args, "from_key", "memory_link")?;
         let to_key = required_str(args, "to_key", "memory_link")?;
         let relation = required_str(args, "relation", "memory_link")?;
@@ -180,10 +176,7 @@ impl ToolExecutor {
         )))
     }
 
-    async fn run_memory_context(
-        &self,
-        args: &serde_json::Value,
-    ) -> Result<ToolResult, InboxError> {
+    async fn run_memory_context(&self, args: &serde_json::Value) -> Result<ToolResult, InboxError> {
         let query = required_str(args, "query", "memory_context")?;
         let hops = u32::try_from(args["hops"].as_u64().unwrap_or(1).min(3)).unwrap_or(1);
         let store = self.require_memory_store("memory_context")?;
@@ -216,7 +209,8 @@ impl ToolExecutor {
     ) -> Result<ToolResult, InboxError> {
         let url_str = required_str(args, "url", "download_file")?;
         let url = Url::parse(url_str).map_err(InboxError::UrlParse)?;
-        self.run_download(backend, &url, msg_id, attachments_dir).await
+        self.run_download(backend, &url, msg_id, attachments_dir)
+            .await
     }
 
     async fn run_crawl_call(

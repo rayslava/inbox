@@ -222,13 +222,7 @@ impl LlmChain {
                 }
                 Ok(LlmCompletion::ToolCalls(calls)) => {
                     match self
-                        .handle_tool_calls_turn(
-                            calls,
-                            &mut req_attempt,
-                            &mut state,
-                            run_state,
-                            ctx,
-                        )
+                        .handle_tool_calls_turn(calls, &mut req_attempt, &mut state, run_state, ctx)
                         .await
                     {
                         TurnAction::Continue => {}

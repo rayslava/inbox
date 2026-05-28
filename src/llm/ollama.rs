@@ -314,10 +314,7 @@ impl OllamaClient {
 
     /// Convert a chat response into either a `ToolCalls` or a parsed JSON
     /// `Message`. Resets the circuit on success.
-    fn parse_chat_response(
-        &self,
-        chat: OllamaChatResponse,
-    ) -> Result<LlmCompletion, InboxError> {
+    fn parse_chat_response(&self, chat: OllamaChatResponse) -> Result<LlmCompletion, InboxError> {
         if let Some(thinking) = &chat.message.thinking
             && !thinking.is_empty()
         {
@@ -458,11 +455,8 @@ impl LlmClient for OllamaClient {
         self.enforce_circuit()?;
         self.preflight_ps().await?;
 
-        let user_content = self.truncate_user_to_context(
-            user_content,
-            &system_prompt,
-            &tool_definitions,
-        );
+        let user_content =
+            self.truncate_user_to_context(user_content, &system_prompt, &tool_definitions);
         let effective_think = req_think.or(self.think);
         let body = self.build_chat_request(
             &system_prompt,
