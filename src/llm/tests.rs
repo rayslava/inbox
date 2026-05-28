@@ -167,6 +167,158 @@ fn append_missing_source_links_adds_sources_block() {
     assert!(out.summary.contains("https://example.com/b"));
 }
 
+// ── tool-loop branch coverage for LlmChain::complete ─────────────────────────
+
+use super::mock::MockLlm;
+
+fn scrape_call(id: &str, url: &str) -> ToolCall {
+    ToolCall {
+        id: id.into(),
+        name: "scrape_page".into(),
+        arguments: serde_json::json!({ "url": url }),
+    }
+}
+
+fn scripted_chain(
+    script: Vec<Result<LlmCompletion, String>>,
+    fallback: FallbackMode,
+    max_tool_turns: usize,
+    executor: Option<crate::llm::tools::ToolExecutor>,
+) -> LlmChain {
+    let backend = MockLlm::scripted(script);
+    LlmChain::new(
+        vec![Box::new(backend) as Box<dyn LlmClient>],
+        fallback,
+        max_tool_turns,
+        executor,
+        1,
+        0,
+        0,
+    )
+}
+
+fn dummy_executor() -> crate::llm::tools::ToolExecutor {
+    use crate::config::{ToolBackendConfig, UrlFetchConfig};
+    use crate::llm::tools::{Tool, ToolExecutor};
+    use crate::pipeline::url_fetcher::UrlFetcher;
+
+    let fetcher = UrlFetcher::new(&UrlFetchConfig {
+        enabled: true,
+        user_agent: "test/1.0".into(),
+        timeout_secs: 1,
+        max_redirects: 1,
+        max_body_bytes: 1024,
+        skip_domains: vec![],
+        nitter_base_url: None,
+    })
+    .expect("build fetcher");
+    let tools = vec![Tool {
+        name: "scrape_page".into(),
+        description: "scrape".into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Internal { timeout_secs: 1 },
+    }];
+    ToolExecutor::new(tools, fetcher).expect("build executor")
+}
+
+#[tokio::test]
+async fn complete_falls_back_when_tool_call_requested_without_executor() {
+    let chain = scripted_chain(
+        vec![Ok(LlmCompletion::ToolCalls(vec![scrape_call(
+            "t1",
+            "https://example.com/x",
+        )]))],
+        FallbackMode::Raw,
+        3,
+        None,
+    );
+    let req = LlmRequest::simple("s", "u");
+    let outcome = chain.complete(req).await;
+    assert!(
+        matches!(outcome, LlmOutcome::RawFallback { .. }),
+        "no executor → raw fallback"
+    );
+}
+
+#[tokio::test]
+async fn complete_falls_back_on_empty_tool_call_list() {
+    let chain = scripted_chain(
+        vec![Ok(LlmCompletion::ToolCalls(vec![]))],
+        FallbackMode::Raw,
+        3,
+        Some(dummy_executor()),
+    );
+    let req = LlmRequest::simple("s", "u");
+    let outcome = chain.complete(req).await;
+    assert!(matches!(outcome, LlmOutcome::RawFallback { .. }));
+}
+
+#[tokio::test]
+async fn complete_required_initial_tool_call_reprompts_three_times() {
+    let resp = crate::test_helpers::default_llm_response();
+    // Backend never produces a tool call; the chain re-prompts up to 3 times,
+    // then on the 4th turn (still a Message) hits the warn+break branch and
+    // applies the raw fallback.
+    let script: Vec<Result<LlmCompletion, String>> = (0..5)
+        .map(|_| Ok(LlmCompletion::Message(resp.clone())))
+        .collect();
+
+    let chain = scripted_chain(script, FallbackMode::Raw, 3, Some(dummy_executor()));
+    let mut req = LlmRequest::simple("s", "u");
+    req.require_initial_tool_call = true;
+
+    let outcome = chain.complete(req).await;
+    assert!(
+        matches!(outcome, LlmOutcome::RawFallback { .. }),
+        "exhausted re-prompts → raw fallback, got: {:?}",
+        std::mem::discriminant(&outcome)
+    );
+}
+
+#[tokio::test]
+async fn complete_emits_progress_event_after_tool_turn() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/p"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string("<html><body>page</body></html>"),
+        )
+        .mount(&server)
+        .await;
+
+    let scrape_url = format!("{}/p", server.uri());
+    let resp = crate::test_helpers::default_llm_response();
+    let chain = scripted_chain(
+        vec![
+            Ok(LlmCompletion::ToolCalls(vec![scrape_call(
+                "t1",
+                &scrape_url,
+            )])),
+            Ok(LlmCompletion::Message(resp.clone())),
+        ],
+        FallbackMode::Raw,
+        3,
+        Some(dummy_executor()),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut req = LlmRequest::simple("s", "u");
+    req.progress_tx = Some(tx);
+
+    let outcome = chain.complete(req).await;
+    assert!(matches!(outcome, LlmOutcome::Success { .. }));
+
+    let event = rx.try_recv().expect("expected one progress event");
+    assert_eq!(event.turn, 1);
+    assert_eq!(event.tools_called, vec!["scrape_page".to_owned()]);
+}
+
 #[test]
 fn append_missing_source_links_skips_already_present_links() {
     let resp = crate::message::LlmResponse {
@@ -366,8 +518,8 @@ fn llm_request_ignores_non_image_attachments_for_vision() {
 fn retry_backoff_doubles_from_500ms() {
     use std::time::Duration;
     assert_eq!(super::retry_backoff(1), Duration::from_millis(500));
-    assert_eq!(super::retry_backoff(2), Duration::from_millis(1000));
-    assert_eq!(super::retry_backoff(3), Duration::from_millis(2000));
+    assert_eq!(super::retry_backoff(2), Duration::from_secs(1));
+    assert_eq!(super::retry_backoff(3), Duration::from_secs(2));
 }
 
 #[test]
