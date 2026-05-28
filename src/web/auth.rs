@@ -57,6 +57,22 @@ pub fn verify_password(stored_hash: &str, password: &str) -> bool {
         .is_ok()
 }
 
+/// Produce an Argon2id hash for `password` suitable for `admin.password_hash`.
+///
+/// Salt is generated automatically by the underlying `argon2` crate's
+/// `getrandom` integration. The returned PHC string round-trips with
+/// `verify_password`.
+///
+/// # Errors
+/// Returns an error if Argon2 hashing fails (e.g. allocation failure).
+pub fn hash_password(password: &str) -> Result<String, crate::error::InboxError> {
+    use argon2::{Argon2, PasswordHasher};
+    Argon2::default()
+        .hash_password(password.as_bytes())
+        .map(|h| h.to_string())
+        .map_err(|e| crate::error::InboxError::Auth(format!("argon2 hash: {e}")))
+}
+
 /// Generate a cryptographically random 32-byte hex session token.
 #[must_use]
 pub fn generate_session_token() -> String {
@@ -77,7 +93,9 @@ pub struct LoginForm {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_session_token, is_authenticated, new_session_store};
+    use super::{
+        extract_session_token, hash_password, is_authenticated, new_session_store, verify_password,
+    };
     use axum::http::{HeaderMap, HeaderValue, header};
     use chrono::{Duration, Utc};
 
@@ -102,5 +120,29 @@ mod tests {
         );
         assert!(!is_authenticated(&headers, &store, 7));
         assert!(!store.contains_key("deadbeef"));
+    }
+
+    #[test]
+    fn hash_password_round_trips_through_verify() {
+        let hash = hash_password("hunter2").expect("hash ok");
+        assert!(verify_password(&hash, "hunter2"));
+        assert!(!verify_password(&hash, "hunter3"));
+    }
+
+    #[test]
+    fn hash_password_emits_phc_format() {
+        let hash = hash_password("anything").expect("hash ok");
+        // PHC strings start with $argon2id$ (the variant Argon2::default() picks).
+        assert!(
+            hash.starts_with("$argon2id$"),
+            "expected argon2id PHC string, got: {hash}"
+        );
+    }
+
+    #[test]
+    fn hash_password_distinct_salts_per_call() {
+        let a = hash_password("same").expect("hash ok");
+        let b = hash_password("same").expect("hash ok");
+        assert_ne!(a, b, "salts should differ per call");
     }
 }
