@@ -2,14 +2,15 @@
 #
 # Usage: `cargo tarpaulin` (picks this file up automatically).
 #
-# Excludes main.rs from coverage math. The remaining residents are pure glue:
-# `init_logging` configures global tracing subscribers, `wait_for_shutdown_signal`
-# wraps OS signal handlers, and `spawn_admin_server` / `spawn_adapters` are
-# fire-and-forget `tokio::spawn` calls. None of these have observable return
-# values that a unit test can usefully assert on. The pure helpers that *can*
-# be tested (`hash_password`, `pending::open_optional`) live in the library and
-# are covered there.
+# main.rs participates in coverage math. The pure helpers that used to live
+# inline (`hash_password`, `pending::open_optional`, `adapters::build_enabled`)
+# now live in the library and have direct unit tests. What's left in main.rs
+# is genuinely untestable glue: `main` itself wires construction order,
+# `init_logging` configures global tracing subscribers, `spawn_admin_server`
+# and `adapters::spawn_all` fire-and-forget tokio::spawn loops, and
+# `wait_for_shutdown_signal` wraps OS signal handlers. None of these have an
+# observable return value worth asserting on.
 
 [default]
 all-features = true
-exclude-files = ["tests/*", "src/main.rs"]
+exclude-files = ["tests/*"]

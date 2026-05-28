@@ -10,8 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use inbox::{
-    adapters::{InputAdapter, email::EmailAdapter, http::HttpAdapter, telegram::TelegramAdapter},
-    config,
+    adapters, config,
     health::ReadinessState,
     llm, log_capture,
     output::{OutputWriter, org_file::OrgFileWriter},
@@ -117,7 +116,8 @@ async fn main() -> Result<()> {
     }
 
     // Spawn adapters
-    spawn_adapters(&cfg, &tx, &shutdown, memory_store.as_ref());
+    let enabled_adapters = adapters::build_enabled(&cfg, memory_store.as_ref());
+    adapters::spawn_all(enabled_adapters, &tx, &shutdown);
 
     spawn_admin_server(AdminServerArgs {
         cfg: Arc::clone(&cfg),
@@ -212,56 +212,6 @@ fn spawn_admin_server(args: AdminServerArgs) {
             }
         }
     });
-}
-
-fn spawn_adapters(
-    cfg: &Arc<config::Config>,
-    tx: &mpsc::Sender<inbox::message::IncomingMessage>,
-    shutdown: &CancellationToken,
-    memory_store: Option<&std::sync::Arc<inbox::memory::MemoryStore>>,
-) {
-    if cfg.adapters.http.enabled {
-        let adapter = Box::new(HttpAdapter {
-            cfg: cfg.adapters.http.clone(),
-            attachments_dir: cfg.general.attachments_dir.clone(),
-        });
-        let tx2 = tx.clone();
-        let sd = shutdown.clone();
-        tokio::spawn(async move {
-            if let Err(e) = adapter.run(tx2, sd).await {
-                warn!(?e, "HTTP adapter exited with error");
-            }
-        });
-    }
-
-    if cfg.adapters.telegram.enabled {
-        let adapter = Box::new(TelegramAdapter {
-            cfg: cfg.adapters.telegram.clone(),
-            attachments_dir: cfg.general.attachments_dir.clone(),
-            memory_store: memory_store.cloned(),
-        });
-        let tx2 = tx.clone();
-        let sd = shutdown.clone();
-        tokio::spawn(async move {
-            if let Err(e) = adapter.run(tx2, sd).await {
-                warn!(?e, "Telegram adapter exited with error");
-            }
-        });
-    }
-
-    if cfg.adapters.email.enabled {
-        let adapter = Box::new(EmailAdapter {
-            cfg: cfg.adapters.email.clone(),
-            attachments_dir: cfg.general.attachments_dir.clone(),
-        });
-        let tx2 = tx.clone();
-        let sd = shutdown.clone();
-        tokio::spawn(async move {
-            if let Err(e) = adapter.run(tx2, sd).await {
-                warn!(?e, "Email adapter exited with error");
-            }
-        });
-    }
 }
 
 async fn wait_for_shutdown_signal() {
