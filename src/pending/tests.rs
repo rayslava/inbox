@@ -169,3 +169,82 @@ async fn telegram_chat_id_extraction() {
     assert_eq!(items[0].source, "telegram");
     assert_eq!(PendingStore::telegram_chat_id(&items[0]), Some(42));
 }
+
+// ── open_optional tests ──────────────────────────────────────────────────────
+
+fn minimal_config(attachments_dir: std::path::PathBuf) -> crate::config::Config {
+    use crate::config::{
+        AdaptersConfig, AdminConfig, Config, GeneralConfig, PipelineConfig, SyncthingConfig,
+        ToolingConfig, UrlFetchConfig, WebUiConfig,
+    };
+    Config {
+        general: GeneralConfig {
+            output_file: attachments_dir.join("inbox.org"),
+            attachments_dir,
+            log_level: "info".into(),
+            log_format: "pretty".into(),
+        },
+        admin: AdminConfig::default(),
+        web_ui: WebUiConfig::default(),
+        pipeline: PipelineConfig::default(),
+        llm: crate::test_helpers::no_llm_config(),
+        adapters: AdaptersConfig::default(),
+        url_fetch: UrlFetchConfig::default(),
+        syncthing: SyncthingConfig::default(),
+        tooling: ToolingConfig::default(),
+        memory: crate::config::MemoryConfig::default(),
+    }
+}
+
+#[tokio::test]
+async fn open_optional_returns_none_when_resume_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = minimal_config(dir.path().to_path_buf());
+    assert!(!cfg.pipeline.resume.enabled, "default should be disabled");
+    assert!(super::open_optional(&cfg).await.is_none());
+}
+
+#[tokio::test]
+async fn open_optional_opens_store_at_default_path_when_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = minimal_config(dir.path().to_path_buf());
+    cfg.pipeline.resume.enabled = true;
+
+    let store = super::open_optional(&cfg).await;
+    assert!(store.is_some(), "should open store under attachments_dir");
+    assert!(
+        dir.path().join("pending.db").exists(),
+        "default path should be {{attachments_dir}}/pending.db"
+    );
+}
+
+#[tokio::test]
+async fn open_optional_uses_explicit_db_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let custom = dir.path().join("subdir").join("custom.db");
+    std::fs::create_dir_all(custom.parent().unwrap()).unwrap();
+
+    let mut cfg = minimal_config(dir.path().to_path_buf());
+    cfg.pipeline.resume.enabled = true;
+    cfg.pipeline.resume.db_path = Some(custom.clone());
+
+    let store = super::open_optional(&cfg).await;
+    assert!(store.is_some());
+    assert!(custom.exists(), "explicit db_path should be created");
+}
+
+#[tokio::test]
+async fn open_optional_returns_none_on_open_failure() {
+    // Point at a path whose parent doesn't exist and can't be created
+    // (a non-directory file in the parent slot).
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("not-a-dir");
+    std::fs::write(&blocker, b"i am a regular file").unwrap();
+    let bad_path = blocker.join("pending.db");
+
+    let mut cfg = minimal_config(dir.path().to_path_buf());
+    cfg.pipeline.resume.enabled = true;
+    cfg.pipeline.resume.db_path = Some(bad_path);
+
+    assert!(super::open_optional(&cfg).await.is_none());
+}
