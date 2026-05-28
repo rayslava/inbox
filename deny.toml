@@ -1,0 +1,44 @@
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "warn"
+# Each ignore must carry a reason — cargo-deny prints it on every run, so we
+# stay reminded of the upstream dep blocking removal until it can be dropped.
+ignore = [
+    { id = "RUSTSEC-2025-0141", reason = "bincode 2.0.1 — transitive via grafeo-* crates; no upstream fix yet" },
+    { id = "RUSTSEC-2021-0141", reason = "dotenv 0.15.0 — dev-only via teloxide_tests; no maintained drop-in upgrade path" },
+    { id = "RUSTSEC-2025-0052", reason = "async-std 1.13.2 — transitive via async-imap; no maintained fork yet" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

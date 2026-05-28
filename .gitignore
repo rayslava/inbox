@@ -6,3 +6,12 @@
 .DS_Store
 config.toml
 Cargo.lock
+
+# Coverage / audit artifacts
+lcov.info
+tarpaulin-report.json
+crap.md
+
+# Local scratch
+issues.md
+token
