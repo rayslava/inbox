@@ -15,7 +15,7 @@ use inbox::{
     health::ReadinessState,
     llm, log_capture,
     output::{OutputWriter, org_file::OrgFileWriter},
-    pending::PendingStore,
+    pending,
     pipeline::Pipeline,
     processing_status::ProcessingTracker,
     resume_task::{self, ResumeTaskArgs},
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
 
-    let pending_store = open_pending_store(&cfg).await;
+    let pending_store = pending::open_optional(&cfg).await;
 
     let pipeline = Arc::new(Pipeline::new(
         Arc::clone(&cfg),
@@ -172,28 +172,6 @@ fn init_logging(format: &str, level: &str, log_store: std::sync::Arc<log_capture
         registry.with(fmt::layer().json()).init();
     } else {
         registry.with(fmt::layer().pretty()).init();
-    }
-}
-
-async fn open_pending_store(cfg: &Arc<config::Config>) -> Option<Arc<PendingStore>> {
-    if !cfg.pipeline.resume.enabled {
-        return None;
-    }
-    let db_path = cfg
-        .pipeline
-        .resume
-        .db_path
-        .clone()
-        .unwrap_or_else(|| cfg.general.attachments_dir.join("pending.db"));
-    match PendingStore::open(&db_path).await {
-        Ok(s) => {
-            info!(?db_path, "Pending store opened");
-            Some(Arc::new(s))
-        }
-        Err(e) => {
-            warn!(?e, "Failed to open pending store — resume disabled");
-            None
-        }
     }
 }
 
@@ -315,19 +293,10 @@ async fn wait_for_shutdown_signal() {
 }
 
 fn hash_password_cmd() -> Result<()> {
-    use argon2::{Argon2, PasswordHasher};
-
-    // Read password from stdin (for scripting) or interactively
     let mut password = String::new();
     std::io::stdin().read_line(&mut password).ok();
-    let password = password.trim();
-
-    // argon2 0.6+ with `getrandom` feature generates salt automatically
-    let hash = Argon2::default()
-        .hash_password(password.as_bytes())
-        .map_err(|e| color_eyre::eyre::eyre!("Hash error: {e}"))?
-        .to_string();
-
+    let hash = inbox::web::auth::hash_password(password.trim())
+        .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
     println!("{hash}");
     Ok(())
 }
