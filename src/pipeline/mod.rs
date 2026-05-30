@@ -12,6 +12,7 @@ use crate::processing_status::{ProcessingStage, ProcessingTracker};
 
 pub mod content_extractor;
 pub mod context_preload;
+pub mod image_analysis;
 pub mod preprocess;
 pub mod tags;
 pub mod url_classifier;

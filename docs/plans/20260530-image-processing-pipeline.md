@@ -188,7 +188,9 @@ pub struct ImageAnalysisResult {
 
 > **Milestone after Task 4:** the Evgeniya-class empty `:inbox_failed:` node is impossible regardless of OCR success. Layer 2 adds the actual understanding.
 
-### Task 5: Image-analysis module (vision-LLM classify + transcribe)
+### Task 5: Image-analysis module (vision-LLM classify + transcribe) ✅ DONE
+
+> `LlmChain::complete_vision_text` routes images to vision backends only (via `chain::vision::decide`); transcription uses the `complete_raw` JSON-summary channel. `classify` = `interface_min_chars`/line-count heuristic. Codex fix: size cap is now a pre-read `tokio::fs::metadata` stat + async `tokio::fs::read` (no whole-file read for oversized images, no runtime block), proven by a panic-on-call backend test. Not yet wired into the pipeline (Task 6).
 
 **Files:**
 - Create: `src/pipeline/image_analysis/mod.rs` (analysis orchestration)

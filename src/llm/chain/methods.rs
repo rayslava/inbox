@@ -29,6 +29,44 @@ impl LlmChain {
         None
     }
 
+    /// One-shot vision completion: send `images` with `system`/`user` to the
+    /// first vision-capable backend that succeeds, returning the plain text and
+    /// the `backend:model` that produced it. Non-vision backends are skipped.
+    /// `None` if no vision backend is available or all return empty text.
+    pub async fn complete_vision_text(
+        &self,
+        system: &str,
+        user: &str,
+        images: Vec<(String, String)>,
+    ) -> Option<(String, String)> {
+        if images.is_empty() {
+            return None;
+        }
+        let mut req = LlmRequest::simple(system, user);
+        req.images = images;
+        for backend in &self.backends {
+            if super::vision::decide(&req, backend.as_ref()) != super::vision::VisionDecision::Run {
+                continue;
+            }
+            match backend.complete_raw(req.clone()).await {
+                Ok((text, produced_by)) => {
+                    let trimmed = text.trim().to_owned();
+                    if !trimmed.is_empty() {
+                        return Some((trimmed, produced_by));
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        backend = backend.name(),
+                        "complete_vision_text backend failed"
+                    );
+                }
+            }
+        }
+        None
+    }
+
     /// Returns the sub-call's textual result together with the `backend:model`
     /// that produced it (empty string when all backends failed).
     pub(super) async fn execute_llm_tool_call(

@@ -12,6 +12,54 @@ pub struct PipelineConfig {
     pub preprocessing: PreprocessingConfig,
     #[serde(default)]
     pub resume: ResumeConfig,
+    #[serde(default)]
+    pub image_analysis: ImageAnalysisConfig,
+}
+
+// ── Image analysis ─────────────────────────────────────────────────────────────
+
+/// Configuration for the vision-LLM image-analysis stage that classifies and
+/// transcribes image attachments before pre-processing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImageAnalysisConfig {
+    /// Enable image analysis (classify + transcribe via a vision model).
+    #[serde(default = "super::infra::bool_true")]
+    pub enabled: bool,
+    /// System prompt instructing the vision model to transcribe visible text.
+    #[serde(default = "default_image_analysis_prompt")]
+    pub prompt: String,
+    /// Maximum images to analyze per message. Default: 4.
+    #[serde(default = "default_image_max_attachments")]
+    pub max_attachments: usize,
+    /// Minimum recognized-text length (chars) to classify an image as an
+    /// interface/screenshot rather than a plain photo. Default: 24.
+    #[serde(default = "default_interface_min_chars")]
+    pub interface_min_chars: usize,
+}
+
+impl Default for ImageAnalysisConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            prompt: default_image_analysis_prompt(),
+            max_attachments: default_image_max_attachments(),
+            interface_min_chars: default_interface_min_chars(),
+        }
+    }
+}
+
+fn default_image_analysis_prompt() -> String {
+    "Transcribe all text visible in this image, preserving line breaks. \
+     If the image contains no readable text, reply with an empty response."
+        .into()
+}
+
+fn default_image_max_attachments() -> usize {
+    4
+}
+
+fn default_interface_min_chars() -> usize {
+    24
 }
 
 // ── Incomplete-processing resume ───────────────────────────────────────────────
