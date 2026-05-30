@@ -117,6 +117,14 @@ pub enum FallbackMode {
     Discard,
 }
 
+// Independent on/off flags (`thinking_supported`, `vision_supported`,
+// `prefer_structured_outputs`, `prefer_reasoning`) each map 1:1 to a TOML key.
+// Folding them into enums or a sub-struct would only obscure that mapping, so we
+// opt out of the `struct_excessive_bools` pedantic lint for this config type.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Each flag maps 1:1 to an independent [[llm.backends]] TOML key."
+)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct LlmBackendConfig {
     #[serde(rename = "type")]
@@ -144,6 +152,12 @@ pub struct LlmBackendConfig {
     /// Defaults to `false`.
     #[serde(default)]
     pub thinking_supported: bool,
+    /// Whether this backend's model accepts image (vision) input. Set `true` for
+    /// vision-capable pinned `openrouter`/`ollama` models so image requests are
+    /// routed here. Ignored by `free_router` (which detects vision per-model from
+    /// `OpenRouter` model metadata). Defaults to `false`.
+    #[serde(default)]
+    pub vision_supported: bool,
     /// Maximum number of concurrent in-flight requests to this backend.
     /// `None` means unlimited. Set to `1` for local Ollama instances.
     pub max_concurrent: Option<usize>,

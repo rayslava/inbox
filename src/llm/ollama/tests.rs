@@ -14,6 +14,7 @@ fn make_client(base_url: &str) -> OllamaClient {
         think: None,
         think_timeout: None,
         thinking_supported: false,
+        vision_supported: false,
         context_size: None,
         format: None,
         circuit_open_secs: 0,

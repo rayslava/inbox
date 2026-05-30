@@ -22,6 +22,7 @@ pub struct OllamaClient {
     /// Extended timeout applied when thinking is active. `None` = use `self.timeout`.
     pub think_timeout: Option<Duration>,
     pub thinking_supported: bool,
+    pub vision_supported: bool,
     /// KV-cache context window size in tokens. Sent as `options.num_ctx` when set.
     pub context_size: Option<usize>,
     /// Ollama `format` constraint (e.g. `"json"`). Applied only on turns with no
@@ -99,6 +100,7 @@ impl OllamaClient {
             think: cfg.think,
             think_timeout: cfg.think_timeout_secs.map(Duration::from_secs),
             thinking_supported: cfg.thinking_supported,
+            vision_supported: cfg.vision_supported,
             context_size: cfg.context_size,
             format: cfg.format.clone(),
             circuit_open_secs: cfg.circuit_open_secs,
@@ -439,6 +441,9 @@ impl LlmClient for OllamaClient {
     }
     fn thinking_supported(&self) -> bool {
         self.thinking_supported
+    }
+    fn vision_supported(&self) -> bool {
+        self.vision_supported
     }
 
     #[instrument(skip(self, req), fields(model = %self.model))]

@@ -32,6 +32,10 @@ pub struct LlmRequest {
     /// Base64-encoded image attachments to include in the vision prompt.
     /// Each entry is `(mime_type, base64_data)`.
     pub images: Vec<(String, String)>,
+    /// Whether recognized image text (from the image-analysis stage) has been
+    /// folded into `user_content`. When `true`, non-vision backends can still
+    /// produce a useful result from the text alone (images may be stripped).
+    pub has_image_text: bool,
     /// Per-request thinking mode override.
     /// Set to `Some(true)` by the chain when `activate_thinking` tool is called.
     /// `None` = use backend default.
@@ -129,6 +133,7 @@ impl LlmRequest {
             tool_definitions: Vec::new(),
             require_initial_tool_call,
             images,
+            has_image_text: false,
             think: None,
             llm_depth: 0,
             progress_tx: None,
@@ -146,11 +151,20 @@ impl LlmRequest {
             tool_definitions: Vec::new(),
             require_initial_tool_call: false,
             images: Vec::new(),
+            has_image_text: false,
             think: None,
             llm_depth: 0,
             progress_tx: None,
             source_name: String::new(),
         }
+    }
+
+    /// Whether this request carries image attachments that require a
+    /// vision-capable backend. Derived from `images` so it can never desync
+    /// when a non-vision backend invocation strips the images.
+    #[must_use]
+    pub fn needs_vision(&self) -> bool {
+        !self.images.is_empty()
     }
 }
 
@@ -204,6 +218,12 @@ pub trait LlmClient: Send + Sync {
     /// Whether this backend supports the `think` field. Controls whether
     /// `activate_thinking` is offered in the tool list.
     fn thinking_supported(&self) -> bool {
+        false
+    }
+    /// Whether this backend can consume image attachments (vision input).
+    /// Image-bearing requests are routed only to backends that return `true`,
+    /// unless the request already carries recognized image text.
+    fn vision_supported(&self) -> bool {
         false
     }
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError>;
@@ -290,6 +310,8 @@ mod tests_chain_tool_exec;
 mod tests_resilience;
 #[cfg(test)]
 mod tests_thinking;
+#[cfg(test)]
+mod tests_vision;
 
 // ── Test helpers (also used by integration tests) ─────────────────────────────
 

@@ -50,6 +50,7 @@ pub(super) fn backend_cfg(api_url: &str, base_url: &str, fanout: usize) -> LlmBa
         think: None,
         think_timeout_secs: None,
         thinking_supported: false,
+        vision_supported: false,
         max_concurrent: None,
         context_size: None,
         format: None,

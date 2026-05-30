@@ -9,6 +9,7 @@ fn make_client(base_url: &str) -> OpenRouterClient {
         base_url: base_url.to_owned(),
         retries: 1,
         timeout: std::time::Duration::from_secs(5),
+        vision_supported: false,
         semaphore: None,
         client: reqwest::Client::new(),
     }

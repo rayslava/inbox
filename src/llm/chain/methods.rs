@@ -50,6 +50,7 @@ impl LlmChain {
             tool_definitions: vec![],
             require_initial_tool_call: false,
             images: vec![],
+            has_image_text: false,
             think: None,
             llm_depth: parent_req.llm_depth + 1,
             progress_tx: None,

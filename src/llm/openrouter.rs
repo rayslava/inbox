@@ -18,6 +18,7 @@ pub struct OpenRouterClient {
     pub base_url: String,
     pub retries: u32,
     pub timeout: Duration,
+    vision_supported: bool,
     semaphore: Option<Arc<Semaphore>>,
     client: reqwest::Client,
 }
@@ -46,6 +47,7 @@ impl OpenRouterClient {
             base_url: cfg.base_url.clone(),
             retries: cfg.retries,
             timeout: Duration::from_secs(cfg.timeout_secs),
+            vision_supported: cfg.vision_supported,
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
         })
@@ -118,6 +120,9 @@ impl LlmClient for OpenRouterClient {
     }
     fn retries(&self) -> u32 {
         self.retries
+    }
+    fn vision_supported(&self) -> bool {
+        self.vision_supported
     }
 
     #[instrument(skip(self, req), fields(model = %self.model))]
