@@ -228,7 +228,9 @@ pub struct ImageAnalysisResult {
 - [ ] Write tests: stage populates `image_analyses`; disabled config ⇒ skipped; preprocessing tag applied for interface; status tracker advances through `AnalyzingImages`.
 - [ ] Run mandatory pipeline + tests — must pass before Task 7.
 
-### Task 7: Feed recognized text into `from_enriched` and the enrichment prompt
+### Task 7: Feed recognized text into `from_enriched` and the enrichment prompt ✅ DONE
+
+> `from_enriched` appends each recognized image text as `--- Image text (<name>) ---` and sets `has_image_text`. Codex fix: image omission is **per-attachment** (by `original_name` ↔ `attachment_name`) — a transcribed image is omitted (avoids double vision work), but an un-transcribed image in the same message is still encoded so a vision backend can try it. Regression test covers the mixed-image case.
 
 **Files:**
 - Modify: `src/llm/mod.rs` (`from_enriched`)

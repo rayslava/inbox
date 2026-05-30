@@ -86,12 +86,33 @@ impl LlmRequest {
             }
         }
 
-        // Collect images for vision analysis.
+        // Append text recognized from images by the analysis stage, and collect
+        // the names of attachments that were transcribed. `has_image_text` lets a
+        // text-only backend summarize from the recognized text.
+        let mut has_image_text = false;
+        let mut transcribed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for a in &enriched.original.image_analyses {
+            if !a.recognized_text.trim().is_empty() {
+                has_image_text = true;
+                transcribed.insert(a.attachment_name.as_str());
+                let _ = write!(
+                    user_content,
+                    "\n\n--- Image text ({}) ---\n{}",
+                    a.attachment_name, a.recognized_text
+                );
+            }
+        }
+
+        // Encode images for vision per attachment: skip any image already
+        // transcribed (its text is the distilled content — re-sending the raw
+        // image is wasteful), but keep images with no extracted text so a vision
+        // backend in enrichment can still try them.
         let images: Vec<(String, String)> = enriched
             .original
             .attachments
             .iter()
             .filter(|a| a.media_kind == MediaKind::Image)
+            .filter(|a| !transcribed.contains(a.original_name.as_str()))
             .filter_map(|a| {
                 let bytes = std::fs::read(&a.saved_path).ok()?;
                 if bytes.len() > cfg.vision_max_bytes {
@@ -133,7 +154,7 @@ impl LlmRequest {
             tool_definitions: Vec::new(),
             require_initial_tool_call,
             images,
-            has_image_text: false,
+            has_image_text,
             think: None,
             llm_depth: 0,
             progress_tx: None,
