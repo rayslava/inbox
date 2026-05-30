@@ -243,7 +243,10 @@ pub struct ImageAnalysisResult {
 - [ ] Write tests: recognized text appears in `user_content`; `has_image_text` set when text present; `images` still populated from attachments; forwarded attribution preserved. (Backend-specific stripping is tested in Task 3, not here.)
 - [ ] Run mandatory pipeline + tests — must pass before Task 8.
 
-### Task 8: Pending/resume preserves analysis + retryable-vs-terminal distinction
+### Task 8: Pending/resume preserves analysis ✅ DONE (terminal distinction dropped)
+
+> **Design change (Codex review):** the planned terminal-vs-retryable signal was dropped. Deriving "terminal" from `image_analyses` presence wrongly suppressed retries after *transient* enrichment failures (a photo whose vision call was rate-limited benefits from a retry when vision recovers), and the chain cannot cheaply tell transient from permanent. Task 4 already guarantees the node is never empty, and `max_retries` bounds futile retries — so **all image fallbacks stay retryable** (existing behavior).
+> What Task 8 keeps: `resume_task::build_enriched` now restores `image_analyses` (resume does not re-run the analysis stage, so recognized text must survive the round-trip). `RetryableMessage` already persisted the field with a serde default (Task 4).
 
 **Files:**
 - Modify: `src/message.rs` or `src/pipeline/llm_stage.rs` (carry a terminal/retryable signal on `ProcessedMessage`)

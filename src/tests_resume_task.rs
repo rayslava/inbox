@@ -80,6 +80,25 @@ fn build_enriched_preserves_id() {
 }
 
 #[test]
+fn build_enriched_preserves_image_analyses() {
+    // Resume does not re-run the image-analysis stage, so recognized text must
+    // survive the round-trip from the pending store.
+    let mut item = dummy_pending("telegram");
+    item.incoming.image_analyses = vec![crate::message::ImageAnalysisResult {
+        attachment_name: "photo.jpg".into(),
+        kind: crate::message::ImageAnalysisKind::Interface,
+        recognized_text: "Recognized screen text".into(),
+        produced_by: "mock-vision".into(),
+    }];
+    let enriched = build_enriched(&item);
+    assert_eq!(enriched.original.image_analyses.len(), 1);
+    assert_eq!(
+        enriched.original.image_analyses[0].recognized_text,
+        "Recognized screen text"
+    );
+}
+
+#[test]
 fn build_enriched_skips_invalid_urls() {
     let mut item = dummy_pending("http");
     item.url_contents = vec![

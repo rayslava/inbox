@@ -273,6 +273,11 @@ pub(crate) fn build_enriched(item: &PendingItem) -> EnrichedMessage {
     incoming
         .preprocessing_hints
         .clone_from(&item.incoming.preprocessing_hints);
+    // Preserve recognized image text so the resumed enrichment keeps it (resume
+    // does not re-run the image-analysis stage).
+    incoming
+        .image_analyses
+        .clone_from(&item.incoming.image_analyses);
     incoming.received_at = item.incoming.received_at;
 
     // Re-parse URLs from stored url_contents so we don't re-fetch.
