@@ -65,6 +65,7 @@ fn pending_item(id: Uuid) -> PendingItem {
             user_tags: vec![],
             preprocessing_hints: ProcessingHints::default(),
             received_at: Utc::now(),
+            image_analyses: Vec::new(),
         },
         url_contents: vec![],
         tool_results: vec![],

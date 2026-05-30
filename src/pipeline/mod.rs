@@ -396,3 +396,5 @@ fn truncate_chars(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_image_fallback;

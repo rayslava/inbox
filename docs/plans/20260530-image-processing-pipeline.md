@@ -167,7 +167,9 @@ pub struct ImageAnalysisResult {
 - [ ] Write tests: image request with only text-only backends + no text ⇒ raw fallback (no doomed call); with recognized text ⇒ text-only backend runs without images; vision backend present ⇒ used first; **ollama path strips images for a non-vision model** (not just openrouter).
 - [ ] Run mandatory pipeline + tests — must pass before Task 4.
 
-### Task 4: Harden raw fallback so image-only messages are never empty
+### Task 4: Harden raw fallback so image-only messages are never empty ✅ DONE
+
+> Codex fixes: precedence reworked into a testable `plan_image_fallback` — OCR text always wins; attachment metadata wins only when no tool result has non-whitespace text (blank entries dropped so the summary is never empty); real tool content defers to the text/LLM title path (no title/body mismatch). `ImageFallback` is an enum (`Ocr`/`Metadata`). Interim: `resume_task` drops `image_analyses` until Task 8 wires it.
 
 **Files:**
 - Modify: `src/message.rs` (define `ImageAnalysisResult`/`ImageAnalysisKind` in FULL here — see Technical Details; add field + Debug + From)

@@ -32,6 +32,7 @@ fn dummy_http_pending_item() -> PendingItem {
             user_tags: vec![],
             preprocessing_hints: ProcessingHints::default(),
             received_at: Utc::now(),
+            image_analyses: Vec::new(),
         },
         url_contents: vec![UrlContent {
             url: "https://example.com".into(),
@@ -84,6 +85,7 @@ fn dummy_telegram_pending_item(status_msg_id: Option<i32>) -> PendingItem {
             user_tags: vec![],
             preprocessing_hints: ProcessingHints::default(),
             received_at: Utc::now(),
+            image_analyses: Vec::new(),
         },
         url_contents: vec![],
         tool_results: vec![],

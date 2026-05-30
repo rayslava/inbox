@@ -22,6 +22,7 @@ fn dummy_pending(source: &str) -> PendingItem {
             user_tags: vec!["tag1".into()],
             preprocessing_hints: ProcessingHints::default(),
             received_at: Utc::now(),
+            image_analyses: Vec::new(),
         },
         url_contents: vec![UrlContent {
             url: "https://example.com".into(),

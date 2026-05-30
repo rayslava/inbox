@@ -17,6 +17,7 @@ fn dummy_retryable() -> RetryableMessage {
         user_tags: vec![],
         preprocessing_hints: ProcessingHints::default(),
         received_at: Utc::now(),
+        image_analyses: Vec::new(),
     }
 }
 

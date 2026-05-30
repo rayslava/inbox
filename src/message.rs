@@ -22,6 +22,10 @@ pub struct IncomingMessage {
     pub preprocessing_hints: ProcessingHints,
     /// Per-message status notifier. Adapters set this; pipeline extracts and drives it.
     pub status_notifier: Option<Box<dyn StatusNotifier>>,
+    /// Per-attachment image-analysis results from the pre-processing stage.
+    /// Runtime state only (`IncomingMessage` is not serialized); the persisted
+    /// copy lives on [`RetryableMessage`].
+    pub image_analyses: Vec<ImageAnalysisResult>,
 }
 
 /// Hints derived from the pre-processing stage that guide subsequent pipeline stages.
@@ -46,6 +50,7 @@ impl std::fmt::Debug for IncomingMessage {
             .field("attachments", &self.attachments)
             .field("user_tags", &self.user_tags)
             .field("preprocessing_hints", &self.preprocessing_hints)
+            .field("image_analyses", &self.image_analyses)
             .finish_non_exhaustive()
     }
 }
@@ -73,6 +78,7 @@ impl IncomingMessage {
             user_tags: Vec::new(),
             preprocessing_hints: ProcessingHints::default(),
             status_notifier: None,
+            image_analyses: Vec::new(),
         }
     }
 
@@ -91,6 +97,11 @@ pub struct RetryableMessage {
     pub user_tags: Vec<String>,
     pub preprocessing_hints: ProcessingHints,
     pub received_at: DateTime<Utc>,
+    /// Image-analysis results, persisted so a resumed item keeps its recognized
+    /// text. `#[serde(default)]` keeps pending rows written before this field
+    /// loadable.
+    #[serde(default)]
+    pub image_analyses: Vec<ImageAnalysisResult>,
 }
 
 impl From<&IncomingMessage> for RetryableMessage {
@@ -102,6 +113,7 @@ impl From<&IncomingMessage> for RetryableMessage {
             user_tags: msg.user_tags.clone(),
             preprocessing_hints: msg.preprocessing_hints.clone(),
             received_at: msg.received_at,
+            image_analyses: msg.image_analyses.clone(),
         }
     }
 }
@@ -199,6 +211,29 @@ impl MediaKind {
             Self::Other => "other",
         }
     }
+}
+
+/// Classification of an image attachment by the image-analysis stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ImageAnalysisKind {
+    /// A UI / screenshot whose text was worth transcribing.
+    Interface,
+    /// An ordinary photo (no useful text).
+    Photo,
+    /// Could not be classified (analysis unavailable or ambiguous).
+    Unknown,
+}
+
+/// Result of analyzing one image attachment with a vision model.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ImageAnalysisResult {
+    /// `original_name` of the analyzed attachment.
+    pub attachment_name: String,
+    pub kind: ImageAnalysisKind,
+    /// Text recognized in the image; empty when none / not an interface.
+    pub recognized_text: String,
+    /// `backend:model` that produced the analysis.
+    pub produced_by: String,
 }
 
 #[cfg(test)]
