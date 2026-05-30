@@ -14,6 +14,7 @@ pub(super) const DONE_RETAIN_SECS: i64 = 300;
 #[serde(rename_all = "snake_case", tag = "stage")]
 pub enum ProcessingStage {
     Received,
+    AnalyzingImages,
     Enriching,
     RunningLlm {
         turn: usize,

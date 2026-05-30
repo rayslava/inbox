@@ -5,7 +5,7 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::config::Config;
 use crate::error::InboxError;
-use crate::message::{EnrichedMessage, IncomingMessage};
+use crate::message::{EnrichedMessage, ImageAnalysisKind, IncomingMessage, MediaKind};
 use crate::output::OutputWriter;
 use crate::pending::PendingStore;
 use crate::processing_status::{ProcessingStage, ProcessingTracker};
@@ -105,6 +105,39 @@ impl Pipeline {
         info!("Pipeline channel closed, exiting");
     }
 
+    /// Run the vision-LLM image-analysis stage, populating `msg.image_analyses`.
+    /// No-op when disabled or when the message carries no image attachments.
+    async fn run_image_analysis(
+        &self,
+        id: uuid::Uuid,
+        notifier: &mut Option<Box<dyn crate::processing_status::StatusNotifier>>,
+        msg: &mut IncomingMessage,
+    ) {
+        if !self.config.pipeline.image_analysis.enabled
+            || !msg
+                .attachments
+                .iter()
+                .any(|a| a.media_kind == MediaKind::Image)
+        {
+            return;
+        }
+        self.tracker.advance(id, ProcessingStage::AnalyzingImages);
+        if let Some(n) = notifier {
+            n.advance(ProcessingStage::AnalyzingImages).await;
+        }
+        let analyses = image_analysis::analyze_images(
+            &self.llm,
+            &self.config.pipeline.image_analysis,
+            self.config.llm.vision_max_bytes,
+            msg,
+        )
+        .await;
+        if !analyses.is_empty() {
+            info!(id = %id, count = analyses.len(), "Image analysis complete");
+        }
+        msg.image_analyses = analyses;
+    }
+
     /// Process a single incoming message through the full pipeline.
     ///
     /// # Errors
@@ -121,18 +154,31 @@ impl Pipeline {
             msg.user_tags = user_tags;
         }
 
-        let hints = preprocess::run_preprocessing(&msg, &self.config.pipeline.preprocessing);
-        if hints.force_web_search || !hints.suggested_tags.is_empty() {
-            info!(id = %id, force_web_search = hints.force_web_search,
-                suggested_tags = ?hints.suggested_tags, "Pre-processing hints computed");
-        }
-        msg.preprocessing_hints = hints;
-
         self.tracker.insert(
             id,
             msg.source.as_str().to_owned(),
             msg.text.chars().take(80).collect(),
         );
+
+        // Image analysis (interface classification + OCR) runs before
+        // pre-processing so the recognized text can inform rules and enrichment.
+        self.run_image_analysis(id, &mut notifier, &mut msg).await;
+
+        let mut hints = preprocess::run_preprocessing(&msg, &self.config.pipeline.preprocessing);
+        // Tag interface/screenshot images so the org node is easy to find.
+        if msg
+            .image_analyses
+            .iter()
+            .any(|a| a.kind == ImageAnalysisKind::Interface)
+            && !hints.suggested_tags.iter().any(|t| t == "interface")
+        {
+            hints.suggested_tags.push("interface".to_owned());
+        }
+        if hints.force_web_search || !hints.suggested_tags.is_empty() {
+            info!(id = %id, force_web_search = hints.force_web_search,
+                suggested_tags = ?hints.suggested_tags, "Pre-processing hints computed");
+        }
+        msg.preprocessing_hints = hints;
 
         let enriched = self
             .run_stage(
@@ -399,3 +445,5 @@ fn truncate_chars(s: &str, max: usize) -> String {
 mod tests;
 #[cfg(test)]
 mod tests_image_fallback;
+#[cfg(test)]
+mod tests_image_stage;

@@ -30,9 +30,11 @@ impl LlmChain {
     }
 
     /// One-shot vision completion: send `images` with `system`/`user` to the
-    /// first vision-capable backend that succeeds, returning the plain text and
-    /// the `backend:model` that produced it. Non-vision backends are skipped.
-    /// `None` if no vision backend is available or all return empty text.
+    /// first vision-capable backend that *responds*, returning the (trimmed)
+    /// text and the `backend:model` that produced it. An empty response is a
+    /// valid answer (e.g. an image with no readable text), so it is returned
+    /// rather than triggering fallback to other backends. Non-vision backends
+    /// are skipped. `None` only if no vision backend is available or all error.
     pub async fn complete_vision_text(
         &self,
         system: &str,
@@ -49,12 +51,7 @@ impl LlmChain {
                 continue;
             }
             match backend.complete_raw(req.clone()).await {
-                Ok((text, produced_by)) => {
-                    let trimmed = text.trim().to_owned();
-                    if !trimmed.is_empty() {
-                        return Some((trimmed, produced_by));
-                    }
-                }
+                Ok((text, produced_by)) => return Some((text.trim().to_owned(), produced_by)),
                 Err(e) => {
                     warn!(
                         ?e,

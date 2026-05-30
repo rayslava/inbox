@@ -67,6 +67,7 @@ impl TelegramNotifier {
 pub(super) fn stage_text(stage: &ProcessingStage) -> String {
     match stage {
         ProcessingStage::Received => "⏳ Processing…".to_owned(),
+        ProcessingStage::AnalyzingImages => "🖼 Reading image…".to_owned(),
         ProcessingStage::Enriching => "🔍 Fetching content…".to_owned(),
         ProcessingStage::RunningLlm {
             turn,

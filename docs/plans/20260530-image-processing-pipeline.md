@@ -210,7 +210,9 @@ pub struct ImageAnalysisResult {
 - [ ] Write tests (wiremock vision response): interface image ⇒ `Interface` + text; plain photo ⇒ `Photo`, empty text; malformed/empty model output ⇒ `None`/`Unknown` without panic; oversize/non-image skipped.
 - [ ] Run mandatory pipeline + tests — must pass before Task 6.
 
-### Task 6: Wire the stage into the pipeline before preprocessing
+### Task 6: Wire the stage into the pipeline before preprocessing ✅ DONE
+
+> `ProcessingStage::AnalyzingImages` added (+ `stage_text` arm + web-UI `STAGE_ICONS`/`STAGE_LABELS`). `tracker.insert` moved before the stage; `run_image_analysis` helper keeps `process()` under the 100-line limit; interface images get an `interface` suggested tag. Codex fixes: `complete_vision_text` now returns the first vision backend's answer even when empty (a no-text photo records as `Photo` and stops fallback); web-UI stage maps updated; tests split into `tests_image_stage.rs` with disabled-path + notifier-observability coverage.
 
 **Files:**
 - Modify: `src/pipeline/mod.rs` (stage ordering, call `analyze_images`)

@@ -9,7 +9,7 @@ use crate::message::{EnrichedMessage, IncomingMessage, MessageSource, SourceMeta
 use crate::pending::PendingStore;
 use crate::processing_status::ProcessingTracker;
 
-fn test_config(policy: crate::config::JsShellPolicy) -> Config {
+pub(super) fn test_config(policy: crate::config::JsShellPolicy) -> Config {
     Config {
         general: GeneralConfig {
             output_file: std::path::PathBuf::from("/tmp/inbox-test.org"),
@@ -279,7 +279,7 @@ async fn fallback_item_inserted_into_pending_store() {
 
 // ── Pipeline::process end-to-end tests ────────────────────────────────────────
 
-fn make_msg(text: &str) -> IncomingMessage {
+pub(super) fn make_msg(text: &str) -> IncomingMessage {
     IncomingMessage::new(
         MessageSource::Http,
         text.into(),
