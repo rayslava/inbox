@@ -264,7 +264,7 @@ pub struct ImageAnalysisResult {
 - [ ] Write tests: round-trip preserves analyses; retryable item re-queued with context; terminal item finalized non-empty AND not pending; backward-compat load of a pre-existing pending row without the field.
 - [ ] Run mandatory pipeline + tests — must pass before Task 9.
 
-### Task 9: Update `config.example.toml` and docs
+### Task 9: Update `config.example.toml` and docs ✅ DONE (Codex: approve)
 
 **Files:**
 - Modify: `config.example.toml`

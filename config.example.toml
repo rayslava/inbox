@@ -124,6 +124,9 @@ connect_timeout_secs = 10
 # min_context_length         = 16384
 # prefer_structured_outputs  = true
 # prefer_reasoning           = false
+# Vision capability is detected automatically per model from OpenRouter
+# /api/v1/models metadata (architecture.input_modalities), so image requests
+# are routed only to vision-capable free models. No vision_supported flag here.
 
 # Alternative cloud backend: pinned OpenRouter model (commented out by default
 # — prefer free_router above for free models, or keep both with openrouter
@@ -137,6 +140,8 @@ connect_timeout_secs = 10
 # retries             = 3
 # timeout_secs        = 30
 # connect_timeout_secs = 10   # TCP connect timeout (default 10s); separate from read timeout
+# vision_supported   = true   # set true for a vision-capable pinned model (e.g. gpt-4o);
+#                             # image requests are routed here. Default: false.
 
 # Offline fallback: local Ollama (comment out if not available).
 # [[llm.backends]]
@@ -148,6 +153,8 @@ connect_timeout_secs = 10
 # think              = true   # static default; model may also call activate_thinking tool
 # think_timeout_secs = 300    # timeout for thinking requests (default: timeout_secs)
 # thinking_supported = true   # allow model to call activate_thinking (Ollama only; default: false)
+# vision_supported   = true   # set true for a vision-capable local model (e.g. llava, llama3.2-vision);
+#                             # image requests are routed here. Default: false.
 # max_concurrent     = 1      # serialize requests to avoid overloading the local model (omit = unlimited)
 # context_size   = 16384      # num_ctx for Ollama (KV cache / context window). Must fit the system
 #                             # prompt + ALL enabled tool schemas + content; Ollama silently
@@ -273,6 +280,26 @@ interval_secs = 300  # 5 minutes
 max_retries   = 5
 # Path to the SQLite database file.  Defaults to {attachments_dir}/pending.db.
 # db_path = "/path/to/pending.db"
+
+# ── Image analysis ─────────────────────────────────────────────────────────────
+
+# Vision-LLM stage that runs before pre-processing: it classifies each image
+# attachment (interface/screenshot vs photo) and transcribes any visible text,
+# which then flows into enrichment. Requires a vision-capable backend (a free
+# vision model via free_router, or a pinned model with vision_supported = true).
+# With no vision backend the stage is a no-op and an image still produces a
+# metadata node (it is never written empty).
+[pipeline.image_analysis]
+# Enable the stage. Default: true.
+enabled = true
+# Instruction sent to the vision model. Default: transcribe visible text.
+# prompt = "Transcribe all text visible in this image, preserving line breaks. If the image contains no readable text, reply with an empty response."
+# Maximum images analyzed per message. Default: 4.
+# max_attachments = 4
+# Minimum recognized-text length (chars) to classify an image as an interface
+# rather than a plain photo. Default: 24.
+# interface_min_chars = 24
+# Note: per-image size is capped by [llm].vision_max_bytes (default 5 MiB).
 
 # ── Syncthing ─────────────────────────────────────────────────────────────────
 

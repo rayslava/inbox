@@ -185,3 +185,35 @@ fn default_js_shell_patterns() -> Vec<String> {
         "requires javascript".into(),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_analysis_defaults() {
+        let cfg: PipelineConfig = toml::from_str("").expect("empty config parses");
+        assert!(cfg.image_analysis.enabled);
+        assert_eq!(cfg.image_analysis.max_attachments, 4);
+        assert_eq!(cfg.image_analysis.interface_min_chars, 24);
+        assert!(!cfg.image_analysis.prompt.is_empty());
+    }
+
+    #[test]
+    fn image_analysis_parses_overrides() {
+        let cfg: PipelineConfig = toml::from_str(
+            r#"
+[image_analysis]
+enabled = false
+max_attachments = 2
+interface_min_chars = 50
+prompt = "custom"
+"#,
+        )
+        .expect("config parses");
+        assert!(!cfg.image_analysis.enabled);
+        assert_eq!(cfg.image_analysis.max_attachments, 2);
+        assert_eq!(cfg.image_analysis.interface_min_chars, 50);
+        assert_eq!(cfg.image_analysis.prompt, "custom");
+    }
+}

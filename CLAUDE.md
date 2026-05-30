@@ -9,7 +9,8 @@ rules defined by the skill.
 ## Architecture
 
 - Input adapters: `telegram`, `http`, `email`
-- Pipeline: URL extraction/classification, fetch/scrape/download, LLM enrichment, template render
+- Pipeline: image analysis (vision-LLM classify + OCR), URL extraction/classification, fetch/scrape/download, LLM enrichment, template render
+- Image handling: image attachments are routed only to vision-capable backends; recognized text feeds enrichment. An image-bearing message is **never** written as an empty `:inbox_failed:` node — failing enrichment still yields a metadata/OCR node (`src/pipeline/image_analysis/`, `src/pipeline/llm_stage.rs`).
 - Output: atomic org append + optional Syncthing rescan
 - Admin server: health/readiness, metrics, optional web UI + attachments browser
 
