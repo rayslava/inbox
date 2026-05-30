@@ -148,7 +148,11 @@ pub struct ImageAnalysisResult {
 - [ ] Write `wiremock` tests: models-metadata join marks vision models; `candidate_models(true, true)` returns only models that are BOTH vision and tool capable; `candidate_models(false, true)` returns vision-capable; empty vision pool ⇒ no candidates; degraded fallback ⇒ empty vision pool (no blind routing); metadata fetch failure ⇒ graceful (no panic).
 - [ ] Run mandatory pipeline + tests — must pass before Task 3.
 
-### Task 3: Chain selects vision backends for image requests
+### Task 3: Chain selects vision backends for image requests ✅ DONE
+
+> Image stripping done at chain level (clear `req.images`) — openrouter/ollama already omit images when empty, so no builder change needed. Routing logic lives in `chain/vision.rs` (`decide` + `prepare`). Codex fixes: all-skipped image requests force RawFallback even under `FallbackMode::Discard` (so an image is never silently dropped) — `attempted_any` guard + `ChainRunState::into_raw_fallback` dedup + 2 regression tests.
+>
+> ⚠️ Follow-up (pre-existing, not introduced here): `chain.rs` remains over the 500-line limit (629 before this task, 659 after). Warrants a dedicated decomposition task; not done here to avoid an unscoped refactor of the hot path.
 
 **Files:**
 - Create: `src/llm/chain/vision.rs` (backend-selection helper — keep `chain.rs` from growing past its already-over-limit 629 lines)

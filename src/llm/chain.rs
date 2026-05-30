@@ -11,6 +11,9 @@ use super::chain_tools::{append_missing_source_links, execute_tool_calls, retry_
 mod methods;
 #[cfg(test)]
 mod methods_tests;
+mod vision;
+#[cfg(test)]
+mod vision_tests;
 
 use super::{
     FallbackMode, LlmClient, LlmCompletion, LlmOutcome, LlmRequest, LlmTurnProgress,
@@ -38,6 +41,18 @@ struct ChainRunState {
     fallback_tool_results: Vec<(String, String)>,
     helpers: Vec<String>,
     tool_calls_made: usize,
+}
+
+impl ChainRunState {
+    /// Consume the run-level state into a `RawFallback` outcome.
+    fn into_raw_fallback(self) -> LlmOutcome {
+        LlmOutcome::RawFallback {
+            source_urls: self.fallback_source_urls,
+            tool_results: self.fallback_tool_results,
+            helpers: self.helpers,
+            tool_calls_made: self.tool_calls_made,
+        }
+    }
 }
 
 /// Per-attempt scratch state — turn counter, thinking-mode counter, accumulated
@@ -112,11 +127,22 @@ impl LlmChain {
         let tool_defs = self.build_tool_definitions(&req);
         let mut state = ChainRunState::default();
 
+        // Route image-bearing requests away from backends that cannot see images
+        // (stripping images for text-only backends when recognized image text is
+        // present). `attempted_any` tracks whether any backend was actually tried,
+        // so an image request skipped by *every* backend is never silently dropped.
+        let mut attempted_any = false;
         for backend in &self.backends {
+            let Some(active_req) = vision::prepare(&req, backend.as_ref()) else {
+                continue;
+            };
+            let req: &LlmRequest = &active_req;
+            attempted_any = true;
+
             let mut backend_giving_up = false;
             for attempt in 0..backend.retries() {
                 let outcome = self
-                    .run_attempt(backend.as_ref(), &req, &tool_defs, attempt, &mut state)
+                    .run_attempt(backend.as_ref(), req, &tool_defs, attempt, &mut state)
                     .await;
                 match outcome {
                     AttemptOutcome::Success(o) => return o,
@@ -141,6 +167,15 @@ impl LlmChain {
                     "LLM backend exhausted all retries"
                 );
             }
+        }
+
+        // An image request that no backend could even attempt (all skipped as
+        // non-vision) must not be lost to a `Discard` policy — the LLM never ran,
+        // so there is nothing to discard. Force a RawFallback so the pipeline can
+        // still render a metadata node (hardened in a later task).
+        if req.needs_vision() && !attempted_any {
+            warn!("No vision-capable backend for image request — deferring to raw fallback");
+            return state.into_raw_fallback();
         }
 
         warn!(
@@ -445,12 +480,7 @@ impl LlmChain {
     /// the matching `LlmOutcome` variant.
     fn apply_fallback(&self, state: ChainRunState) -> LlmOutcome {
         match self.fallback {
-            FallbackMode::Raw => LlmOutcome::RawFallback {
-                source_urls: state.fallback_source_urls,
-                tool_results: state.fallback_tool_results,
-                helpers: state.helpers,
-                tool_calls_made: state.tool_calls_made,
-            },
+            FallbackMode::Raw => state.into_raw_fallback(),
             FallbackMode::Discard => LlmOutcome::Discard,
         }
     }

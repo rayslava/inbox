@@ -20,6 +20,16 @@ pub struct MockLlm {
     pub behavior: MockLlmBehavior,
     pub name: String,
     pub retries: u32,
+    pub vision: bool,
+}
+
+impl MockLlm {
+    /// Mark this mock backend as vision-capable (for routing tests).
+    #[must_use]
+    pub fn with_vision(mut self) -> Self {
+        self.vision = true;
+        self
+    }
 }
 
 impl MockLlm {
@@ -29,6 +39,7 @@ impl MockLlm {
             behavior: MockLlmBehavior::Success(response),
             name: "mock".into(),
             retries: 1,
+            vision: false,
         }
     }
 
@@ -38,6 +49,7 @@ impl MockLlm {
             behavior: MockLlmBehavior::Fail(message.into()),
             name: "mock-failing".into(),
             retries: 1,
+            vision: false,
         }
     }
 
@@ -56,6 +68,7 @@ impl MockLlm {
             behavior: MockLlmBehavior::Script(Mutex::new(script)),
             name: "mock-scripted".into(),
             retries: 1,
+            vision: false,
         }
     }
 }
@@ -70,6 +83,9 @@ impl LlmClient for MockLlm {
     }
     fn retries(&self) -> u32 {
         self.retries
+    }
+    fn vision_supported(&self) -> bool {
+        self.vision
     }
     async fn complete(&self, _req: LlmRequest) -> Result<LlmCompletion, InboxError> {
         match &self.behavior {
