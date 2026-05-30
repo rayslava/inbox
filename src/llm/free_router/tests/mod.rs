@@ -5,3 +5,4 @@ mod classifier_tests;
 mod dispatch_tests;
 mod fixtures;
 mod pool_tests;
+mod vision_tests;

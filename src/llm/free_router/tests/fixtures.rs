@@ -21,8 +21,16 @@ pub(super) fn sample_model(
         supports_tool_choice: supports_tools,
         supports_structured_outputs: supports_structured,
         supports_reasoning,
+        supports_vision: false,
         health_status: health.into(),
     }
+}
+
+/// Like [`sample_model`] but flagged as vision-capable.
+pub(super) fn sample_vision_model(id: &str, score: f64, supports_tools: bool) -> FreeModel {
+    let mut m = sample_model(id, score, 64_000, supports_tools, false, false, "passed");
+    m.supports_vision = true;
+    m
 }
 
 pub(super) fn fixed_pool() -> PoolState {
@@ -36,6 +44,7 @@ pub(super) fn fixed_pool() -> PoolState {
             sample_model("c/no-tool", 900.0, 128_000, false, false, false, "passed"),
             sample_model("b/tool-low", 800.0, 32_000, true, true, false, "passed"),
         ],
+        vision_models: vec![],
     }
 }
 

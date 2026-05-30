@@ -70,7 +70,8 @@ impl FreeRouterClient {
 
         let prefs = PoolPreferences::from(cfg);
         let list_timeout = Duration::from_secs(cfg.timeout_secs);
-        let (initial, defer_refresh) = initial_pool(&client, &cfg.api_url, list_timeout, prefs);
+        let (initial, defer_refresh) =
+            initial_pool(&client, &cfg.api_url, &cfg.base_url, list_timeout, prefs);
 
         let state = Arc::new(RwLock::new(PoolStateWithStamp {
             pool: initial,
@@ -84,8 +85,9 @@ impl FreeRouterClient {
             let state = Arc::clone(&state);
             let client = client.clone();
             let api_url = cfg.api_url.clone();
+            let base_url = cfg.base_url.clone();
             handle.spawn(async move {
-                refresh_into(&state, &client, &api_url, list_timeout, prefs).await;
+                refresh_into(&state, &client, &api_url, &base_url, list_timeout, prefs).await;
             });
         }
 
@@ -137,8 +139,41 @@ impl FreeRouterClient {
         }
     }
 
-    async fn candidate_models(&self, needs_tools: bool) -> Vec<FreeModel> {
+    /// Whether both the tool and general pools are empty (a genuinely drained
+    /// pool, as opposed to merely lacking vision-capable models).
+    async fn pool_is_empty(&self) -> bool {
+        self.state.read().await.pool.is_empty()
+    }
+
+    async fn candidate_models(&self, needs_tools: bool, needs_vision: bool) -> Vec<FreeModel> {
         let guard = self.state.read().await;
+
+        // Vision requests must never reach a non-vision model. Draw from the
+        // vision pool only; when tools are also needed, prefer the intersection
+        // of vision-and-tool models, relaxing the tool constraint (not the
+        // vision one) if that intersection is empty — mirroring the tool→general
+        // leniency below.
+        if needs_vision {
+            let vision = &guard.pool.vision_models;
+            if needs_tools {
+                let both: Vec<FreeModel> = vision
+                    .iter()
+                    .filter(|m| m.supports_tools && m.supports_tool_choice)
+                    .cloned()
+                    .collect();
+                if both.is_empty() {
+                    if !vision.is_empty() {
+                        warn!(
+                            "Free-router: no vision+tool models; using vision pool with tools still requested"
+                        );
+                    }
+                    return vision.clone();
+                }
+                return both;
+            }
+            return vision.clone();
+        }
+
         if needs_tools {
             let pool = &guard.pool.tool_models;
             if pool.is_empty() {
@@ -178,6 +213,7 @@ impl FreeRouterClient {
             &self.state,
             &self.client,
             &self.api_url,
+            &self.base_url,
             self.list_timeout,
             self.prefs,
         )
@@ -197,14 +233,16 @@ async fn refresh_into(
     state: &RwLock<PoolStateWithStamp>,
     client: &reqwest::Client,
     api_url: &str,
+    base_url: &str,
     list_timeout: Duration,
     prefs: PoolPreferences,
 ) {
-    match fetch_pool(client, api_url, list_timeout, prefs).await {
+    match fetch_pool(client, api_url, base_url, list_timeout, prefs).await {
         Ok(new_pool) if !new_pool.is_empty() => {
             info!(
                 tool_models = new_pool.tool_models.len(),
                 general_models = new_pool.general_models.len(),
+                vision_models = new_pool.vision_models.len(),
                 "Free-router pool refreshed"
             );
             let mut guard = state.write().await;
@@ -244,6 +282,7 @@ async fn refresh_into(
 fn initial_pool(
     client: &reqwest::Client,
     api_url: &str,
+    base_url: &str,
     timeout: Duration,
     prefs: PoolPreferences,
 ) -> (PoolState, bool) {
@@ -259,12 +298,13 @@ fn initial_pool(
         return (PoolState::degraded_fallback(), true);
     }
 
-    let fut = fetch_pool(client, api_url, timeout, prefs);
+    let fut = fetch_pool(client, api_url, base_url, timeout, prefs);
     match tokio::task::block_in_place(|| handle.block_on(fut)) {
         Ok(pool) if !pool.is_empty() => {
             info!(
                 tool_models = pool.tool_models.len(),
                 general_models = pool.general_models.len(),
+                vision_models = pool.vision_models.len(),
                 "Free-router pool initialised"
             );
             (pool, false)
@@ -325,6 +365,14 @@ impl LlmClient for FreeRouterClient {
             .is_ok_and(|g| g.pool.general_models.iter().any(|m| m.supports_reasoning))
     }
 
+    fn vision_supported(&self) -> bool {
+        // Best-effort read, same rationale as `thinking_supported`. The chain
+        // consults this to decide whether to route image requests here.
+        self.state
+            .try_read()
+            .is_ok_and(|g| !g.pool.vision_models.is_empty())
+    }
+
     #[instrument(skip(self, req), fields(backend = "free_router"))]
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
         // `acquire` errors only if the semaphore is closed, which never happens
@@ -336,24 +384,37 @@ impl LlmClient for FreeRouterClient {
         };
 
         let needs_tools = !req.tool_definitions.is_empty();
-        let mut candidates = self.candidate_models(needs_tools).await;
+        let needs_vision = req.needs_vision();
+        let mut candidates = self.candidate_models(needs_tools, needs_vision).await;
         if candidates.is_empty() {
-            // The pool drained (e.g. a prior refresh returned zero healthy
+            // A vision request against an otherwise-healthy pool simply has no
+            // vision-capable models — refreshing cannot conjure them. Fail fast so
+            // the chain moves to the next backend instead of forcing a network
+            // refresh on every retry.
+            if needs_vision && !self.pool_is_empty().await {
+                return Err(InboxError::Llm(
+                    "free-router has no vision-capable models".into(),
+                ));
+            }
+            // Genuinely drained pool (e.g. a prior refresh returned zero healthy
             // models). complete() never reaches `maybe_refresh` on an empty pool,
-            // so without this the backend would stay dead until restart. Force a
-            // recovery refresh — bypassing the interval — and retry the read.
-            warn!("Free-router pool empty — forcing recovery refresh");
+            // so force a recovery refresh — bypassing the interval — and retry.
+            warn!(
+                needs_vision,
+                "Free-router pool empty — forcing recovery refresh"
+            );
             self.refresh_now().await;
-            candidates = self.candidate_models(needs_tools).await;
+            candidates = self.candidate_models(needs_tools, needs_vision).await;
             if candidates.is_empty() {
                 return Err(InboxError::Llm(
-                    "free-router pool is empty (both tool and general)".into(),
+                    "free-router pool is empty for this request (no matching models)".into(),
                 ));
             }
         }
 
         debug!(
             needs_tools,
+            needs_vision,
             pool_size = candidates.len(),
             fanout = self.parallel_fanout,
             "free-router dispatching"
@@ -378,7 +439,7 @@ impl LlmClient for FreeRouterClient {
         // All batches failed — attempt a reactive refresh and, if the pool
         // changed, retry once with the freshly fetched candidates.
         self.maybe_refresh().await;
-        let refreshed = self.candidate_models(needs_tools).await;
+        let refreshed = self.candidate_models(needs_tools, needs_vision).await;
         if !refreshed.is_empty() && !refreshed_is_same(&refreshed, &candidates) {
             return self.complete_with(refreshed, req.clone()).await;
         }

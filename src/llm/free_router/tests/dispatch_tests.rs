@@ -311,8 +311,8 @@ async fn degraded_bootstrap_when_list_unreachable() {
     let cfg = backend_cfg(&format!("{}/", list.uri()), "http://unused.invalid", 1);
     let client = FreeRouterClient::from_config(&cfg).expect("from_config");
 
-    let tool_candidates = client.candidate_models(true).await;
-    let general_candidates = client.candidate_models(false).await;
+    let tool_candidates = client.candidate_models(true, false).await;
+    let general_candidates = client.candidate_models(false, false).await;
     assert_eq!(tool_candidates.len(), 1);
     assert_eq!(tool_candidates[0].id, FALLBACK_MODEL_ID);
     assert_eq!(general_candidates.len(), 1);
@@ -326,7 +326,7 @@ async fn from_config_does_not_panic_on_current_thread_runtime() {
     let cfg = backend_cfg("http://unreachable.invalid/", "http://unused.invalid", 1);
     let client = FreeRouterClient::from_config(&cfg).expect("from_config must not panic");
 
-    let general = client.candidate_models(false).await;
+    let general = client.candidate_models(false, false).await;
     assert_eq!(general.len(), 1);
     assert_eq!(general[0].id, FALLBACK_MODEL_ID);
 }
@@ -367,6 +367,7 @@ async fn hard_error_short_circuits_retries() {
             false,
             "passed",
         )],
+        vision_models: vec![],
     };
     let client = FreeRouterClient::with_pool(&cfg, pool);
 
@@ -403,6 +404,7 @@ async fn tool_call_falls_back_to_general_when_no_tool_models() {
             false,
             "passed",
         )],
+        vision_models: vec![],
     };
     let cfg = backend_cfg("http://unused.invalid/list", &chat.uri(), 1);
     let client = FreeRouterClient::with_pool(&cfg, general_only);
@@ -435,6 +437,7 @@ async fn thinking_supported_reflects_pool_and_preference() {
             true,
             "passed",
         )],
+        vision_models: vec![],
     };
 
     // prefer_reasoning=false ⇒ thinking_supported is always false.
@@ -456,6 +459,7 @@ async fn thinking_supported_reflects_pool_and_preference() {
         general_models: vec![sample_model(
             "x/plain", 900.0, 16_000, true, false, false, "passed",
         )],
+        vision_models: vec![],
     };
     let client_no = FreeRouterClient::with_pool(&cfg_on, no_reasoning_pool);
     assert!(!client_no.thinking_supported());

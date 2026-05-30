@@ -109,7 +109,9 @@ pub struct ImageAnalysisResult {
 
 ## Implementation Steps
 
-### Task 1: Add `vision_supported` to the backend trait and pinned-backend config
+### Task 1: Add `vision_supported` to the backend trait and pinned-backend config ✅ DONE (04c05a2)
+
+> Deviation: `needs_vision` implemented as a derived method (`!images.is_empty()`) instead of a stored field — single source of truth, can't desync when Task 3 strips images. `has_image_text` is the stored flag. Codex-approved.
 
 **Files:**
 - Modify: `src/llm/mod.rs` (trait `LlmClient`, `LlmRequest`)
@@ -130,7 +132,9 @@ pub struct ImageAnalysisResult {
 - [ ] Write tests: trait default returns false; openrouter/ollama reflect config flag; `LlmRequest.needs_vision` set correctly for image vs no-image; `has_image_text` default false.
 - [ ] Run mandatory pipeline + tests — must pass before Task 2.
 
-### Task 2: Vision-aware free_router pool partition
+### Task 2: Vision-aware free_router pool partition ✅ DONE
+
+> Codex review fixes folded in: fail-fast (no force-refresh) when a vision request hits a healthy pool with no vision models; capped the optional OpenRouter modality-fetch timeout (`VISION_FETCH_TIMEOUT_CAP = 5s`); added a `vision_models` info log + a regression test asserting zero refresh calls on the vision-empty path.
 
 **Files:**
 - Modify: `src/llm/free_router/pool.rs` (`FreeModel.supports_vision`, `PoolState.vision_models`, fetch/partition)

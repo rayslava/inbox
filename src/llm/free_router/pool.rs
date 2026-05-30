@@ -23,14 +23,20 @@ pub const FALLBACK_MODEL_ID: &str = "openrouter/free";
 /// top and mid-ranked models from the API.
 const PREF_BONUS: f64 = 50.0;
 
-// The four `supports_*` booleans below mirror the top-models API schema 1:1
+/// Upper bound on the optional `OpenRouter` modality fetch. The list fetch may use
+/// a long timeout for slow CPU inference; the non-fatal join must not inherit it.
+const VISION_FETCH_TIMEOUT_CAP: Duration = Duration::from_secs(5);
+
+// The `supports_*` booleans mostly mirror the top-models API schema 1:1
 // (`supportsTools`, `supportsToolChoice`, `supportsStructuredOutputs`,
-// `supportsReasoning`). Grouping them into a bitfield or sub-struct would make
-// the deserializer diverge from the upstream JSON shape, so we opt out of the
-// `struct_excessive_bools` pedantic lint for this specific type.
+// `supportsReasoning`). `supports_vision` is the exception: the index does not
+// expose modality, so it is populated from OpenRouter `/api/v1/models`
+// metadata after deserialization. Grouping these flags into a bitfield would
+// make the deserializer diverge from the upstream JSON, so we opt out of the
+// `struct_excessive_bools` pedantic lint for this type.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "Fields mirror the shir-man top-models API response 1:1."
+    reason = "Flags mirror the top-models API response; vision is joined from OpenRouter metadata."
 )]
 #[derive(Debug, Clone, Deserialize)]
 pub struct FreeModel {
@@ -47,6 +53,10 @@ pub struct FreeModel {
     pub supports_structured_outputs: bool,
     #[serde(default, rename = "supportsReasoning")]
     pub supports_reasoning: bool,
+    /// Accepts image input. Not from the top-models index — joined from
+    /// `OpenRouter` `/api/v1/models` (`architecture.input_modalities`).
+    #[serde(default, skip)]
+    pub supports_vision: bool,
     #[serde(default, rename = "healthStatus")]
     pub health_status: String,
 }
@@ -77,10 +87,18 @@ impl From<&LlmBackendConfig> for PoolPreferences {
 }
 
 /// Snapshot of the ordered model pool. Replaced atomically on refresh.
+#[expect(
+    clippy::struct_field_names,
+    reason = "Each field is a distinct pool of models; the `_models` suffix is the clearest name."
+)]
 #[derive(Debug, Clone, Default)]
 pub struct PoolState {
     pub tool_models: Vec<FreeModel>,
     pub general_models: Vec<FreeModel>,
+    /// Subset of `general_models` that accept image input. Empty unless the
+    /// `OpenRouter` modality join succeeded — never seeded with the degraded
+    /// fallback alias, whose modality is unknown.
+    pub vision_models: Vec<FreeModel>,
 }
 
 impl PoolState {
@@ -96,11 +114,16 @@ impl PoolState {
             supports_tool_choice: true,
             supports_structured_outputs: false,
             supports_reasoning: false,
+            supports_vision: false,
             health_status: "passed".into(),
         };
         Self {
             tool_models: vec![fallback.clone()],
             general_models: vec![fallback],
+            // The fallback alias has no known modality — leaving the vision pool
+            // empty makes vision requests skip free-router rather than risk a
+            // blind image dispatch.
+            vision_models: vec![],
         }
     }
 
@@ -111,14 +134,18 @@ impl PoolState {
     }
 }
 
-/// Fetch the top-models list and build an ordered `PoolState`.
+/// Fetch the top-models list, join `OpenRouter` modality metadata, and build an
+/// ordered `PoolState`. `base_url` is the `OpenRouter` API root (e.g.
+/// `https://openrouter.ai/api/v1`); its `/models` endpoint supplies vision
+/// capability. A failed modality join is non-fatal — models stay non-vision.
 ///
 /// # Errors
-/// Returns an error if the HTTP request fails or the response cannot be parsed.
+/// Returns an error if the top-models request fails or cannot be parsed.
 #[spec(requires: !api_url.trim().is_empty())]
 pub async fn fetch_pool(
     client: &reqwest::Client,
     api_url: &str,
+    base_url: &str,
     timeout: Duration,
     prefs: PoolPreferences,
 ) -> Result<PoolState, InboxError> {
@@ -142,7 +169,74 @@ pub async fn fetch_pool(
         .await
         .map_err(|e| InboxError::Llm(format!("free-router list parse error: {e}")))?;
 
-    Ok(build_pool(body.models, prefs))
+    let mut models = body.models;
+    // The modality join is optional and non-fatal; cap its timeout so a slow
+    // /models endpoint never gates pool availability for text-only routing.
+    let vision_timeout = timeout.min(VISION_FETCH_TIMEOUT_CAP);
+    let vision_ids = fetch_vision_model_ids(client, base_url, vision_timeout).await;
+    for m in &mut models {
+        m.supports_vision = vision_ids.contains(&m.id);
+    }
+
+    Ok(build_pool(models, prefs))
+}
+
+// ── OpenRouter modality metadata ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct OpenRouterModels {
+    #[serde(default)]
+    data: Vec<OpenRouterModel>,
+}
+
+#[derive(Deserialize)]
+struct OpenRouterModel {
+    id: String,
+    #[serde(default)]
+    architecture: OpenRouterArch,
+}
+
+#[derive(Deserialize, Default)]
+struct OpenRouterArch {
+    #[serde(default)]
+    input_modalities: Vec<String>,
+}
+
+/// Return the set of `OpenRouter` model ids that accept image input, read from
+/// `{base_url}/models` (`architecture.input_modalities` contains `"image"`).
+///
+/// Non-fatal by contract: any transport, status, or parse failure yields an
+/// empty set (logged), so a missing join simply leaves the vision pool empty.
+pub async fn fetch_vision_model_ids(
+    client: &reqwest::Client,
+    base_url: &str,
+    timeout: Duration,
+) -> std::collections::HashSet<String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let result = client.get(&url).timeout(timeout).send().await;
+    let resp = match result {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            warn!(status = %r.status(), "free-router vision metadata HTTP error");
+            return std::collections::HashSet::new();
+        }
+        Err(e) => {
+            warn!(?e, "free-router vision metadata fetch failed");
+            return std::collections::HashSet::new();
+        }
+    };
+    match resp.json::<OpenRouterModels>().await {
+        Ok(body) => body
+            .data
+            .into_iter()
+            .filter(|m| m.architecture.input_modalities.iter().any(|s| s == "image"))
+            .map(|m| m.id)
+            .collect(),
+        Err(e) => {
+            warn!(?e, "free-router vision metadata parse failed");
+            std::collections::HashSet::new()
+        }
+    }
 }
 
 /// Partition + sort healthy models into the two ordered pools.
@@ -165,11 +259,18 @@ pub fn build_pool(models: Vec<FreeModel>, prefs: PoolPreferences) -> PoolState {
         .cloned()
         .collect();
 
+    let vision_models: Vec<FreeModel> = healthy
+        .iter()
+        .filter(|m| m.supports_vision)
+        .cloned()
+        .collect();
+
     let general_models = healthy;
 
     debug!(
         tool_count = tool_models.len(),
         general_count = general_models.len(),
+        vision_count = vision_models.len(),
         "Free-router pool built"
     );
 
@@ -182,6 +283,7 @@ pub fn build_pool(models: Vec<FreeModel>, prefs: PoolPreferences) -> PoolState {
     PoolState {
         tool_models,
         general_models,
+        vision_models,
     }
 }
 
