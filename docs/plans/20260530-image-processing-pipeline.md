@@ -276,7 +276,9 @@ pub struct ImageAnalysisResult {
 - [ ] No test needed (config/docs) — but run `cargo test` to confirm config still parses (add a parse test for the new section).
 - [ ] Run mandatory pipeline + tests — must pass before Task 10.
 
-### Task 10: Verify acceptance criteria
+### Task 10: Verify acceptance criteria ✅ DONE
+
+> Coverage **84.78%** (≥80% gate). 619 tests pass, 0 failures. clippy pedantic clean; no `#[allow]`; no `unwrap/expect/panic` in production. `cargo crap`: no new function exceeds the CRAP-30 threshold (highest new fn 17.1). Added an `analyze_image` stat-failure test for the unreadable-image branch. Acceptance: forwarded image-only message yields a non-empty node (interface OCR or metadata), images route to vision-capable backends, and rate-limited vision stays retryable — all test-covered.
 - [ ] A forwarded image-only Telegram message produces a non-empty node with real title/tags/summary (interface case) or metadata node (photo/no-text case) — never `:inbox_failed:` empty.
 - [ ] Image requests are routed to a vision-capable model when one is available; text-only backends are not sent doomed image requests.
 - [ ] All-vision-rate-limited ⇒ pending retry with non-empty placeholder.

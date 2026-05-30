@@ -208,6 +208,35 @@ async fn analyze_without_vision_backend_returns_empty() {
 }
 
 #[tokio::test]
+async fn analyze_skips_unreadable_image() {
+    // An image attachment whose file does not exist ⇒ stat fails ⇒ skipped,
+    // non-fatally, with no result.
+    let chain = panic_chain();
+    let mut msg = IncomingMessage::new(
+        MessageSource::Telegram,
+        String::new(),
+        SourceMetadata::Telegram {
+            chat_id: 1,
+            message_id: 1,
+            username: None,
+            forwarded_from: None,
+        },
+    );
+    msg.attachments.push(Attachment {
+        original_name: "missing.jpg".into(),
+        saved_path: PathBuf::from("/nonexistent/inbox-missing-image.jpg"),
+        mime_type: Some("image/jpeg".into()),
+        media_kind: MediaKind::Image,
+    });
+    let cfg = ImageAnalysisConfig::default();
+    assert!(
+        analyze_images(&chain, &cfg, 5 * 1024 * 1024, &msg)
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn analyze_ignores_non_image_attachments() {
     let chain = vision_chain("text");
     let mut msg = IncomingMessage::new(
