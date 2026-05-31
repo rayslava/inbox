@@ -46,8 +46,8 @@ pub struct FreeRouterClient {
 }
 
 pub(super) struct PoolStateWithStamp {
-    pub(super) pool: PoolState,
-    pub(super) last_refreshed: Instant,
+    pool: PoolState,
+    last_refreshed: Instant,
 }
 
 impl FreeRouterClient {

@@ -38,10 +38,10 @@ pub struct LlmChain {
 /// because they are the best context the chain has if every backend gives up.
 #[derive(Default)]
 pub(super) struct ChainRunState {
-    pub(super) fallback_source_urls: Vec<String>,
-    pub(super) fallback_tool_results: Vec<(String, String)>,
-    pub(super) helpers: Vec<String>,
-    pub(super) tool_calls_made: usize,
+    fallback_source_urls: Vec<String>,
+    fallback_tool_results: Vec<(String, String)>,
+    helpers: Vec<String>,
+    tool_calls_made: usize,
 }
 
 impl ChainRunState {
@@ -60,12 +60,12 @@ impl ChainRunState {
 /// tool results within this single attempt at this single backend.
 #[derive(Default)]
 pub(super) struct AttemptState {
-    pub(super) turns: usize,
-    pub(super) thinking_activations: usize,
-    pub(super) required_tool_prompts: usize,
-    pub(super) tool_source_url_set: HashSet<String>,
-    pub(super) tool_source_urls: Vec<String>,
-    pub(super) accumulated_tool_results: Vec<(String, String)>,
+    turns: usize,
+    thinking_activations: usize,
+    required_tool_prompts: usize,
+    tool_source_url_set: HashSet<String>,
+    tool_source_urls: Vec<String>,
+    accumulated_tool_results: Vec<(String, String)>,
 }
 
 /// Outcome of a single attempt at a single backend.
@@ -84,8 +84,8 @@ enum AttemptOutcome {
 /// duration of one attempt.
 #[derive(Clone, Copy)]
 pub(super) struct BackendCtx<'a> {
-    pub(super) backend: &'a (dyn LlmClient + 'static),
-    pub(super) start: std::time::Instant,
+    backend: &'a (dyn LlmClient + 'static),
+    start: std::time::Instant,
 }
 
 /// Decision after the chain handles one turn's response from a backend.
@@ -309,7 +309,7 @@ impl LlmChain {
     /// with tools disabled and instruct the model to emit its final JSON from
     /// the context gathered so far. Returns the parsed response on success, or
     /// `None` if it still fails (the caller then applies the fallback policy).
-    pub(super) async fn force_summary_pass(
+    async fn force_summary_pass(
         &self,
         backend: &(dyn LlmClient + 'static),
         req_attempt: &LlmRequest,
@@ -349,7 +349,7 @@ impl LlmChain {
     /// Append a "tool budget remaining" nudge once the loop is at or past the
     /// halfway point of `max_tool_turns`, steering the model toward consolidating
     /// rather than spending its last turns on more tool calls.
-    pub(super) fn append_budget_hint(&self, req_attempt: &mut LlmRequest, turns: usize) {
+    fn append_budget_hint(&self, req_attempt: &mut LlmRequest, turns: usize) {
         let remaining = self.max_tool_turns.saturating_sub(turns);
         if remaining > 0 && remaining <= self.max_tool_turns / 2 {
             let _ = write!(
