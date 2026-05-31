@@ -237,6 +237,36 @@ async fn analyze_skips_unreadable_image() {
 }
 
 #[tokio::test]
+async fn analyze_skips_when_read_fails_after_stat() {
+    // A directory passes the size stat but fails to read as a file ⇒ the read
+    // branch returns None non-fatally (the LLM is never reached).
+    let dir = tempfile::tempdir().unwrap();
+    let chain = panic_chain();
+    let mut msg = IncomingMessage::new(
+        MessageSource::Telegram,
+        String::new(),
+        SourceMetadata::Telegram {
+            chat_id: 1,
+            message_id: 1,
+            username: None,
+            forwarded_from: None,
+        },
+    );
+    msg.attachments.push(Attachment {
+        original_name: "adir.jpg".into(),
+        saved_path: dir.path().to_path_buf(),
+        mime_type: Some("image/jpeg".into()),
+        media_kind: MediaKind::Image,
+    });
+    let cfg = ImageAnalysisConfig::default();
+    assert!(
+        analyze_images(&chain, &cfg, 5 * 1024 * 1024, &msg)
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn analyze_ignores_non_image_attachments() {
     let chain = vision_chain("text");
     let mut msg = IncomingMessage::new(

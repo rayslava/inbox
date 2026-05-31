@@ -85,6 +85,23 @@ async fn fetch_vision_model_ids_graceful_on_http_error() {
 }
 
 #[tokio::test]
+async fn fetch_vision_model_ids_graceful_on_bad_json() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("definitely not json"))
+        .mount(&server)
+        .await;
+    let ids = fetch_vision_model_ids(
+        &reqwest::Client::new(),
+        &server.uri(),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(ids.is_empty(), "parse failure yields an empty set");
+}
+
+#[tokio::test]
 async fn fetch_vision_model_ids_graceful_on_unreachable() {
     let ids = fetch_vision_model_ids(
         &reqwest::Client::new(),

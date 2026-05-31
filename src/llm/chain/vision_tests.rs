@@ -5,8 +5,10 @@ use crate::llm::mock::MockLlm;
 use crate::llm::{FallbackMode, LlmOutcome, LlmRequest};
 use crate::message::LlmResponse;
 
+use std::borrow::Cow;
+
 use super::LlmChain;
-use super::vision::{VisionDecision, decide};
+use super::vision::{VisionDecision, decide, prepare};
 
 fn resp() -> LlmResponse {
     LlmResponse {
@@ -27,6 +29,45 @@ fn image_request(has_text: bool) -> LlmRequest {
 
 fn chain(backends: Vec<Box<dyn crate::llm::LlmClient>>) -> LlmChain {
     LlmChain::new(backends, FallbackMode::Raw, 5, None, 1, 0, 0)
+}
+
+#[test]
+fn prepare_run_borrows_for_vision_backend() {
+    let backend = MockLlm::new(resp()).with_vision();
+    match prepare(&image_request(false), &backend) {
+        Some(Cow::Borrowed(_)) => {}
+        other => panic!("expected borrowed Run, got {:?}", other.is_some()),
+    }
+}
+
+#[test]
+fn prepare_strips_images_for_text_backend_with_text() {
+    let backend = MockLlm::new(resp()); // non-vision
+    match prepare(&image_request(true), &backend) {
+        Some(Cow::Owned(r)) => assert!(r.images.is_empty(), "images stripped"),
+        _ => panic!("expected owned, image-stripped request"),
+    }
+}
+
+#[test]
+fn prepare_skips_text_backend_without_image_text() {
+    let backend = MockLlm::new(resp()); // non-vision
+    assert!(prepare(&image_request(false), &backend).is_none());
+}
+
+#[tokio::test]
+async fn complete_vision_text_none_for_empty_images() {
+    let chain = chain(vec![Box::new(MockLlm::new(resp()).with_vision())]);
+    assert!(chain.complete_vision_text("s", "u", vec![]).await.is_none());
+}
+
+#[tokio::test]
+async fn complete_vision_text_none_when_backend_errors() {
+    let chain = chain(vec![Box::new(MockLlm::failing("boom").with_vision())]);
+    let out = chain
+        .complete_vision_text("s", "u", vec![("image/png".into(), "Zm9v".into())])
+        .await;
+    assert!(out.is_none(), "vision backend error yields None");
 }
 
 #[test]

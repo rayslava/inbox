@@ -89,6 +89,22 @@ fn forwarded_image_without_text_uses_metadata() {
 }
 
 #[test]
+fn metadata_summary_handles_attachment_without_mime() {
+    let mut msg = telegram_image_msg(Some("@X"), vec![]);
+    msg.attachments[0].mime_type = None;
+    match image_fallback(&msg).expect("image fallback") {
+        ImageFallback::Metadata { summary, .. } => {
+            assert!(summary.contains("photo.jpg"));
+            assert!(
+                !summary.contains("photo.jpg ("),
+                "no mime parens when mime is None"
+            );
+        }
+        ImageFallback::Ocr { .. } => panic!("expected metadata fallback"),
+    }
+}
+
+#[test]
 fn non_forwarded_image_titles_by_filename() {
     let msg = telegram_image_msg(None, vec![]);
     assert_eq!(
