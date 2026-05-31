@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use anodized::spec;
 use tracing::{info, instrument};
 
 use crate::error::InboxError;
@@ -314,6 +315,7 @@ pub(super) fn plan_image_fallback(
 }
 
 /// First non-blank line, trimmed and capped at 80 chars.
+#[spec(ensures: output.as_ref().is_none_or(|s| s.chars().count() <= 80))]
 pub(super) fn first_nonempty_line(s: &str) -> Option<String> {
     s.lines()
         .map(str::trim)

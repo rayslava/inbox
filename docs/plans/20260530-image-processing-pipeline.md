@@ -286,7 +286,9 @@ pub struct ImageAnalysisResult {
 - [ ] `cargo tarpaulin --all-features --workspace --out lcov` → coverage ≥ 80%, no new untested functions (`cargo crap --workspace --lcov lcov.info --format markdown`).
 - [ ] `cargo clippy --all-features --all-targets --workspace` clean; no `#[allow]`; no `unwrap/expect/panic` in production.
 
-### Task 11: [Final] Documentation & archive
+### Task 11: [Final] Documentation & archive ✅ DONE
+
+> CLAUDE.md updated (Task 9) with the image-analysis stage + never-empty invariant. Plan archived to `docs/plans/completed/`. All 11 tasks complete; 8 feature/fix commits on `feat/image-processing-pipeline`.
 - [ ] Update README/CLAUDE.md if patterns changed.
 - [ ] Move this plan to `docs/plans/completed/`.
 

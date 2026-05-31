@@ -447,3 +447,5 @@ mod tests;
 mod tests_image_fallback;
 #[cfg(test)]
 mod tests_image_stage;
+#[cfg(test)]
+mod tests_url;
