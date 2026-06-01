@@ -122,7 +122,7 @@ pub(crate) fn spawn_flush(
         tokio::time::sleep(timeout).await;
 
         // Wait for in-flight downloads to finish (poll with short intervals).
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        let deadline = tokio::time::Instant::now() + Duration::from_mins(5);
         while state.pending_downloads.load(Ordering::Acquire) > 0 {
             if tokio::time::Instant::now() >= deadline {
                 warn!(

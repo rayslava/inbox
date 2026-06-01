@@ -1,3 +1,33 @@
+## [0.3.2] - 2026-06-01
+
+### 🚀 Features
+
+- *(llm)* Classify transient service-unavailable backend errors
+- *(llm)* Skip transient-unavailable backends with per-backend cooldown
+- *(pipeline)* Hold vision-incomplete messages pending, never false-success
+- *(resume)* Re-OCR on retry; exhaustion is failure, never reported as success
+
+### 🚜 Refactor
+
+- *(llm)* Extract reusable CircuitBreaker from ollama
+- *(llm)* Rename is_service_unavailable to is_service_available
+
+### 📚 Documentation
+
+- *(config)* Document circuit_open_secs on cloud backends + vision ollama
+
+### 🎨 Styling
+
+- Use coarser Duration units flagged by clippy after the MSRV bump
+
+### 🧪 Testing
+
+- *(pipeline)* Cover vision-unavailable short-circuit and resume re-OCR guard
+
+### ⚙️ Miscellaneous Tasks
+
+- *(deps)* Raise MSRV to 1.95 so `rand = "0"` resolves to rand 0.10
+- *(release)* 0.3.2
 ## [0.3.1] - 2026-05-23
 
 ### 🐛 Bug Fixes

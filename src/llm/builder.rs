@@ -10,7 +10,7 @@ use crate::pipeline::url_fetcher::UrlFetcher;
 use super::tools;
 use super::{LlmChain, LlmClient};
 
-const MEMORY_OPEN_MAX_WAIT: Duration = Duration::from_secs(120);
+const MEMORY_OPEN_MAX_WAIT: Duration = Duration::from_mins(2);
 const MEMORY_OPEN_BASE_DELAY: Duration = Duration::from_secs(1);
 const MEMORY_OPEN_MAX_DELAY: Duration = Duration::from_secs(15);
 const MEMORY_LOCK_MARKER: &str = "locked by another process";

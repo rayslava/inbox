@@ -77,7 +77,7 @@ fn build_router(adapter: Arc<HttpAdapter>, tx: mpsc::Sender<IncomingMessage>) ->
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
         ])
-        .max_age(std::time::Duration::from_secs(3600));
+        .max_age(std::time::Duration::from_hours(1));
 
     Router::new()
         .route("/inbox", post(inbox_handler))

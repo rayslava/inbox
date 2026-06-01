@@ -55,7 +55,7 @@ impl InputAdapter for TelegramAdapter {
 
         let policy = ReconnectPolicy {
             initial_backoff: Duration::from_secs(1),
-            max_backoff: Duration::from_secs(60),
+            max_backoff: Duration::from_mins(1),
             stable_threshold: Some(Duration::from_secs(30)),
             adapter_label: "telegram",
         };

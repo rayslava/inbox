@@ -1,8 +1,8 @@
 [package]
 name = "inbox"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 description = "Universal inbox daemon for capturing Telegram/HTTP/email content into org-mode with LLM enrichment."
 license = "MIT"
 readme = "README.md"

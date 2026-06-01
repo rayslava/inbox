@@ -32,8 +32,8 @@ impl InputAdapter for EmailAdapter {
 
         let policy = ReconnectPolicy {
             initial_backoff: Duration::from_secs(5),
-            max_backoff: Duration::from_secs(300),
-            stable_threshold: Some(Duration::from_secs(60)),
+            max_backoff: Duration::from_mins(5),
+            stable_threshold: Some(Duration::from_mins(1)),
             adapter_label: "email",
         };
 
