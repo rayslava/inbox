@@ -145,6 +145,31 @@ impl Pipeline {
         outcome.vision_unavailable
     }
 
+    /// Re-run image analysis for a resumed item (no tracker/notifier). Updates
+    /// `msg.image_analyses` only when re-OCR yields results, preserving any
+    /// stored analyses otherwise — a still-down backend or a missing attachment
+    /// file must not discard previously recognized text.
+    pub(crate) async fn resume_image_analysis(&self, msg: &mut IncomingMessage) {
+        if !self.config.pipeline.image_analysis.enabled
+            || !msg
+                .attachments
+                .iter()
+                .any(|a| a.media_kind == MediaKind::Image)
+        {
+            return;
+        }
+        let outcome = image_analysis::analyze_images(
+            &self.llm,
+            &self.config.pipeline.image_analysis,
+            self.config.llm.vision_max_bytes,
+            msg,
+        )
+        .await;
+        if !outcome.results.is_empty() {
+            msg.image_analyses = outcome.results;
+        }
+    }
+
     /// Process a single incoming message through the full pipeline.
     ///
     /// # Errors

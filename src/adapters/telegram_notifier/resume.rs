@@ -82,6 +82,45 @@ impl TelegramResumeNotifier {
         Ok(())
     }
 
+    /// Notify the user that all retries were exhausted: edit the status message
+    /// to a failed marker. No feedback buttons — the node was never completed,
+    /// so it must not be presented as a successful result.
+    #[anodized::spec(requires: !title.is_empty())]
+    pub async fn notify_failed(
+        &self,
+        item: &PendingItem,
+        title: &str,
+        inbox_id: Uuid,
+    ) -> Result<(), InboxError> {
+        let Some(chat_id_raw) = PendingStore::telegram_chat_id(item) else {
+            return Ok(());
+        };
+        let chat_id = ChatId(chat_id_raw);
+        let text = format!("❌ Failed after retries: {title}");
+
+        if let Some(msg_id) = item.telegram_status_msg_id {
+            let sent_msg_id = MessageId(msg_id);
+            if let Err(e) = self
+                .bot
+                .edit_message_text(chat_id, sent_msg_id, &text)
+                .await
+            {
+                warn!(?e, %inbox_id, "Failed to edit status on exhaustion; sending new message");
+                self.bot.send_message(chat_id, &text).await.map_err(|e| {
+                    InboxError::Adapter(format!("resume notify_failed: {e} (id={inbox_id})"))
+                })?;
+            }
+        } else {
+            self.bot.send_message(chat_id, &text).await.map_err(|e| {
+                InboxError::Adapter(format!("resume notify_failed: {e} (id={inbox_id})"))
+            })?;
+        }
+
+        self.retry_store.remove(&inbox_id);
+        debug!(%inbox_id, "Marked resumed item as failed after exhausting retries");
+        Ok(())
+    }
+
     async fn send_new_message(
         &self,
         chat_id: ChatId,

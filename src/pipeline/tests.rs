@@ -309,6 +309,32 @@ async fn image_only_vision_unavailable_yields_incomplete_node() {
     );
 }
 
+#[tokio::test]
+async fn resume_image_analysis_preserves_stored_ocr_when_reanalysis_yields_nothing() {
+    // Re-OCR with no vision backend (and a missing file) produces no results;
+    // the previously recognized text must be kept, not blanked.
+    let pipeline = make_test_pipeline(test_config(crate::config::JsShellPolicy::Allow));
+    let mut msg = make_msg("");
+    msg.attachments.push(crate::message::Attachment {
+        original_name: "x.jpg".into(),
+        saved_path: std::path::PathBuf::from("/tmp/inbox-resume-missing.jpg"),
+        mime_type: Some("image/jpeg".into()),
+        media_kind: crate::message::MediaKind::Image,
+    });
+    msg.image_analyses
+        .push(crate::message::ImageAnalysisResult {
+            attachment_name: "x.jpg".into(),
+            kind: crate::message::ImageAnalysisKind::Photo,
+            recognized_text: "stored text".into(),
+            produced_by: "old".into(),
+        });
+
+    pipeline.resume_image_analysis(&mut msg).await;
+
+    assert_eq!(msg.image_analyses.len(), 1);
+    assert_eq!(msg.image_analyses[0].recognized_text, "stored text");
+}
+
 // ── Pipeline::process end-to-end tests ────────────────────────────────────────
 
 pub(super) fn make_msg(text: &str) -> IncomingMessage {

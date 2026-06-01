@@ -149,6 +149,51 @@ async fn notify_done_edits_existing_status_message() {
 }
 
 #[tokio::test]
+async fn notify_failed_marks_failed_without_feedback_buttons() {
+    let feedback_map: Arc<DashMap<i32, Uuid>> = Arc::new(DashMap::new());
+    let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
+    let key = Uuid::new_v4();
+    retry_store.insert(key, dummy_retryable());
+
+    let fb = feedback_map.clone();
+    let rs = retry_store.clone();
+
+    let handler = Update::filter_message().endpoint(move |bot: Bot, msg: Message| {
+        let fb = fb.clone();
+        let rs = rs.clone();
+        async move {
+            let sent = bot.send_message(msg.chat.id, "⏳ Retrying…").await?;
+            let notifier = TelegramResumeNotifier {
+                bot,
+                feedback_msg_map: fb,
+                retry_store: rs,
+            };
+            let mut item = dummy_telegram_pending_item(Some(sent.id.0));
+            item.id = key;
+            if let SourceMetadata::Telegram { chat_id, .. } = &mut item.incoming.metadata {
+                *chat_id = msg.chat.id.0;
+            }
+            let _ = notifier.notify_failed(&item, "Stuck Title", key).await;
+            Ok::<(), teloxide::RequestError>(())
+        }
+    });
+
+    let mut mock = MockBot::new(MockMessageText::new(), handler);
+    mock.dispatch().await;
+
+    let r = mock.get_responses();
+    assert_eq!(r.edited_messages_text.len(), 1);
+    assert_eq!(
+        r.edited_messages_text[0].bot_request.text,
+        "❌ Failed after retries: Stuck Title"
+    );
+    // No feedback buttons on a failed item, and no success recorded.
+    assert!(r.edited_messages_text[0].bot_request.reply_markup.is_none());
+    assert!(feedback_map.is_empty());
+    assert!(!retry_store.contains_key(&key));
+}
+
+#[tokio::test]
 async fn notify_done_sends_new_message_when_status_id_missing() {
     let feedback_map: Arc<DashMap<i32, Uuid>> = Arc::new(DashMap::new());
     let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());

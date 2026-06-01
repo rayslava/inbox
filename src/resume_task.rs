@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use crate::adapters::telegram_notifier::resume::TelegramResumeNotifier;
 use crate::config::Config;
-use crate::message::{EnrichedMessage, IncomingMessage, MessageSource};
+use crate::message::{EnrichedMessage, IncomingMessage, MediaKind, MessageSource};
 use crate::output::org_patcher;
 use crate::pending::{PendingItem, PendingStore};
 use crate::pipeline::Pipeline;
@@ -98,9 +98,23 @@ async fn retry_item(args: &ResumeTaskArgs, item: &PendingItem, max_retries: u32)
     let id = item.id;
     info!(%id, retry_count = item.retry_count, source = %item.source, "Retrying pending item");
 
-    let enriched = build_enriched(item);
+    // Re-run image analysis so a recovered vision backend re-OCRs the image.
+    let mut incoming = build_incoming(item);
+    args.pipeline.resume_image_analysis(&mut incoming).await;
+    let has_image = incoming
+        .attachments
+        .iter()
+        .any(|a| a.media_kind == MediaKind::Image);
+    let has_image_text = incoming
+        .image_analyses
+        .iter()
+        .any(|a| !a.recognized_text.trim().is_empty());
+    // Still missing image text ⇒ vision remains unavailable; keep the node
+    // pending (never marked complete) until OCR recovers or retries exhaust.
+    let vision_unavailable = has_image && !has_image_text;
+    let enriched = assemble_enriched(item, incoming);
 
-    match args.pipeline.run_llm(enriched, false).await {
+    match args.pipeline.run_llm(enriched, vision_unavailable).await {
         Ok(processed) if processed.llm_response.is_some() && !processed.is_incomplete() => {
             on_success(args, item, processed).await;
         }
@@ -228,7 +242,8 @@ async fn on_exhausted(args: &ResumeTaskArgs, item: &PendingItem) {
             .as_deref()
             .unwrap_or("(unknown)")
             .to_owned();
-        if let Err(e) = notifier.notify_done(item, &title, id).await {
+        // Exhausted retries are a failure — never report ✅ Done.
+        if let Err(e) = notifier.notify_failed(item, &title, id).await {
             warn!(?e, %id, "Failed to send Telegram exhausted notification");
         }
     }
@@ -251,11 +266,9 @@ pub(crate) fn patch_pending_to_failed(text: &str) -> Option<String> {
     Some(text.replacen(&needle, &replacement, 1))
 }
 
-/// Reconstruct an [`EnrichedMessage`] from a stored [`PendingItem`].
-///
-/// The enriched URL contents and fallback tool results are pre-loaded so
-/// the LLM stage can use them without re-fetching.
-pub(crate) fn build_enriched(item: &PendingItem) -> EnrichedMessage {
+/// Reconstruct the [`IncomingMessage`] part of a stored [`PendingItem`],
+/// including any previously recognized image text.
+pub(crate) fn build_incoming(item: &PendingItem) -> IncomingMessage {
     let source = match item.source.as_str() {
         "telegram" => MessageSource::Telegram,
         "email" => MessageSource::Email,
@@ -273,25 +286,35 @@ pub(crate) fn build_enriched(item: &PendingItem) -> EnrichedMessage {
     incoming
         .preprocessing_hints
         .clone_from(&item.incoming.preprocessing_hints);
-    // Preserve recognized image text so the resumed enrichment keeps it (resume
-    // does not re-run the image-analysis stage).
+    // Seed with stored OCR; resume re-runs analysis and only overwrites this
+    // when re-OCR succeeds, so persisted text is never lost.
     incoming
         .image_analyses
         .clone_from(&item.incoming.image_analyses);
     incoming.received_at = item.incoming.received_at;
+    incoming
+}
 
-    // Re-parse URLs from stored url_contents so we don't re-fetch.
+/// Assemble an [`EnrichedMessage`] from a (possibly re-OCR'd) `incoming` plus
+/// the item's stored URL contents (re-parsed so we don't re-fetch).
+pub(crate) fn assemble_enriched(item: &PendingItem, incoming: IncomingMessage) -> EnrichedMessage {
     let urls: Vec<url::Url> = item
         .url_contents
         .iter()
         .filter_map(|uc| uc.url.parse().ok())
         .collect();
-
     EnrichedMessage {
         original: incoming,
         urls,
         url_contents: item.url_contents.clone(),
     }
+}
+
+/// Reconstruct an [`EnrichedMessage`] from a stored [`PendingItem`] without
+/// re-running image analysis (test helper).
+#[cfg(test)]
+pub(crate) fn build_enriched(item: &PendingItem) -> EnrichedMessage {
+    assemble_enriched(item, build_incoming(item))
 }
 
 async fn update_pending_metrics(store: &PendingStore, max_retries: u32) {
