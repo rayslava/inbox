@@ -309,6 +309,68 @@ async fn image_only_vision_unavailable_yields_incomplete_node() {
     );
 }
 
+struct PanicOnComplete;
+#[async_trait::async_trait]
+impl crate::llm::LlmClient for PanicOnComplete {
+    fn name(&self) -> &'static str {
+        "panic"
+    }
+    fn model(&self) -> &'static str {
+        "panic"
+    }
+    fn retries(&self) -> u32 {
+        1
+    }
+    fn vision_supported(&self) -> bool {
+        true
+    }
+    async fn complete(
+        &self,
+        _req: crate::llm::LlmRequest,
+    ) -> Result<crate::llm::LlmCompletion, crate::error::InboxError> {
+        panic!("LLM must not be called for an image-only vision-unavailable message");
+    }
+}
+
+#[tokio::test]
+async fn image_only_vision_unavailable_short_circuits_without_calling_llm() {
+    // A real on-disk image makes req.images non-empty, so the empty-input branch
+    // in run_llm fires: the node is built incomplete WITHOUT an LLM call (the
+    // panic chain would fail the test if the LLM were invoked). The tempdir guard
+    // cleans up even if the test panics.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shot.jpg");
+    std::fs::write(&path, b"fake-jpeg-bytes").expect("write temp image");
+
+    let cfg = Arc::new(test_config(crate::config::JsShellPolicy::Allow));
+    let llm = Arc::new(crate::llm::LlmChain::new(
+        vec![Box::new(PanicOnComplete)],
+        crate::config::FallbackMode::Raw,
+        5,
+        None,
+        1,
+        0,
+        0,
+    ));
+    let writer = Arc::new(crate::output::NullWriter);
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline =
+        Arc::new(Pipeline::new(cfg, llm, writer, tracker, None, None).expect("build pipeline"));
+
+    let mut msg = make_msg(""); // image-only, no caption
+    msg.attachments.push(crate::message::Attachment {
+        original_name: "shot.jpg".into(),
+        saved_path: path.clone(),
+        mime_type: Some("image/jpeg".into()),
+        media_kind: crate::message::MediaKind::Image,
+    });
+    let enriched = enriched_from(msg);
+
+    let processed = pipeline.run_llm(enriched, true).await.unwrap();
+    assert!(processed.is_incomplete());
+    assert!(processed.llm_response.is_none());
+}
+
 #[tokio::test]
 async fn resume_image_analysis_preserves_stored_ocr_when_reanalysis_yields_nothing() {
     // Re-OCR with no vision backend (and a missing file) produces no results;
