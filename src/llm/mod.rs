@@ -15,6 +15,8 @@ pub mod tools;
 
 mod chain;
 mod chain_tools;
+#[cfg(test)]
+mod chain_tools_tests;
 mod circuit;
 pub use chain::LlmChain;
 #[cfg(test)]

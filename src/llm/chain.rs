@@ -8,6 +8,9 @@ use crate::error::InboxError;
 
 use super::chain_tools::{append_missing_source_links, retry_inner};
 
+mod classify;
+#[cfg(test)]
+mod classify_tests;
 mod methods;
 #[cfg(test)]
 mod methods_tests;
@@ -20,6 +23,7 @@ use super::{
     FallbackMode, LlmClient, LlmCompletion, LlmOutcome, LlmRequest, activate_thinking_tool_def,
     llm_call_tool_def, tools,
 };
+pub(super) use classify::{is_deterministic_error, is_service_unavailable};
 
 // ── LlmChain ─────────────────────────────────────────────────────────────────
 
@@ -464,16 +468,4 @@ fn log_turn(req: &LlmRequest, backend: &(dyn LlmClient + 'static), turns: usize)
         content_preview = %content_preview,
         "LLM request"
     );
-}
-
-/// Errors that will recur identically on a retry of the *same* backend, so
-/// burning the remaining retry budget on them is wasted time. A JSON parse
-/// failure means the model produced unparseable output (e.g. Markdown prose);
-/// re-running the same model with the same prompt yields the same result, often
-/// after minutes of slow local inference each time.
-pub(super) fn is_deterministic_error(err: &InboxError) -> bool {
-    let InboxError::Llm(msg) = err else {
-        return false;
-    };
-    msg.contains("JSON parse error")
 }

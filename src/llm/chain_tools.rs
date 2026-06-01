@@ -20,6 +20,17 @@ pub(super) async fn retry_inner(
         match backend.complete(req.clone()).await {
             Ok(c) => return Ok(c),
             Err(e) => {
+                // A transient outage (429/5xx/timeout/open circuit) recurs on an
+                // immediate retry; abort so the chain falls through to the next
+                // backend instead of burning the remaining inner budget.
+                if super::chain::is_service_unavailable(&e) {
+                    warn!(
+                        ?e,
+                        backend = backend.name(),
+                        "Backend unavailable; aborting inner retries"
+                    );
+                    return Err(e);
+                }
                 warn!(
                     ?e,
                     attempt,
