@@ -23,6 +23,7 @@ use url_classifier::{UrlKind, classify_url};
 use url_extractor::extract_urls;
 use url_fetcher::UrlFetcher;
 
+mod fallback;
 mod llm_stage;
 
 pub struct Pipeline {
@@ -107,35 +108,41 @@ impl Pipeline {
 
     /// Run the vision-LLM image-analysis stage, populating `msg.image_analyses`.
     /// No-op when disabled or when the message carries no image attachments.
+    /// Returns `true` when an image's text was left unread because every vision
+    /// backend was unavailable (a transient outage to retry).
     async fn run_image_analysis(
         &self,
         id: uuid::Uuid,
         notifier: &mut Option<Box<dyn crate::processing_status::StatusNotifier>>,
         msg: &mut IncomingMessage,
-    ) {
+    ) -> bool {
         if !self.config.pipeline.image_analysis.enabled
             || !msg
                 .attachments
                 .iter()
                 .any(|a| a.media_kind == MediaKind::Image)
         {
-            return;
+            return false;
         }
         self.tracker.advance(id, ProcessingStage::AnalyzingImages);
         if let Some(n) = notifier {
             n.advance(ProcessingStage::AnalyzingImages).await;
         }
-        let analyses = image_analysis::analyze_images(
+        let outcome = image_analysis::analyze_images(
             &self.llm,
             &self.config.pipeline.image_analysis,
             self.config.llm.vision_max_bytes,
             msg,
         )
         .await;
-        if !analyses.is_empty() {
-            info!(id = %id, count = analyses.len(), "Image analysis complete");
+        if !outcome.results.is_empty() {
+            info!(id = %id, count = outcome.results.len(), "Image analysis complete");
         }
-        msg.image_analyses = analyses;
+        if outcome.vision_unavailable {
+            warn!(id = %id, "Image text unread — all vision backends unavailable");
+        }
+        msg.image_analyses = outcome.results;
+        outcome.vision_unavailable
     }
 
     /// Process a single incoming message through the full pipeline.
@@ -162,7 +169,7 @@ impl Pipeline {
 
         // Image analysis (interface classification + OCR) runs before
         // pre-processing so the recognized text can inform rules and enrichment.
-        self.run_image_analysis(id, &mut notifier, &mut msg).await;
+        let vision_unavailable = self.run_image_analysis(id, &mut notifier, &mut msg).await;
 
         let mut hints = preprocess::run_preprocessing(&msg, &self.config.pipeline.preprocessing);
         // Tag interface/screenshot images so the org node is easy to find.
@@ -195,7 +202,12 @@ impl Pipeline {
             last_tools: vec![],
         };
         let processed = self
-            .run_stage(id, &mut notifier, llm_initial, self.run_llm(enriched))
+            .run_stage(
+                id,
+                &mut notifier,
+                llm_initial,
+                self.run_llm(enriched, vision_unavailable),
+            )
             .await?;
 
         self.run_stage(
@@ -206,8 +218,9 @@ impl Pipeline {
         )
         .await?;
 
-        // Persist fallback items for background LLM retry.
-        if processed.llm_response.is_none()
+        // Persist items for background retry: raw fallbacks (no LLM response) and
+        // incomplete nodes (vision unavailable — re-OCR on resume).
+        if (processed.llm_response.is_none() || processed.is_incomplete())
             && let Some(ref store) = self.pending
         {
             let tg_msg_id = notifier.as_ref().and_then(|n| n.telegram_status_msg_id());
@@ -229,10 +242,16 @@ impl Pipeline {
             },
             |r| r.title.clone(),
         );
-        let done = ProcessingStage::Done { title };
-        self.tracker.advance(id, done.clone());
+        // An incomplete node is not yet done — surface it as Pending so it is not
+        // reported as successfully processed (it is retried on resume).
+        let final_stage = if processed.is_incomplete() {
+            ProcessingStage::Pending { title }
+        } else {
+            ProcessingStage::Done { title }
+        };
+        self.tracker.advance(id, final_stage.clone());
         if let Some(n) = &mut notifier {
-            n.advance(done).await;
+            n.advance(final_stage).await;
         }
         Ok(())
     }

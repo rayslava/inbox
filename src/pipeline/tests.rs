@@ -263,7 +263,7 @@ async fn fallback_item_inserted_into_pending_store() {
 
     let enriched = test_enriched("test pending insertion", vec![], vec![]);
     // run_llm produces a ProcessedMessage; if LLM fails it has llm_response=None.
-    let processed = pipeline.run_llm(enriched).await.unwrap();
+    let processed = pipeline.run_llm(enriched, false).await.unwrap();
     assert!(processed.llm_response.is_none(), "expected fallback");
 
     // Simulate what the pipeline does after run_llm when llm_response is None.
@@ -275,6 +275,38 @@ async fn fallback_item_inserted_into_pending_store() {
     let items = store.list(5, 10).await.unwrap();
     assert_eq!(items.len(), 1, "one item should be in the pending store");
     assert_eq!(items[0].incoming.text, "test pending insertion");
+}
+
+#[tokio::test]
+async fn image_only_vision_unavailable_yields_incomplete_node() {
+    // An image-only message whose vision backends were all unavailable, with no
+    // recognized image text, must be marked incomplete (held pending) and never
+    // carry an LLM response — i.e. never reported as successfully processed.
+    let cfg = Arc::new(test_config(crate::config::JsShellPolicy::Allow));
+    let llm = crate::test_helpers::always_fail_llm_chain();
+    let writer = Arc::new(crate::output::NullWriter);
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline =
+        Arc::new(Pipeline::new(cfg, llm, writer, tracker, None, None).expect("build pipeline"));
+
+    let mut msg = make_msg(""); // image-only, no caption
+    msg.attachments.push(crate::message::Attachment {
+        original_name: "shot.jpg".into(),
+        saved_path: std::path::PathBuf::from("/tmp/inbox-test-none.jpg"),
+        mime_type: Some("image/jpeg".into()),
+        media_kind: crate::message::MediaKind::Image,
+    });
+    let enriched = enriched_from(msg);
+
+    let processed = pipeline.run_llm(enriched, true).await.unwrap();
+    assert!(
+        processed.is_incomplete(),
+        "image-only + vision-down must be incomplete"
+    );
+    assert!(
+        processed.llm_response.is_none(),
+        "incomplete node must not be reported as a successful LLM result"
+    );
 }
 
 // ── Pipeline::process end-to-end tests ────────────────────────────────────────
@@ -443,7 +475,7 @@ async fn run_llm_raw_fallback_with_existing_text_skips_title_regeneration() {
         Pipeline::new(cfg, failing_llm, writer, tracker, None, None).expect("build pipeline");
 
     let enriched = enriched_from(make_msg("plain text, not empty"));
-    let processed = pipeline.run_llm(enriched).await.unwrap();
+    let processed = pipeline.run_llm(enriched, false).await.unwrap();
     assert!(processed.llm_response.is_none());
     assert!(
         processed.fallback_title.is_none(),

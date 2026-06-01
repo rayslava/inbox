@@ -237,6 +237,7 @@ async fn seed_pending(store: &PendingStore, item: &PendingItem) {
             url_contents: vec![],
         },
         llm_response: None,
+        incomplete: inbox::message::ProcessingCompleteness::Complete,
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: item.fallback_title.clone(),

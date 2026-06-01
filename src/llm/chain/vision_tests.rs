@@ -56,18 +56,27 @@ fn prepare_skips_text_backend_without_image_text() {
 }
 
 #[tokio::test]
-async fn complete_vision_text_none_for_empty_images() {
+async fn complete_vision_text_no_backend_for_empty_images() {
+    use crate::llm::VisionUnavailable;
     let chain = chain(vec![Box::new(MockLlm::new(resp()).with_vision())]);
-    assert!(chain.complete_vision_text("s", "u", vec![]).await.is_none());
+    assert_eq!(
+        chain.complete_vision_text("s", "u", vec![]).await,
+        Err(VisionUnavailable::NoVisionBackend)
+    );
 }
 
 #[tokio::test]
-async fn complete_vision_text_none_when_backend_errors() {
+async fn complete_vision_text_all_unavailable_when_backend_errors() {
+    use crate::llm::VisionUnavailable;
     let chain = chain(vec![Box::new(MockLlm::failing("boom").with_vision())]);
     let out = chain
         .complete_vision_text("s", "u", vec![("image/png".into(), "Zm9v".into())])
         .await;
-    assert!(out.is_none(), "vision backend error yields None");
+    assert_eq!(
+        out,
+        Err(VisionUnavailable::AllUnavailable),
+        "an eligible vision backend that errors yields AllUnavailable"
+    );
 }
 
 #[test]

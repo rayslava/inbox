@@ -83,6 +83,7 @@ pub(super) fn stage_text(stage: &ProcessingStage) -> String {
         }
         ProcessingStage::Writing => "✍️ Saving…".to_owned(),
         ProcessingStage::Done { title } => format!("✅ {title}"),
+        ProcessingStage::Pending { title } => format!("⏳ Retrying: {title}"),
         ProcessingStage::Failed { reason } => format!("❌ Failed: {reason}"),
     }
 }
@@ -90,7 +91,9 @@ pub(super) fn stage_text(stage: &ProcessingStage) -> String {
 fn is_terminal(stage: &ProcessingStage) -> bool {
     matches!(
         stage,
-        ProcessingStage::Done { .. } | ProcessingStage::Failed { .. }
+        ProcessingStage::Done { .. }
+            | ProcessingStage::Pending { .. }
+            | ProcessingStage::Failed { .. }
     )
 }
 

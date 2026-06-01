@@ -34,25 +34,37 @@ impl LlmChain {
     /// text and the `backend:model` that produced it. An empty response is a
     /// valid answer (e.g. an image with no readable text), so it is returned
     /// rather than triggering fallback to other backends. Non-vision backends
-    /// are skipped. `None` only if no vision backend is available or all error.
-    pub async fn complete_vision_text(
+    /// are skipped.
+    ///
+    /// `Err(AllUnavailable)` when at least one vision backend was eligible but
+    /// every one errored/was in cooldown (a transient outage — the caller should
+    /// hold the node pending and retry). `Err(NoVisionBackend)` when no vision
+    /// backend was eligible at all (nothing to retry).
+    pub(crate) async fn complete_vision_text(
         &self,
         system: &str,
         user: &str,
         images: Vec<(String, String)>,
-    ) -> Option<(String, String)> {
+    ) -> Result<(String, String), super::VisionUnavailable> {
         if images.is_empty() {
-            return None;
+            return Err(super::VisionUnavailable::NoVisionBackend);
         }
         let mut req = LlmRequest::simple(system, user);
         req.images = images;
+        let mut attempted = false;
         for backend in &self.backends {
             if super::vision::decide(&req, backend.as_ref()) != super::vision::VisionDecision::Run {
                 continue;
             }
+            attempted = true;
             match backend.complete_raw(req.clone()).await {
-                Ok((text, produced_by)) => return Some((text.trim().to_owned(), produced_by)),
+                Ok((text, produced_by)) => return Ok((text.trim().to_owned(), produced_by)),
                 Err(e) => {
+                    // This path bypasses the chain's `record_attempt_error`, so
+                    // trip the cooldown here on a transient outage.
+                    if super::is_service_unavailable(&e) {
+                        backend.mark_unavailable();
+                    }
                     warn!(
                         ?e,
                         backend = backend.name(),
@@ -61,7 +73,11 @@ impl LlmChain {
                 }
             }
         }
-        None
+        if attempted {
+            Err(super::VisionUnavailable::AllUnavailable)
+        } else {
+            Err(super::VisionUnavailable::NoVisionBackend)
+        }
     }
 
     /// Returns the sub-call's textual result together with the `backend:model`

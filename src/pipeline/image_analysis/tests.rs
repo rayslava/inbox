@@ -161,7 +161,9 @@ async fn analyze_transcribes_and_classifies() {
     let (msg, _tmp) = msg_with_image(b"fake-jpeg-bytes");
     let cfg = ImageAnalysisConfig::default();
 
-    let results = analyze_images(&chain, &cfg, 5 * 1024 * 1024, &msg).await;
+    let results = analyze_images(&chain, &cfg, 5 * 1024 * 1024, &msg)
+        .await
+        .results;
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].attachment_name, "photo.jpg");
     assert_eq!(results[0].kind, ImageAnalysisKind::Interface);
@@ -180,6 +182,7 @@ async fn analyze_disabled_returns_empty() {
     assert!(
         analyze_images(&chain, &cfg, 5 * 1024 * 1024, &msg)
             .await
+            .results
             .is_empty()
     );
 }
@@ -192,7 +195,12 @@ async fn analyze_skips_oversize_image_before_calling_llm() {
     let (msg, _tmp) = msg_with_image(b"this-is-too-big");
     let cfg = ImageAnalysisConfig::default();
     // 4-byte cap < payload ⇒ skipped pre-call.
-    assert!(analyze_images(&chain, &cfg, 4, &msg).await.is_empty());
+    assert!(
+        analyze_images(&chain, &cfg, 4, &msg)
+            .await
+            .results
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -203,6 +211,7 @@ async fn analyze_without_vision_backend_returns_empty() {
     assert!(
         analyze_images(&chain, &cfg, 5 * 1024 * 1024, &msg)
             .await
+            .results
             .is_empty()
     );
 }
@@ -232,6 +241,7 @@ async fn analyze_skips_unreadable_image() {
     assert!(
         analyze_images(&chain, &cfg, 5 * 1024 * 1024, &msg)
             .await
+            .results
             .is_empty()
     );
 }
@@ -262,6 +272,7 @@ async fn analyze_skips_when_read_fails_after_stat() {
     assert!(
         analyze_images(&chain, &cfg, 5 * 1024 * 1024, &msg)
             .await
+            .results
             .is_empty()
     );
 }
@@ -287,6 +298,7 @@ async fn analyze_ignores_non_image_attachments() {
     assert!(
         analyze_images(&chain, &cfg, 5 * 1024 * 1024, &msg)
             .await
+            .results
             .is_empty()
     );
 }

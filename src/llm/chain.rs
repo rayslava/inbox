@@ -18,6 +18,7 @@ mod methods;
 mod methods_tests;
 mod tool_turns;
 mod vision;
+mod vision_result;
 #[cfg(test)]
 mod vision_tests;
 
@@ -26,6 +27,7 @@ use super::{
     llm_call_tool_def, tools,
 };
 pub(super) use classify::{is_deterministic_error, is_service_unavailable};
+pub(crate) use vision_result::VisionUnavailable;
 
 // ── LlmChain ─────────────────────────────────────────────────────────────────
 

@@ -118,6 +118,7 @@ mod tests {
                 url_contents: Vec::new(),
             },
             llm_response: None,
+            incomplete: crate::message::ProcessingCompleteness::Complete,
             fallback_source_urls: vec![],
             fallback_tool_results: vec![],
             fallback_title: None,

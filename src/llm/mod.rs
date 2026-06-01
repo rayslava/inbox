@@ -19,6 +19,7 @@ mod chain_tools;
 mod chain_tools_tests;
 mod circuit;
 pub use chain::LlmChain;
+pub(crate) use chain::VisionUnavailable;
 #[cfg(test)]
 use chain_tools::append_missing_source_links;
 pub(crate) use circuit::CircuitBreaker;

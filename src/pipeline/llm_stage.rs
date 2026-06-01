@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use anodized::spec;
 use tracing::{info, instrument};
 
 use crate::error::InboxError;
@@ -12,6 +11,7 @@ use crate::processing_status::ProcessingStage;
 
 use super::Pipeline;
 use super::context_preload;
+use super::fallback::{FallbackPlan, image_fallback, plan_image_fallback};
 
 impl Pipeline {
     #[instrument(skip(self, enriched), fields(
@@ -22,6 +22,7 @@ impl Pipeline {
     pub(crate) async fn run_llm(
         &self,
         enriched: EnrichedMessage,
+        vision_unavailable: bool,
     ) -> Result<ProcessedMessage, InboxError> {
         use crate::llm::{LlmOutcome, LlmRequest, LlmTurnProgress};
 
@@ -52,6 +53,29 @@ impl Pipeline {
         );
         req.progress_tx = Some(progress_tx);
 
+        let completeness = completeness_of(&enriched, vision_unavailable);
+        let urls_fetched = enriched.url_contents.len();
+
+        // Image-only message whose vision is unavailable: the LLM input would be
+        // empty (→ a useless "No Content Provided" node marked ✅). Skip the LLM
+        // and emit an incomplete node to be re-OCR'd on resume.
+        if completeness != crate::message::ProcessingCompleteness::Complete
+            && req.user_content.trim().is_empty()
+            && !req.images.is_empty()
+        {
+            info!(id = %enriched.original.id, "Vision unavailable for image-only message — deferring (pending)");
+            let mut processed = self
+                .processed_from_raw_fallback(
+                    enriched,
+                    RawFallbackParts::empty(),
+                    memories_recalled,
+                    urls_fetched,
+                )
+                .await;
+            processed.incomplete = completeness;
+            return Ok(processed);
+        }
+
         let tracker = Arc::clone(&self.tracker);
         let id = enriched.original.id;
 
@@ -68,8 +92,6 @@ impl Pipeline {
             }
         };
 
-        let urls_fetched = enriched.url_contents.len();
-
         let (outcome, ()) = tokio::join!(self.llm.complete(req), progress_future);
 
         match outcome {
@@ -84,25 +106,30 @@ impl Pipeline {
                 tool_calls_made,
                 memories_recalled,
                 urls_fetched,
+                completeness,
             )),
             LlmOutcome::RawFallback {
                 source_urls,
                 tool_results,
                 helpers,
                 tool_calls_made,
-            } => Ok(self
-                .processed_from_raw_fallback(
-                    enriched,
-                    RawFallbackParts {
-                        source_urls,
-                        tool_results,
-                        helpers,
-                        tool_calls_made,
-                    },
-                    memories_recalled,
-                    urls_fetched,
-                )
-                .await),
+            } => {
+                let mut processed = self
+                    .processed_from_raw_fallback(
+                        enriched,
+                        RawFallbackParts {
+                            source_urls,
+                            tool_results,
+                            helpers,
+                            tool_calls_made,
+                        },
+                        memories_recalled,
+                        urls_fetched,
+                    )
+                    .await;
+                processed.incomplete = completeness;
+                Ok(processed)
+            }
             LlmOutcome::Discard => {
                 info!(id = %enriched.original.id, "Message discarded by LLM fallback policy");
                 Err(InboxError::Pipeline(
@@ -119,6 +146,7 @@ impl Pipeline {
         tool_calls_made: usize,
         memories_recalled: usize,
         urls_fetched: usize,
+        incomplete: crate::message::ProcessingCompleteness,
     ) -> ProcessedMessage {
         info!(
             id = %enriched.original.id,
@@ -139,6 +167,7 @@ impl Pipeline {
         ProcessedMessage {
             enriched,
             llm_response: Some(response),
+            incomplete,
             fallback_source_urls: vec![],
             fallback_tool_results: vec![],
             fallback_title: None,
@@ -210,11 +239,40 @@ impl Pipeline {
         ProcessedMessage {
             enriched,
             llm_response: None,
+            incomplete: crate::message::ProcessingCompleteness::Complete,
             fallback_source_urls: source_urls,
             fallback_tool_results: tool_results,
             fallback_title,
             enrichment,
         }
+    }
+}
+
+/// Whether enrichment is incomplete: an image-bearing message whose vision was
+/// unavailable AND that produced no recognized image text. Applies even when the
+/// LLM produced a response (mixed image+URL where only the URL enriched).
+fn completeness_of(
+    enriched: &EnrichedMessage,
+    vision_unavailable: bool,
+) -> crate::message::ProcessingCompleteness {
+    use crate::message::{MediaKind, ProcessingCompleteness};
+    if !vision_unavailable {
+        return ProcessingCompleteness::Complete;
+    }
+    let has_image = enriched
+        .original
+        .attachments
+        .iter()
+        .any(|a| a.media_kind == MediaKind::Image);
+    let has_text = enriched
+        .original
+        .image_analyses
+        .iter()
+        .any(|a| !a.recognized_text.trim().is_empty());
+    if has_image && !has_text {
+        ProcessingCompleteness::IncompleteVisionUnavailable
+    } else {
+        ProcessingCompleteness::Complete
     }
 }
 
@@ -227,149 +285,18 @@ struct RawFallbackParts {
     tool_calls_made: usize,
 }
 
-/// A non-empty fallback derived from an image-bearing message.
-pub(super) enum ImageFallback {
-    /// Recognized image text (interface OCR) — always wins.
-    Ocr {
-        /// `(label, text)` pairs to merge into the fallback tool results.
-        extra_results: Vec<(String, String)>,
-        title: String,
-    },
-    /// Attachment metadata — used only when no real tool content exists.
-    Metadata { summary: String, title: String },
-}
-
-/// Plan for how the raw-fallback title/summary should be produced.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum FallbackPlan {
-    /// An image title was produced (and `tool_results` mutated to match).
-    Title(String),
-    /// No image-derived title; the caller's text/LLM path should run.
-    DeferToTextPath,
-}
-
-/// Derive an image fallback (recognized text first, attachment metadata
-/// otherwise). `None` when the message has no image.
-pub(super) fn image_fallback(msg: &crate::message::IncomingMessage) -> Option<ImageFallback> {
-    use crate::message::MediaKind;
-
-    let recognized: Vec<&crate::message::ImageAnalysisResult> = msg
-        .image_analyses
-        .iter()
-        .filter(|a| !a.recognized_text.trim().is_empty())
-        .collect();
-
-    if let Some(first) = recognized.first() {
-        let title = first_nonempty_line(&first.recognized_text)
-            .unwrap_or_else(|| "Recognized image text".to_owned());
-        let extra_results = recognized
-            .iter()
-            .map(|a| ("image_ocr".to_owned(), a.recognized_text.clone()))
-            .collect();
-        return Some(ImageFallback::Ocr {
-            extra_results,
-            title,
-        });
-    }
-
-    if msg
-        .attachments
-        .iter()
-        .any(|a| a.media_kind == MediaKind::Image)
-    {
-        return Some(ImageFallback::Metadata {
-            summary: image_metadata_summary(msg),
-            title: image_metadata_title(msg),
-        });
-    }
-
-    None
-}
-
-/// Apply an image fallback to `tool_results`, returning whether an image title
-/// was produced. OCR always wins; metadata wins only when no existing tool
-/// result has non-whitespace text — otherwise real tool content keeps both the
-/// summary and (via the caller's text path) the title, avoiding both an
-/// empty-summary node and a title/body mismatch.
-pub(super) fn plan_image_fallback(
-    tool_results: &mut Vec<(String, String)>,
-    image: Option<ImageFallback>,
-) -> FallbackPlan {
-    let has_real_tool_text = tool_results.iter().any(|(_, t)| !t.trim().is_empty());
-    match image {
-        Some(ImageFallback::Ocr {
-            extra_results,
-            title,
-        }) => {
-            tool_results.extend(extra_results);
-            FallbackPlan::Title(title)
+impl RawFallbackParts {
+    /// Empty parts — used when skipping the LLM entirely (e.g. an image-only
+    /// message whose vision was unavailable). The image-metadata fallback still
+    /// produces a non-empty node.
+    fn empty() -> Self {
+        Self {
+            source_urls: vec![],
+            tool_results: vec![],
+            helpers: vec![],
+            tool_calls_made: 0,
         }
-        Some(ImageFallback::Metadata { summary, title }) if !has_real_tool_text => {
-            // Drop blank tool entries so the metadata summary is what renders.
-            tool_results.retain(|(_, t)| !t.trim().is_empty());
-            tool_results.push(("image".to_owned(), summary));
-            FallbackPlan::Title(title)
-        }
-        _ => FallbackPlan::DeferToTextPath,
     }
-}
-
-/// First non-blank line, trimmed and capped at 80 chars.
-#[spec(ensures: output.as_ref().is_none_or(|s| s.chars().count() <= 80))]
-pub(super) fn first_nonempty_line(s: &str) -> Option<String> {
-    s.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .map(|l| l.chars().take(80).collect())
-}
-
-fn image_metadata_title(msg: &crate::message::IncomingMessage) -> String {
-    use crate::message::{MediaKind, SourceMetadata};
-    if let SourceMetadata::Telegram {
-        forwarded_from: Some(ff),
-        ..
-    } = &msg.metadata
-    {
-        return format!("Image from {ff}");
-    }
-    match msg
-        .attachments
-        .iter()
-        .find(|a| a.media_kind == MediaKind::Image)
-    {
-        Some(a) => format!("Image: {}", a.original_name),
-        None => "Image".to_owned(),
-    }
-}
-
-fn image_metadata_summary(msg: &crate::message::IncomingMessage) -> String {
-    use std::fmt::Write as _;
-
-    use crate::message::{MediaKind, SourceMetadata};
-
-    let mut s = String::new();
-    if let SourceMetadata::Telegram {
-        forwarded_from: Some(ff),
-        ..
-    } = &msg.metadata
-    {
-        let _ = write!(s, "Forwarded from {ff}. ");
-    }
-    let names: Vec<String> = msg
-        .attachments
-        .iter()
-        .filter(|a| a.media_kind == MediaKind::Image)
-        .map(|a| match &a.mime_type {
-            Some(m) => format!("{} ({m})", a.original_name),
-            None => a.original_name.clone(),
-        })
-        .collect();
-    let _ = write!(
-        s,
-        "Image attachment(s): {}. No text recognized.",
-        names.join(", ")
-    );
-    s
 }
 
 impl Pipeline {

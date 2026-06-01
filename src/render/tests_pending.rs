@@ -20,6 +20,7 @@ fn make_processed(text: &str, llm_response: Option<LlmResponse>) -> ProcessedMes
             url_contents: vec![],
         },
         llm_response,
+        incomplete: crate::message::ProcessingCompleteness::Complete,
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,
@@ -55,6 +56,26 @@ fn render_with_llm_response_has_no_inbox_pending_tag() {
 }
 
 #[test]
+fn render_incomplete_with_llm_response_still_adds_inbox_pending_tag() {
+    // A mixed image+URL message whose vision failed but whose URL enriched: the
+    // node has an LLM response yet must be tagged pending so it is retried.
+    let resp = LlmResponse {
+        title: "Title".into(),
+        tags: vec![],
+        summary: "summary".into(),
+        excerpt: None,
+        produced_by: "mock".into(),
+    };
+    let mut msg = make_processed("text", Some(resp));
+    msg.incomplete = crate::message::ProcessingCompleteness::IncompleteVisionUnavailable;
+    let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+    assert!(
+        result.contains(":inbox_pending:"),
+        "incomplete render must include :inbox_pending: even with an LLM response, got:\n{result}"
+    );
+}
+
+#[test]
 fn merge_tags_deduplicates_suggested_tags() {
     let mut msg = IncomingMessage::new(
         MessageSource::Http,
@@ -76,6 +97,7 @@ fn merge_tags_deduplicates_suggested_tags() {
             url_contents: vec![],
         },
         llm_response: None,
+        incomplete: crate::message::ProcessingCompleteness::Complete,
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,

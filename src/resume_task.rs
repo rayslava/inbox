@@ -100,8 +100,8 @@ async fn retry_item(args: &ResumeTaskArgs, item: &PendingItem, max_retries: u32)
 
     let enriched = build_enriched(item);
 
-    match args.pipeline.run_llm(enriched).await {
-        Ok(processed) if processed.llm_response.is_some() => {
+    match args.pipeline.run_llm(enriched, false).await {
+        Ok(processed) if processed.llm_response.is_some() && !processed.is_incomplete() => {
             on_success(args, item, processed).await;
         }
         Ok(_) => {

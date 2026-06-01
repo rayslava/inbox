@@ -41,6 +41,7 @@ fn dummy_processed(id: Uuid) -> ProcessedMessage {
             }],
         },
         llm_response: None,
+        incomplete: crate::message::ProcessingCompleteness::Complete,
         fallback_source_urls: vec!["https://found.example".into()],
         fallback_tool_results: vec![("scrape_page".into(), "scraped content".into())],
         fallback_title: Some("Fallback Title".into()),

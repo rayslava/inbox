@@ -23,6 +23,7 @@ fn render_fallback_uses_tool_content_as_summary() {
             url_contents: vec![],
         },
         llm_response: None,
+        incomplete: crate::message::ProcessingCompleteness::Complete,
         fallback_source_urls: vec![],
         fallback_tool_results: vec![(
             "scrape_page".to_owned(),
@@ -59,6 +60,7 @@ fn render_fallback_source_urls_in_roam_refs() {
             url_contents: vec![],
         },
         llm_response: None,
+        incomplete: crate::message::ProcessingCompleteness::Complete,
         fallback_source_urls: vec![
             "https://tool-found.example.com/page1".into(),
             "https://tool-found.example.com/page2".into(),
@@ -95,6 +97,7 @@ fn render_fallback_tool_results_joined_cleanly() {
             url_contents: vec![],
         },
         llm_response: None,
+        incomplete: crate::message::ProcessingCompleteness::Complete,
         fallback_source_urls: vec![],
         fallback_tool_results: vec![
             ("web_search".to_owned(), "First result content".to_owned()),
@@ -139,6 +142,7 @@ fn render_fallback_title_used_when_present() {
             url_contents: vec![],
         },
         llm_response: None,
+        incomplete: crate::message::ProcessingCompleteness::Complete,
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: Some("Five Word Generated Title".to_owned()),
@@ -181,6 +185,7 @@ fn render_empty_text_image_uses_media_kind() {
             url_contents: vec![],
         },
         llm_response: None,
+        incomplete: crate::message::ProcessingCompleteness::Complete,
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,
@@ -210,6 +215,7 @@ fn render_untitled_when_nothing_available() {
             url_contents: vec![],
         },
         llm_response: None,
+        incomplete: crate::message::ProcessingCompleteness::Complete,
         fallback_source_urls: vec![],
         fallback_tool_results: vec![],
         fallback_title: None,

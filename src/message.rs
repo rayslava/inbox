@@ -295,11 +295,25 @@ pub struct EnrichedMessage {
     pub url_contents: Vec<UrlContent>,
 }
 
+/// Whether enrichment produced a final node or one that must be retried.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessingCompleteness {
+    /// Enrichment is final — the node can be written and marked Done.
+    #[default]
+    Complete,
+    /// Image text could not be read because every vision backend was
+    /// unavailable. The node is held `:inbox_pending:` and re-OCR'd on resume
+    /// rather than reported as successfully processed.
+    IncompleteVisionUnavailable,
+}
+
 #[derive(Debug)]
 pub struct ProcessedMessage {
     pub enriched: EnrichedMessage,
     /// None means raw fallback (LLM unavailable or all backends failed).
     pub llm_response: Option<LlmResponse>,
+    /// Whether the result is final or must be retried (e.g. vision was down).
+    pub incomplete: ProcessingCompleteness,
     /// URLs gathered by tools during LLM processing; populated when LLM falls back.
     pub fallback_source_urls: Vec<String>,
     /// Structured tool results as `(tool_name, text)` pairs; used as summary in raw-fallback rendering.
@@ -309,6 +323,14 @@ pub struct ProcessedMessage {
     /// Diagnostic metadata about the enrichment run: helper models consulted,
     /// memory-recall stats, URL/tool counts. Rendered into the org entry drawer.
     pub enrichment: EnrichmentMetadata,
+}
+
+impl ProcessedMessage {
+    /// Whether the node must be retried rather than reported as complete.
+    #[must_use]
+    pub fn is_incomplete(&self) -> bool {
+        self.incomplete != ProcessingCompleteness::Complete
+    }
 }
 
 /// Observability trail for one enrichment run. Rendered into the org entry

@@ -83,7 +83,7 @@ impl PendingStore {
     ///
     /// Extracts all relevant context from `msg` in one place. No-op if the
     /// id already exists (`INSERT OR IGNORE`).
-    #[spec(requires: msg.llm_response.is_none())]
+    #[spec(requires: msg.llm_response.is_none() || msg.is_incomplete())]
     pub async fn insert(
         &self,
         id: Uuid,

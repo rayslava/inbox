@@ -25,6 +25,11 @@ pub enum ProcessingStage {
     Done {
         title: String,
     },
+    /// Written but not final — held for retry (e.g. image text unread because
+    /// vision was unavailable). Re-OCR'd on resume; never reported as success.
+    Pending {
+        title: String,
+    },
     Failed {
         reason: String,
     },
@@ -84,9 +89,9 @@ impl ProcessingTracker {
     pub fn snapshot(&self) -> Vec<InFlightEntry> {
         let cutoff = Utc::now() - chrono::Duration::seconds(DONE_RETAIN_SECS);
         self.entries.retain(|_, entry| match &entry.stage {
-            ProcessingStage::Done { .. } | ProcessingStage::Failed { .. } => {
-                entry.updated_at > cutoff
-            }
+            ProcessingStage::Done { .. }
+            | ProcessingStage::Pending { .. }
+            | ProcessingStage::Failed { .. } => entry.updated_at > cutoff,
             _ => true,
         });
         self.update_gauge();

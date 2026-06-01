@@ -82,7 +82,12 @@ fn merge_tags(msg: &ProcessedMessage) -> Vec<String> {
                 all.push(t.clone());
             }
         }
-    } else {
+    }
+    // Pending when there is no LLM response at all, or the node is incomplete
+    // (e.g. image text unread because vision was unavailable) — it is retried.
+    if (msg.llm_response.is_none() || msg.is_incomplete())
+        && !all.iter().any(|x| x.eq_ignore_ascii_case(PENDING_TAG))
+    {
         all.push(PENDING_TAG.to_owned());
     }
     all

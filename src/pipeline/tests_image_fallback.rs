@@ -6,7 +6,7 @@ use crate::message::{
     RetryableMessage, SourceMetadata,
 };
 
-use super::llm_stage::{
+use super::fallback::{
     FallbackPlan, ImageFallback, first_nonempty_line, image_fallback, plan_image_fallback,
 };
 
