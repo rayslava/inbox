@@ -23,7 +23,7 @@ pub(super) async fn retry_inner(
                 // A transient outage (429/5xx/timeout/open circuit) recurs on an
                 // immediate retry; abort so the chain falls through to the next
                 // backend instead of burning the remaining inner budget.
-                if super::chain::is_service_unavailable(&e) {
+                if !super::chain::is_service_available(&e) {
                     warn!(
                         ?e,
                         backend = backend.name(),

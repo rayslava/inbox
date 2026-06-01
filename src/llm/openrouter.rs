@@ -162,7 +162,7 @@ impl LlmClient for OpenRouterClient {
         // Trip the cooldown on a transient outage; clear it on any success.
         match &result {
             Ok(_) => self.circuit.clear(),
-            Err(e) if super::chain::is_service_unavailable(e) => self.circuit.record_failure(),
+            Err(e) if !super::chain::is_service_available(e) => self.circuit.record_failure(),
             Err(_) => {}
         }
         result

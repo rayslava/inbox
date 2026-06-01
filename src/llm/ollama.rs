@@ -444,7 +444,7 @@ impl LlmClient for OllamaClient {
             Err(e) => {
                 // A 5xx/timeout from the server (not just an unreachable preflight)
                 // must also trip the cooldown so the chain skips this backend.
-                if super::chain::is_service_unavailable(&e) {
+                if !super::chain::is_service_available(&e) {
                     self.circuit.record_failure();
                 }
                 return Err(e);

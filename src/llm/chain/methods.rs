@@ -62,7 +62,7 @@ impl LlmChain {
                 Err(e) => {
                     // This path bypasses the chain's `record_attempt_error`, so
                     // trip the cooldown here on a transient outage.
-                    if super::is_service_unavailable(&e) {
+                    if !super::is_service_available(&e) {
                         backend.mark_unavailable();
                     }
                     warn!(

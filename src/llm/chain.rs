@@ -26,7 +26,7 @@ use super::{
     FallbackMode, LlmClient, LlmCompletion, LlmOutcome, LlmRequest, activate_thinking_tool_def,
     llm_call_tool_def, tools,
 };
-pub(super) use classify::{is_deterministic_error, is_service_unavailable};
+pub(super) use classify::{is_deterministic_error, is_service_available};
 pub(crate) use vision_result::VisionUnavailable;
 
 // ── LlmChain ─────────────────────────────────────────────────────────────────
@@ -433,7 +433,7 @@ fn record_attempt_error(
 ) -> AttemptOutcome {
     let elapsed_ms = ctx.start.elapsed().as_millis();
     // Transient outages take priority over deterministic errors (disjoint sets).
-    let unavailable = is_service_unavailable(err);
+    let unavailable = !is_service_available(err);
     let deterministic = !unavailable && is_deterministic_error(err);
     warn!(
         ?err,

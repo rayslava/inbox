@@ -16,14 +16,18 @@ pub(crate) fn is_deterministic_error(err: &InboxError) -> bool {
     msg.contains("JSON parse error")
 }
 
-/// Whether `err` is a transient "service unavailable" failure (rate limit,
-/// upstream 5xx, transport timeout/connection error, or an open circuit) — the
-/// backend should be skipped and its cooldown tripped, falling through to the
-/// next (local) backend. Matched against the flattened `InboxError::Llm` string;
-/// HTTP statuses are anchored on the `"API error {status}"` prefix the clients
-/// emit, so a status digit in a response body cannot false-positive. Callers
-/// must classify deterministic errors (e.g. JSON parse) *first*.
-pub(crate) fn is_service_unavailable(err: &InboxError) -> bool {
+/// Whether `err` leaves the backend usable — i.e. it is **not** a transient
+/// "service unavailable" failure (rate limit, upstream 5xx, transport
+/// timeout/connection error, or an open circuit). Returns `false` for those
+/// transient outages so the caller trips the cooldown and falls through to the
+/// next (local) backend; `true` for any other error (auth, JSON parse, …),
+/// which does not indicate the service is down.
+///
+/// Matched against the flattened `InboxError::Llm` string; HTTP statuses are
+/// anchored on the `"API error {status}"` prefix the clients emit, so a status
+/// digit in a response body cannot false-positive. Callers must classify
+/// deterministic errors (e.g. JSON parse) *first*.
+pub(crate) fn is_service_available(err: &InboxError) -> bool {
     const HTTP: [&str; 5] = [
         "API error 429",
         "API error 500",
@@ -32,7 +36,7 @@ pub(crate) fn is_service_unavailable(err: &InboxError) -> bool {
         "API error 504",
     ];
     let InboxError::Llm(msg) = err else {
-        return false;
+        return true;
     };
     // Errors are either "{header}: {body}" (HTTP responses — `body` is the raw
     // model output and must NOT drive classification) or a bare reqwest transport
@@ -40,14 +44,14 @@ pub(crate) fn is_service_unavailable(err: &InboxError) -> bool {
     // transport phrase echoed inside a response body cannot false-positive.
     let header = msg.split_once(':').map_or(msg.as_str(), |(h, _)| h);
     if HTTP.iter().any(|m| header.contains(m)) || header.contains("circuit open") {
-        return true;
+        return false;
     }
     // reqwest flattens transport failures via `to_string()` to
     // "error sending request for url (...)" — the timeout/connect cause lives in
     // the source chain, not the Display (pinned by the real-timeout test). The
     // marker sits before the URL's "http:" colon, so it stays in `header`.
     let lower = header.to_ascii_lowercase();
-    [
+    ![
         "error sending request",
         "error trying to connect",
         "timed out",

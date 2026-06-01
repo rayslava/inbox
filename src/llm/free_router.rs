@@ -284,7 +284,7 @@ impl LlmClient for FreeRouterClient {
         // request — trip the cooldown; clear it on any success.
         match &result {
             Ok(_) => self.circuit.clear(),
-            Err(e) if super::chain::is_service_unavailable(e) => self.circuit.record_failure(),
+            Err(e) if !super::chain::is_service_available(e) => self.circuit.record_failure(),
             Err(_) => {}
         }
         result
@@ -461,7 +461,7 @@ impl FreeRouterClient {
                 // A transient outage (429/5xx/timeout) recurs immediately; abort
                 // this model's retries so the batch moves on without burning the
                 // per-model budget against a rate-limited model.
-                Err(e) if super::chain::is_service_unavailable(&e) => {
+                Err(e) if !super::chain::is_service_available(&e) => {
                     debug!(?e, model = %model_id, "free-router model unavailable; aborting retries");
                     return Err(e);
                 }
