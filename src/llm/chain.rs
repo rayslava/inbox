@@ -11,6 +11,8 @@ use super::chain_tools::{append_missing_source_links, retry_inner};
 mod classify;
 #[cfg(test)]
 mod classify_tests;
+#[cfg(test)]
+mod cooldown_tests;
 mod methods;
 #[cfg(test)]
 mod methods_tests;
@@ -81,6 +83,9 @@ enum AttemptOutcome {
     /// Skip the rest of this backend's retry budget — same input would fail
     /// the same way (e.g. JSON parse error against a deterministic model).
     Deterministic,
+    /// Backend hit a transient outage (429/5xx/timeout); its cooldown has been
+    /// tripped. Abandon it and fall through to the next backend immediately.
+    Unavailable,
 }
 
 /// Borrow bundle threaded through tool-call helpers so they don't each take
@@ -142,6 +147,13 @@ impl LlmChain {
                 continue;
             };
             let req: &LlmRequest = &active_req;
+
+            // Skip a backend still in its service-unavailable cooldown without an
+            // attempt, falling through to the next (local) backend.
+            if !backend.is_available() {
+                warn!(backend = backend.name(), "Backend in cooldown — skipping");
+                continue;
+            }
             attempted_any = true;
 
             let mut backend_giving_up = false;
@@ -153,6 +165,13 @@ impl LlmChain {
                     AttemptOutcome::Success(o) => return o,
                     AttemptOutcome::Deterministic => {
                         backend_giving_up = true;
+                        break;
+                    }
+                    AttemptOutcome::Unavailable => {
+                        warn!(
+                            backend = backend.name(),
+                            "Backend unavailable (transient) — next backend"
+                        );
                         break;
                     }
                     AttemptOutcome::Soft => {}
@@ -411,7 +430,9 @@ fn record_attempt_error(
     run_state: &mut ChainRunState,
 ) -> AttemptOutcome {
     let elapsed_ms = ctx.start.elapsed().as_millis();
-    let deterministic = is_deterministic_error(err);
+    // Transient outages take priority over deterministic errors (disjoint sets).
+    let unavailable = is_service_unavailable(err);
+    let deterministic = !unavailable && is_deterministic_error(err);
     warn!(
         ?err,
         backend = ctx.backend.name(),
@@ -419,6 +440,7 @@ fn record_attempt_error(
         attempt = attempt + 1,
         total_attempts = ctx.backend.retries(),
         elapsed_ms,
+        unavailable,
         deterministic,
         "LLM attempt failed"
     );
@@ -429,7 +451,10 @@ fn record_attempt_error(
         "status" => "failure"
     )
     .increment(1);
-    if deterministic {
+    if unavailable {
+        ctx.backend.mark_unavailable();
+        AttemptOutcome::Unavailable
+    } else if deterministic {
         AttemptOutcome::Deterministic
     } else {
         AttemptOutcome::Soft

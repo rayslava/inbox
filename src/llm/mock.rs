@@ -21,6 +21,7 @@ pub struct MockLlm {
     pub name: String,
     pub retries: u32,
     pub vision: bool,
+    circuit: super::CircuitBreaker,
 }
 
 impl MockLlm {
@@ -28,6 +29,14 @@ impl MockLlm {
     #[must_use]
     pub fn with_vision(mut self) -> Self {
         self.vision = true;
+        self
+    }
+
+    /// Give this mock a real cooldown window so `mark_unavailable` actually
+    /// makes `is_available` report `false` (for chain skip-on-cooldown tests).
+    #[must_use]
+    pub fn with_cooldown(mut self, secs: u64) -> Self {
+        self.circuit = super::CircuitBreaker::new(secs);
         self
     }
 }
@@ -40,6 +49,7 @@ impl MockLlm {
             name: "mock".into(),
             retries: 1,
             vision: false,
+            circuit: super::CircuitBreaker::new(0),
         }
     }
 
@@ -50,6 +60,7 @@ impl MockLlm {
             name: "mock-failing".into(),
             retries: 1,
             vision: false,
+            circuit: super::CircuitBreaker::new(0),
         }
     }
 
@@ -69,6 +80,7 @@ impl MockLlm {
             name: "mock-scripted".into(),
             retries: 1,
             vision: false,
+            circuit: super::CircuitBreaker::new(0),
         }
     }
 }
@@ -86,6 +98,12 @@ impl LlmClient for MockLlm {
     }
     fn vision_supported(&self) -> bool {
         self.vision
+    }
+    fn is_available(&self) -> bool {
+        self.circuit.remaining().is_none()
+    }
+    fn mark_unavailable(&self) {
+        self.circuit.record_failure();
     }
     async fn complete(&self, _req: LlmRequest) -> Result<LlmCompletion, InboxError> {
         match &self.behavior {

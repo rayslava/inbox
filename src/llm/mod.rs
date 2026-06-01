@@ -252,6 +252,16 @@ pub trait LlmClient: Send + Sync {
         false
     }
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError>;
+    /// Whether the backend is usable right now. A backend that recently hit a
+    /// transient outage (429/5xx/timeout) reports `false` for a cooldown window
+    /// so the chain skips it without an attempt and falls through to the next
+    /// (local) backend. Default: always available.
+    fn is_available(&self) -> bool {
+        true
+    }
+    /// Trip the backend's cooldown after a transient "service unavailable"
+    /// failure. Default: no-op (backends without a circuit ignore it).
+    fn mark_unavailable(&self) {}
     /// Call the backend and return the plain-text result plus the
     /// `backend:model` identifier of the model that produced it.
     ///

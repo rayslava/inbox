@@ -43,6 +43,7 @@ pub struct FreeRouterClient {
     state: Arc<RwLock<PoolStateWithStamp>>,
     semaphore: Option<Arc<Semaphore>>,
     client: reqwest::Client,
+    circuit: super::CircuitBreaker,
 }
 
 pub(super) struct PoolStateWithStamp {
@@ -107,6 +108,7 @@ impl FreeRouterClient {
             state,
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
+            circuit: super::CircuitBreaker::new(cfg.circuit_open_secs),
         })
     }
 
@@ -138,6 +140,7 @@ impl FreeRouterClient {
             })),
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
+            circuit: super::CircuitBreaker::new(cfg.circuit_open_secs),
         }
     }
 
@@ -259,8 +262,37 @@ impl LlmClient for FreeRouterClient {
             .is_ok_and(|g| !g.pool.vision_models.is_empty())
     }
 
+    fn is_available(&self) -> bool {
+        self.circuit.remaining().is_none()
+    }
+
+    fn mark_unavailable(&self) {
+        self.circuit.record_failure();
+    }
+
     #[instrument(skip(self, req), fields(backend = "free_router"))]
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
+        if let Some(d) = self.circuit.remaining() {
+            return Err(InboxError::Llm(format!(
+                "free_router circuit open: cooldown {}s remaining",
+                d.as_secs()
+            )));
+        }
+        let result = self.complete_inner(req).await;
+        // Every candidate was exhausted before `complete_inner` returns an error,
+        // so a transient failure means the whole backend could not serve this
+        // request — trip the cooldown; clear it on any success.
+        match &result {
+            Ok(_) => self.circuit.clear(),
+            Err(e) if super::chain::is_service_unavailable(e) => self.circuit.record_failure(),
+            Err(_) => {}
+        }
+        result
+    }
+}
+
+impl FreeRouterClient {
+    async fn complete_inner(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
         // `acquire` errors only if the semaphore is closed, which never happens
         // here (we hold the `Arc` and never call `close`). Treat the impossible
         // error as "no permit" and proceed rather than panicking.
@@ -424,6 +456,13 @@ impl FreeRouterClient {
                         "status" => "hard_failure",
                     )
                     .increment(1);
+                    return Err(e);
+                }
+                // A transient outage (429/5xx/timeout) recurs immediately; abort
+                // this model's retries so the batch moves on without burning the
+                // per-model budget against a rate-limited model.
+                Err(e) if super::chain::is_service_unavailable(&e) => {
+                    debug!(?e, model = %model_id, "free-router model unavailable; aborting retries");
                     return Err(e);
                 }
                 Err(e) => {

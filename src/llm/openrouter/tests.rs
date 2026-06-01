@@ -12,6 +12,7 @@ fn make_client(base_url: &str) -> OpenRouterClient {
         vision_supported: false,
         semaphore: None,
         client: reqwest::Client::new(),
+        circuit: crate::llm::CircuitBreaker::new(0),
     }
 }
 
@@ -177,6 +178,49 @@ async fn complete_tool_calls() {
     let req = LlmRequest::simple("sys", "user");
     let result = client.complete(req).await.unwrap();
     assert!(matches!(result, LlmCompletion::ToolCalls(_)));
+}
+
+/// Build a client with an active cooldown window so a transient failure makes
+/// `is_available` flip to `false`.
+fn make_client_with_cooldown(base_url: &str) -> OpenRouterClient {
+    OpenRouterClient {
+        model: "test-model".into(),
+        api_key: "test-key".into(),
+        base_url: base_url.to_owned(),
+        retries: 1,
+        timeout: std::time::Duration::from_secs(5),
+        vision_supported: false,
+        semaphore: None,
+        client: reqwest::Client::new(),
+        circuit: crate::llm::CircuitBreaker::new(300),
+    }
+}
+
+#[tokio::test]
+async fn rate_limit_trips_cooldown_and_short_circuits_next_call() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+        .mount(&server)
+        .await;
+
+    let client = make_client_with_cooldown(&server.uri());
+    assert!(client.is_available());
+
+    // First call hits the 429 and trips the cooldown.
+    let first = client.complete(LlmRequest::simple("s", "u")).await;
+    assert!(first.is_err());
+    assert!(!client.is_available(), "429 must open the circuit");
+
+    // Second call is short-circuited by the open circuit — no HTTP request.
+    let second = client.complete(LlmRequest::simple("s", "u")).await;
+    match second {
+        Err(crate::error::InboxError::Llm(m)) => {
+            assert!(m.contains("circuit open"), "{m}");
+        }
+        other => panic!("expected circuit-open error, got {other:?}"),
+    }
 }
 
 #[tokio::test]

@@ -406,6 +406,14 @@ impl LlmClient for OllamaClient {
         self.vision_supported
     }
 
+    fn is_available(&self) -> bool {
+        self.circuit.remaining().is_none()
+    }
+
+    fn mark_unavailable(&self) {
+        self.circuit.record_failure();
+    }
+
     #[instrument(skip(self, req), fields(model = %self.model))]
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
         let LlmRequest {
@@ -431,7 +439,17 @@ impl LlmClient for OllamaClient {
             effective_think,
         );
 
-        let chat = self.send_chat(&body, effective_think).await?;
+        let chat = match self.send_chat(&body, effective_think).await {
+            Ok(chat) => chat,
+            Err(e) => {
+                // A 5xx/timeout from the server (not just an unreachable preflight)
+                // must also trip the cooldown so the chain skips this backend.
+                if super::chain::is_service_unavailable(&e) {
+                    self.circuit.record_failure();
+                }
+                return Err(e);
+            }
+        };
         self.parse_chat_response(chat)
     }
 }

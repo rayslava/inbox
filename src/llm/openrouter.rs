@@ -21,6 +21,7 @@ pub struct OpenRouterClient {
     vision_supported: bool,
     semaphore: Option<Arc<Semaphore>>,
     client: reqwest::Client,
+    circuit: super::CircuitBreaker,
 }
 
 impl OpenRouterClient {
@@ -50,6 +51,7 @@ impl OpenRouterClient {
             vision_supported: cfg.vision_supported,
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
+            circuit: super::CircuitBreaker::new(cfg.circuit_open_secs),
         })
     }
 }
@@ -125,8 +127,22 @@ impl LlmClient for OpenRouterClient {
         self.vision_supported
     }
 
+    fn is_available(&self) -> bool {
+        self.circuit.remaining().is_none()
+    }
+
+    fn mark_unavailable(&self) {
+        self.circuit.record_failure();
+    }
+
     #[instrument(skip(self, req), fields(model = %self.model))]
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
+        if let Some(d) = self.circuit.remaining() {
+            return Err(InboxError::Llm(format!(
+                "openrouter circuit open: cooldown {}s remaining",
+                d.as_secs()
+            )));
+        }
         // `acquire` errors only if the semaphore is closed, which never happens
         // here. Treat the impossible error as "no permit" rather than panicking.
         let _permit = match &self.semaphore {
@@ -134,7 +150,7 @@ impl LlmClient for OpenRouterClient {
             None => None,
         };
 
-        call_chat_completion(
+        let result = call_chat_completion(
             &self.client,
             &self.base_url,
             &self.api_key,
@@ -142,7 +158,14 @@ impl LlmClient for OpenRouterClient {
             &req,
             "openrouter",
         )
-        .await
+        .await;
+        // Trip the cooldown on a transient outage; clear it on any success.
+        match &result {
+            Ok(_) => self.circuit.clear(),
+            Err(e) if super::chain::is_service_unavailable(e) => self.circuit.record_failure(),
+            Err(_) => {}
+        }
+        result
     }
 }
 
