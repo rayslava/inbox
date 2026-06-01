@@ -17,8 +17,7 @@ fn make_client(base_url: &str) -> OllamaClient {
         vision_supported: false,
         context_size: None,
         format: None,
-        circuit_open_secs: 0,
-        last_connection_failure: Arc::new(Mutex::new(None)),
+        circuit: crate::llm::CircuitBreaker::new(0),
         semaphore: None,
         client: reqwest::Client::new(),
     }
@@ -270,8 +269,8 @@ async fn circuit_open_skips_request() {
     // No mocks registered — any HTTP hit would be an unexpected request.
 
     let mut client = make_client(&server.uri());
-    client.circuit_open_secs = 300;
-    *client.last_connection_failure.lock().expect("mutex") = Some(Instant::now());
+    client.circuit = crate::llm::CircuitBreaker::new(300);
+    client.circuit.record_failure();
 
     let result = client.complete(LlmRequest::simple("sys", "user")).await;
     assert!(result.is_err());
@@ -305,20 +304,22 @@ async fn circuit_clears_on_success() {
         .await;
 
     let mut client = make_client(&server.uri());
-    // Artificially open a stale circuit from 1000s ago (expired).
-    client.circuit_open_secs = 1;
-    *client.last_connection_failure.lock().expect("mutex") =
-        Some(Instant::now().checked_sub(Duration::from_secs(10)).unwrap());
+    // Artificially open a stale circuit from 10s ago with a 1s window (expired).
+    client.circuit = crate::llm::CircuitBreaker::new(1);
+    client
+        .circuit
+        .open_since(Instant::now().checked_sub(Duration::from_secs(10)).unwrap());
+    assert!(
+        client.circuit.has_recorded_failure(),
+        "stale failure recorded"
+    );
 
-    // Circuit should be expired — request succeeds and clears failure.
+    // Circuit is expired — request proceeds, and success clears the stale failure.
     let result = client.complete(LlmRequest::simple("sys", "user")).await;
     assert!(result.is_ok());
     assert!(
-        client
-            .last_connection_failure
-            .lock()
-            .expect("mutex")
-            .is_none()
+        !client.circuit.has_recorded_failure(),
+        "successful request must clear the recorded failure"
     );
 }
 

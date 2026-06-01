@@ -15,9 +15,11 @@ pub mod tools;
 
 mod chain;
 mod chain_tools;
+mod circuit;
 pub use chain::LlmChain;
 #[cfg(test)]
 use chain_tools::append_missing_source_links;
+pub(crate) use circuit::CircuitBreaker;
 
 // ── Public request / response types ──────────────────────────────────────────
 
@@ -321,6 +323,8 @@ pub(crate) fn retry_backoff(attempt: u32) -> std::time::Duration {
 mod builder;
 pub use builder::{BuildResult, build_chain};
 
+#[cfg(test)]
+mod circuit_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

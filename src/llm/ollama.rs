@@ -1,8 +1,8 @@
 use anodized::spec;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, instrument, warn};
 
@@ -29,10 +29,8 @@ pub struct OllamaClient {
     /// tool definitions, so it never suppresses tool calls mid-loop. `None` =
     /// unconstrained free-text output.
     pub format: Option<String>,
-    /// Seconds to skip this backend after a connection failure (circuit breaker).
-    /// 0 disables the circuit breaker.
-    circuit_open_secs: u64,
-    last_connection_failure: Arc<Mutex<Option<Instant>>>,
+    /// Skip this backend for a cooldown after a connection failure.
+    circuit: super::CircuitBreaker,
     semaphore: Option<Arc<Semaphore>>,
     client: reqwest::Client,
 }
@@ -103,54 +101,16 @@ impl OllamaClient {
             vision_supported: cfg.vision_supported,
             context_size: cfg.context_size,
             format: cfg.format.clone(),
-            circuit_open_secs: cfg.circuit_open_secs,
-            last_connection_failure: Arc::new(Mutex::new(None)),
+            circuit: super::CircuitBreaker::new(cfg.circuit_open_secs),
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
         })
     }
 
-    /// Record a connection failure and open the circuit breaker.
-    fn record_connection_failure(&self) {
-        *self
-            .last_connection_failure
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
-    }
-
-    /// Clear the circuit breaker (called on successful response).
-    fn clear_circuit(&self) {
-        *self
-            .last_connection_failure
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-    }
-
-    /// Returns `true` when the circuit is open and requests should be skipped.
-    fn is_circuit_open(&self) -> Option<Duration> {
-        if self.circuit_open_secs == 0 {
-            return None;
-        }
-        let guard = self
-            .last_connection_failure
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(failed_at) = *guard {
-            let elapsed = failed_at.elapsed();
-            let limit = Duration::from_secs(self.circuit_open_secs);
-            if elapsed < limit {
-                // `elapsed < limit` guarantees a positive remainder; checked_sub
-                // returns None only on the boundary, which maps to "not open".
-                return limit.checked_sub(elapsed);
-            }
-        }
-        None
-    }
-
     /// Short-circuit when a recent connection failure is still within the
     /// circuit-breaker cooldown.
     fn enforce_circuit(&self) -> Result<(), InboxError> {
-        if let Some(remaining) = self.is_circuit_open() {
+        if let Some(remaining) = self.circuit.remaining() {
             warn!(
                 model = %self.model,
                 remaining_secs = remaining.as_secs(),
@@ -169,7 +129,7 @@ impl OllamaClient {
     async fn preflight_ps(&self) -> Result<(), InboxError> {
         match self.query_ps().await {
             PsResult::Unreachable => {
-                self.record_connection_failure();
+                self.circuit.record_failure();
                 warn!(model = %self.model, "Ollama unreachable (connection refused) — opening circuit");
                 Err(InboxError::Llm(
                     "Ollama unreachable (connection refused)".into(),
@@ -323,7 +283,7 @@ impl OllamaClient {
             debug!(thinking = %truncate_for_log(thinking, 2000), "Ollama model thinking trace");
         }
 
-        self.clear_circuit();
+        self.circuit.clear();
 
         if let Some(tool_calls) = chat.message.tool_calls {
             info!(
