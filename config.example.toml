@@ -127,6 +127,9 @@ connect_timeout_secs = 10
 # Vision capability is detected automatically per model from OpenRouter
 # /api/v1/models metadata (architecture.input_modalities), so image requests
 # are routed only to vision-capable free models. No vision_supported flag here.
+# circuit_open_secs = 300     # On a transient outage (429 rate limit, 5xx, or a
+#                             # connection timeout) skip this backend for N seconds
+#                             # and fall through to the next one (0 = disabled).
 
 # Alternative cloud backend: pinned OpenRouter model (commented out by default
 # — prefer free_router above for free models, or keep both with openrouter
@@ -142,6 +145,7 @@ connect_timeout_secs = 10
 # connect_timeout_secs = 10   # TCP connect timeout (default 10s); separate from read timeout
 # vision_supported   = true   # set true for a vision-capable pinned model (e.g. gpt-4o);
 #                             # image requests are routed here. Default: false.
+# circuit_open_secs = 300     # Transient-outage cooldown (429/5xx/timeout), as above.
 
 # Offline fallback: local Ollama (comment out if not available).
 # [[llm.backends]]
@@ -164,7 +168,24 @@ connect_timeout_secs = 10
 # format         = "json"     # Constrain Ollama output to valid JSON. Applied only on turns with no
 #                             # tools, so it never suppresses tool calls. Recommended for small models
 #                             # that tend to drift into Markdown prose.
-# circuit_open_secs = 300     # After a TCP connection failure, skip this backend for N seconds (0 = disabled)
+# circuit_open_secs = 300     # Skip this backend for N seconds after a transient outage —
+#                             # a connection failure OR a 429/5xx/timeout response (0 = disabled).
+
+# Local vision fallback: a vision-capable Ollama model, placed AFTER the text
+# backends so it only handles image requests the cloud vision pool could not.
+# Recommended chain order: free_router (cloud vision auto-detected) → ollama
+# (text) → ollama (vision). With this in place, an image whose cloud vision
+# model is rate-limited (429) is re-OCR'd locally instead of being left pending.
+# [[llm.backends]]
+# type           = "ollama"
+# model          = "llama3.2-vision"   # or "llava"
+# base_url       = "http://localhost:11434"
+# timeout_secs   = 120        # vision inference is slower; allow more time
+# connect_timeout_secs = 10
+# vision_supported   = true   # REQUIRED — routes image requests to this backend
+# max_concurrent     = 1
+# context_size   = 16384
+# circuit_open_secs = 300
 
 # ── Adapters ──────────────────────────────────────────────────────────────────
 

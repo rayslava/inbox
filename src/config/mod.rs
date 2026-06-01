@@ -5,6 +5,8 @@ use crate::error::InboxError;
 pub mod adapters;
 pub mod infra;
 pub mod llm;
+#[cfg(test)]
+mod llm_tests;
 pub mod memory;
 pub mod pipeline;
 pub mod tooling;

@@ -177,9 +177,10 @@ pub struct LlmBackendConfig {
     /// Default: 10 seconds.
     #[serde(default = "default_connect_timeout_secs")]
     pub connect_timeout_secs: u64,
-    /// Ollama only. After a connection failure (not a timeout), skip this backend
-    /// for this many seconds before retrying. Prevents repeated failed attempts when
-    /// the Ollama server is unreachable. Set to 0 to disable. Default: 300 seconds.
+    /// All backends. Skip this backend for this many seconds after a transient
+    /// outage, falling through to the next backend. For `Ollama` this is a
+    /// connection failure; for cloud backends (`free_router`/`openrouter`) it
+    /// also trips on a 429/5xx/timeout response. `0` disables. Default: 300s.
     #[serde(default = "default_circuit_open_secs")]
     pub circuit_open_secs: u64,
     // ── Free-router fields ────────────────────────────────────────────────────
