@@ -263,7 +263,7 @@ async fn fallback_item_inserted_into_pending_store() {
 
     let enriched = test_enriched("test pending insertion", vec![], vec![]);
     // run_llm produces a ProcessedMessage; if LLM fails it has llm_response=None.
-    let processed = pipeline.run_llm(enriched, false).await.unwrap();
+    let processed = pipeline.run_llm(enriched, true).await.unwrap();
     assert!(processed.llm_response.is_none(), "expected fallback");
 
     // Simulate what the pipeline does after run_llm when llm_response is None.
@@ -298,7 +298,7 @@ async fn image_only_vision_unavailable_yields_incomplete_node() {
     });
     let enriched = enriched_from(msg);
 
-    let processed = pipeline.run_llm(enriched, true).await.unwrap();
+    let processed = pipeline.run_llm(enriched, false).await.unwrap();
     assert!(
         processed.is_incomplete(),
         "image-only + vision-down must be incomplete"
@@ -366,7 +366,7 @@ async fn image_only_vision_unavailable_short_circuits_without_calling_llm() {
     });
     let enriched = enriched_from(msg);
 
-    let processed = pipeline.run_llm(enriched, true).await.unwrap();
+    let processed = pipeline.run_llm(enriched, false).await.unwrap();
     assert!(processed.is_incomplete());
     assert!(processed.llm_response.is_none());
 }
@@ -563,7 +563,7 @@ async fn run_llm_raw_fallback_with_existing_text_skips_title_regeneration() {
         Pipeline::new(cfg, failing_llm, writer, tracker, None, None).expect("build pipeline");
 
     let enriched = enriched_from(make_msg("plain text, not empty"));
-    let processed = pipeline.run_llm(enriched, false).await.unwrap();
+    let processed = pipeline.run_llm(enriched, true).await.unwrap();
     assert!(processed.llm_response.is_none());
     assert!(
         processed.fallback_title.is_none(),

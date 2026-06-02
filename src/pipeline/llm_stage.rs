@@ -22,7 +22,7 @@ impl Pipeline {
     pub(crate) async fn run_llm(
         &self,
         enriched: EnrichedMessage,
-        vision_unavailable: bool,
+        vision_available: bool,
     ) -> Result<ProcessedMessage, InboxError> {
         use crate::llm::{LlmOutcome, LlmRequest, LlmTurnProgress};
 
@@ -53,7 +53,7 @@ impl Pipeline {
         );
         req.progress_tx = Some(progress_tx);
 
-        let completeness = completeness_of(&enriched, vision_unavailable);
+        let completeness = completeness_of(&enriched, vision_available);
         let urls_fetched = enriched.url_contents.len();
 
         // Image-only message whose vision is unavailable: the LLM input would be
@@ -253,10 +253,10 @@ impl Pipeline {
 /// LLM produced a response (mixed image+URL where only the URL enriched).
 fn completeness_of(
     enriched: &EnrichedMessage,
-    vision_unavailable: bool,
+    vision_available: bool,
 ) -> crate::message::ProcessingCompleteness {
     use crate::message::{MediaKind, ProcessingCompleteness};
-    if !vision_unavailable {
+    if vision_available {
         return ProcessingCompleteness::Complete;
     }
     let has_image = enriched

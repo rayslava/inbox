@@ -12,13 +12,24 @@ mod classify;
 #[cfg(test)]
 mod tests;
 
-/// Result of the image-analysis stage: the per-image results plus whether any
-/// image's text was left unread because every vision backend was unavailable
-/// (a transient outage that should hold the node pending for retry).
-#[derive(Debug, Default)]
+/// Result of the image-analysis stage: the per-image results plus whether vision
+/// was available for the images. `vision_available` is `false` when an image's
+/// text was left unread because every vision backend was down (a transient
+/// outage that should hold the node pending for retry); `true` otherwise.
+#[derive(Debug)]
 pub struct ImageAnalysisOutcome {
     pub results: Vec<ImageAnalysisResult>,
-    pub vision_unavailable: bool,
+    pub vision_available: bool,
+}
+
+impl Default for ImageAnalysisOutcome {
+    fn default() -> Self {
+        // Vision is considered available until an image proves otherwise.
+        Self {
+            results: Vec::new(),
+            vision_available: true,
+        }
+    }
 }
 
 /// Outcome of analyzing one image.
@@ -31,10 +42,10 @@ enum AnalyzeOne {
     Unavailable,
 }
 
-/// Analyze the image attachments on `msg`. Returns empty/`false` when analysis
-/// is disabled; caps at `cfg.max_attachments`; skips any image that fails to
-/// read or exceeds `vision_max_bytes`. Sets `vision_unavailable` when an image's
-/// text went unread because all vision backends were down.
+/// Analyze the image attachments on `msg`. Returns empty results / available
+/// when analysis is disabled; caps at `cfg.max_attachments`; skips any image
+/// that fails to read or exceeds `vision_max_bytes`. Clears `vision_available`
+/// when an image's text went unread because all vision backends were down.
 pub async fn analyze_images(
     chain: &LlmChain,
     cfg: &ImageAnalysisConfig,
@@ -53,7 +64,7 @@ pub async fn analyze_images(
     {
         match analyze_image(chain, cfg, vision_max_bytes, att).await {
             AnalyzeOne::Done(r) => outcome.results.push(r),
-            AnalyzeOne::Unavailable => outcome.vision_unavailable = true,
+            AnalyzeOne::Unavailable => outcome.vision_available = false,
             AnalyzeOne::Skip => {}
         }
     }

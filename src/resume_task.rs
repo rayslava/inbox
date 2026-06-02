@@ -109,12 +109,13 @@ async fn retry_item(args: &ResumeTaskArgs, item: &PendingItem, max_retries: u32)
         .image_analyses
         .iter()
         .any(|a| !a.recognized_text.trim().is_empty());
-    // Still missing image text ⇒ vision remains unavailable; keep the node
-    // pending (never marked complete) until OCR recovers or retries exhaust.
-    let vision_unavailable = has_image && !has_image_text;
+    // An image with recognized text (or no image at all) means vision is
+    // available; otherwise it remains unavailable and the node stays pending
+    // (never marked complete) until OCR recovers or retries exhaust.
+    let vision_available = !has_image || has_image_text;
     let enriched = assemble_enriched(item, incoming);
 
-    match args.pipeline.run_llm(enriched, vision_unavailable).await {
+    match args.pipeline.run_llm(enriched, vision_available).await {
         Ok(processed) if processed.llm_response.is_some() && !processed.is_incomplete() => {
             on_success(args, item, processed).await;
         }

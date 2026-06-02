@@ -108,8 +108,8 @@ impl Pipeline {
 
     /// Run the vision-LLM image-analysis stage, populating `msg.image_analyses`.
     /// No-op when disabled or when the message carries no image attachments.
-    /// Returns `true` when an image's text was left unread because every vision
-    /// backend was unavailable (a transient outage to retry).
+    /// Returns `false` when an image's text was left unread because every vision
+    /// backend was unavailable (a transient outage to retry); `true` otherwise.
     async fn run_image_analysis(
         &self,
         id: uuid::Uuid,
@@ -122,7 +122,7 @@ impl Pipeline {
                 .iter()
                 .any(|a| a.media_kind == MediaKind::Image)
         {
-            return false;
+            return true;
         }
         self.tracker.advance(id, ProcessingStage::AnalyzingImages);
         if let Some(n) = notifier {
@@ -138,11 +138,11 @@ impl Pipeline {
         if !outcome.results.is_empty() {
             info!(id = %id, count = outcome.results.len(), "Image analysis complete");
         }
-        if outcome.vision_unavailable {
+        if !outcome.vision_available {
             warn!(id = %id, "Image text unread — all vision backends unavailable");
         }
         msg.image_analyses = outcome.results;
-        outcome.vision_unavailable
+        outcome.vision_available
     }
 
     /// Re-run image analysis for a resumed item (no tracker/notifier). Updates
@@ -194,7 +194,7 @@ impl Pipeline {
 
         // Image analysis (interface classification + OCR) runs before
         // pre-processing so the recognized text can inform rules and enrichment.
-        let vision_unavailable = self.run_image_analysis(id, &mut notifier, &mut msg).await;
+        let vision_available = self.run_image_analysis(id, &mut notifier, &mut msg).await;
 
         let mut hints = preprocess::run_preprocessing(&msg, &self.config.pipeline.preprocessing);
         // Tag interface/screenshot images so the org node is easy to find.
@@ -231,7 +231,7 @@ impl Pipeline {
                 id,
                 &mut notifier,
                 llm_initial,
-                self.run_llm(enriched, vision_unavailable),
+                self.run_llm(enriched, vision_available),
             )
             .await?;
 
