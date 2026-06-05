@@ -273,6 +273,17 @@ skip_domains    = ["youtube.com", "twitter.com", "x.com"]
 # tag       = "image"
 # llm_hint  = "This message contains an image — describe the visual content in the summary."
 
+# ── Memo (research-not-needed) tags ──────────────────────────────────────────
+# Messages carrying one of these hashtags are written straight to org: URL fetch
+# and the LLM enrichment call (and its memory recall) are skipped; only image
+# OCR still runs. The node is final (never :inbox_pending:) and recorded with
+# ENRICHED_BY: memo. The tag stays on the org headline so memos remain
+# searchable. An image memo sent while every vision backend is down is held
+# :inbox_pending: and re-OCR'd on resume instead of being finalized empty.
+# A leading "#" in a tag is optional (matched the same either way). Default: ["memo"].
+[pipeline]
+memo_tags = ["memo"]
+
 # ── Pipeline content policy ───────────────────────────────────────────────────
 
 [pipeline.web_content]

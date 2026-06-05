@@ -100,7 +100,7 @@ async fn retry_item(args: &ResumeTaskArgs, item: &PendingItem, max_retries: u32)
 
     // Re-run image analysis so a recovered vision backend re-OCRs the image.
     let mut incoming = build_incoming(item);
-    args.pipeline.resume_image_analysis(&mut incoming).await;
+    let vision_outcome = args.pipeline.resume_image_analysis(&mut incoming).await;
     let has_image = incoming
         .attachments
         .iter()
@@ -109,13 +109,31 @@ async fn retry_item(args: &ResumeTaskArgs, item: &PendingItem, max_retries: u32)
         .image_analyses
         .iter()
         .any(|a| !a.recognized_text.trim().is_empty());
-    // An image with recognized text (or no image at all) means vision is
-    // available; otherwise it remains unavailable and the node stays pending
-    // (never marked complete) until OCR recovers or retries exhaust.
-    let vision_available = !has_image || has_image_text;
+    // Prefer the re-OCR's actual availability: a recovered backend finalizes
+    // the node even with no readable text. Fall back to the text-presence
+    // heuristic only when the stage did not run (no image / analysis disabled).
+    let vision_available = vision_outcome.unwrap_or(!has_image || has_image_text);
     let enriched = assemble_enriched(item, incoming);
 
-    match args.pipeline.run_llm(enriched, vision_available).await {
+    // A memo never invokes the LLM, even on resume: re-OCR may now make it
+    // complete; otherwise it stays pending until OCR recovers or retries exhaust.
+    let outcome = if crate::pipeline::memo::is_memo(
+        &enriched.original.user_tags,
+        &args.pipeline.config.pipeline.memo_tags,
+    ) {
+        // Memo leaves url_contents empty (no fetch); re-extract URLs from the
+        // text so the finalized node keeps its :URLS: property.
+        let mut enriched = enriched;
+        enriched.urls = crate::pipeline::url_extractor::extract_urls(&enriched.original.text);
+        Ok(crate::pipeline::memo::processed_memo(
+            enriched,
+            vision_available,
+        ))
+    } else {
+        args.pipeline.run_llm(enriched, vision_available).await
+    };
+
+    match outcome {
         Ok(processed) if processed.llm_response.is_some() && !processed.is_incomplete() => {
             on_success(args, item, processed).await;
         }

@@ -17,7 +17,7 @@ use inbox::{
         AdaptersConfig, AdminConfig, Config, GeneralConfig, PipelineConfig, SyncthingConfig,
         ToolingConfig, UrlFetchConfig, WebUiConfig,
     },
-    message::{ProcessingHints, RetryableMessage, SourceMetadata},
+    message::{Attachment, MediaKind, ProcessingHints, RetryableMessage, SourceMetadata},
     output::{OutputWriter, org_file::OrgFileWriter},
     pending::{PendingItem, PendingStore},
     pipeline::Pipeline,
@@ -156,6 +156,140 @@ async fn retry_item_success_removes_pending_and_patches_org() {
     assert!(
         !patched.contains(":inbox_pending:"),
         "pending tag should be gone; got:\n{patched}"
+    );
+}
+
+#[tokio::test]
+async fn retry_item_memo_finalizes_without_llm() {
+    // A pending memo must finalize on resume via the memo path, never the LLM:
+    // an always-fail chain would leave a non-memo item pending, so a removed
+    // pending row + patched non-pending node proves the memo bypass ran.
+    let (_tmp, dir) = helpers::temp_dir();
+    let db_path = dir.join("pending.db");
+    let output_file = dir.join("inbox.org");
+
+    let id = Uuid::new_v4();
+    tokio::fs::write(&output_file, pending_org_entry(id))
+        .await
+        .unwrap();
+
+    let store = Arc::new(PendingStore::open(&db_path).await.unwrap());
+    let mut item = pending_item(id);
+    item.incoming.user_tags = vec!["memo".into()];
+    // URL in the text: memo leaves url_contents empty, so resume must re-extract
+    // it to keep the :URLS: property on the finalized node.
+    item.incoming.text = "Original message https://example.com/post".into();
+    seed_pending(&store, &item).await;
+
+    let cfg = Arc::new(minimal_config(dir.clone(), output_file.clone()));
+    // Always-fall-back chain: if the memo path were skipped and run_llm called,
+    // the item would stay pending.
+    let llm = helpers::always_fail_llm_chain();
+    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Arc::new(
+        Pipeline::new(
+            Arc::clone(&cfg),
+            llm,
+            writer,
+            Arc::clone(&tracker),
+            None,
+            Some(Arc::clone(&store)),
+        )
+        .expect("build pipeline"),
+    );
+
+    let args = ResumeTaskArgs {
+        store: Arc::clone(&store),
+        pipeline,
+        config: Arc::clone(&cfg),
+        telegram_notifier: None,
+        shutdown: tokio_util::sync::CancellationToken::new(),
+    };
+
+    retry_item_for_test(&args, &item, 3).await;
+
+    let remaining = store.list(3, 10).await.unwrap();
+    assert!(
+        remaining.iter().all(|i| i.id != id),
+        "memo pending row should be removed after finalization"
+    );
+    let patched = tokio::fs::read_to_string(&output_file).await.unwrap();
+    assert!(
+        patched.contains("Original message"),
+        "memo node should be patched with its text; got:\n{patched}"
+    );
+    assert!(
+        !patched.contains(":inbox_pending:"),
+        "finalized memo must not stay pending; got:\n{patched}"
+    );
+    assert!(
+        patched.contains("https://example.com/post"),
+        "memo URL must survive resume finalization; got:\n{patched}"
+    );
+}
+
+#[tokio::test]
+async fn retry_item_memo_image_unreadable_stays_pending() {
+    // An image memo whose attachment cannot be analyzed on resume (file missing
+    // / not yet synced, so re-OCR is skipped) must NOT be finalized empty — it
+    // stays pending for a later retry rather than masking the unread image.
+    let (_tmp, dir) = helpers::temp_dir();
+    let db_path = dir.join("pending.db");
+    let output_file = dir.join("inbox.org");
+
+    let id = Uuid::new_v4();
+    tokio::fs::write(&output_file, pending_org_entry(id))
+        .await
+        .unwrap();
+
+    let store = Arc::new(PendingStore::open(&db_path).await.unwrap());
+    let mut item = pending_item(id);
+    item.incoming.user_tags = vec!["memo".into()];
+    item.incoming.text = String::new();
+    item.incoming.attachments = vec![Attachment {
+        original_name: "shot.jpg".into(),
+        saved_path: dir.join("shot.jpg"), // never written → analysis is skipped
+        mime_type: Some("image/jpeg".into()),
+        media_kind: MediaKind::Image,
+    }];
+    seed_pending(&store, &item).await;
+
+    let cfg = Arc::new(minimal_config(dir.clone(), output_file.clone()));
+    let llm = helpers::always_fail_llm_chain();
+    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Arc::new(
+        Pipeline::new(
+            Arc::clone(&cfg),
+            llm,
+            writer,
+            Arc::clone(&tracker),
+            None,
+            Some(Arc::clone(&store)),
+        )
+        .expect("build pipeline"),
+    );
+
+    let args = ResumeTaskArgs {
+        store: Arc::clone(&store),
+        pipeline,
+        config: Arc::clone(&cfg),
+        telegram_notifier: None,
+        shutdown: tokio_util::sync::CancellationToken::new(),
+    };
+
+    retry_item_for_test(&args, &item, 3).await;
+
+    let remaining = store.list(3, 10).await.unwrap();
+    assert!(
+        remaining.iter().any(|i| i.id == id),
+        "unreadable image memo must stay pending, not be finalized empty"
+    );
+    let still = tokio::fs::read_to_string(&output_file).await.unwrap();
+    assert!(
+        still.contains(":inbox_pending:"),
+        "node should remain pending; got:\n{still}"
     );
 }
 

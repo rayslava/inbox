@@ -25,6 +25,7 @@ use url_fetcher::UrlFetcher;
 
 mod fallback;
 mod llm_stage;
+pub(crate) mod memo;
 
 pub struct Pipeline {
     pub config: Arc<Config>,
@@ -149,14 +150,21 @@ impl Pipeline {
     /// `msg.image_analyses` only when re-OCR yields results, preserving any
     /// stored analyses otherwise — a still-down backend or a missing attachment
     /// file must not discard previously recognized text.
-    pub(crate) async fn resume_image_analysis(&self, msg: &mut IncomingMessage) {
-        if !self.config.pipeline.image_analysis.enabled
-            || !msg
-                .attachments
-                .iter()
-                .any(|a| a.media_kind == MediaKind::Image)
-        {
-            return;
+    ///
+    /// Returns `Some(true)` only when the vision backend actually analyzed every
+    /// image — an empty-text result counts, so a recovered backend finalizes a
+    /// node with nothing to transcribe. A skipped image (unreadable or
+    /// not-yet-synced attachment) or a still-down backend yields `Some(false)`
+    /// so the node stays pending for a later retry. `None` when the stage did
+    /// not run (analysis disabled or no image attachment).
+    pub(crate) async fn resume_image_analysis(&self, msg: &mut IncomingMessage) -> Option<bool> {
+        let image_count = msg
+            .attachments
+            .iter()
+            .filter(|a| a.media_kind == MediaKind::Image)
+            .count();
+        if !self.config.pipeline.image_analysis.enabled || image_count == 0 {
+            return None;
         }
         let outcome = image_analysis::analyze_images(
             &self.llm,
@@ -165,9 +173,14 @@ impl Pipeline {
             msg,
         )
         .await;
+        // Vision is resolved only if every image (capped at max_attachments) got
+        // a backend result; a Skip (unreadable/unsynced file) keeps it pending.
+        let expected = image_count.min(self.config.pipeline.image_analysis.max_attachments);
+        let resolved = outcome.vision_available && outcome.results.len() >= expected;
         if !outcome.results.is_empty() {
             msg.image_analyses = outcome.results;
         }
+        Some(resolved)
     }
 
     /// Process a single incoming message through the full pipeline.
@@ -212,28 +225,39 @@ impl Pipeline {
         }
         msg.preprocessing_hints = hints;
 
-        let enriched = self
-            .run_stage(
-                id,
-                &mut notifier,
-                ProcessingStage::Enriching,
-                self.enrich(msg),
-            )
-            .await?;
-
-        let llm_initial = ProcessingStage::RunningLlm {
-            turn: 0,
-            max_turns: self.llm.max_tool_turns(),
-            last_tools: vec![],
-        };
-        let processed = self
-            .run_stage(
+        let processed = if memo::is_memo(&msg.user_tags, &self.config.pipeline.memo_tags) {
+            // Research-not-needed: skip URL fetch and the LLM call (image OCR
+            // already ran). URLs are still extracted so they appear in the node.
+            info!(id = %id, "memo tag — skipping URL fetch and LLM enrichment");
+            let urls = extract_urls(&msg.text);
+            let enriched = EnrichedMessage {
+                original: msg,
+                urls,
+                url_contents: Vec::new(),
+            };
+            memo::processed_memo(enriched, vision_available)
+        } else {
+            let enriched = self
+                .run_stage(
+                    id,
+                    &mut notifier,
+                    ProcessingStage::Enriching,
+                    self.enrich(msg),
+                )
+                .await?;
+            let llm_initial = ProcessingStage::RunningLlm {
+                turn: 0,
+                max_turns: self.llm.max_tool_turns(),
+                last_tools: vec![],
+            };
+            self.run_stage(
                 id,
                 &mut notifier,
                 llm_initial,
                 self.run_llm(enriched, vision_available),
             )
-            .await?;
+            .await?
+        };
 
         self.run_stage(
             id,

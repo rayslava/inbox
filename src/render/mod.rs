@@ -66,19 +66,32 @@ pub const PENDING_TAG: &str = "inbox_pending";
 /// Tag applied to org entries where all LLM retries were exhausted.
 pub const FAILED_TAG: &str = "inbox_failed";
 
+/// Reserved workflow tags are applied only by the pipeline (pending) or resume
+/// (failed) — never accepted from user/pre-processing/LLM input, so a literal
+/// `#inbox_pending` in a message cannot forge a pending headline.
+fn is_reserved_tag(t: &str) -> bool {
+    t.eq_ignore_ascii_case(PENDING_TAG) || t.eq_ignore_ascii_case(FAILED_TAG)
+}
+
 /// Merge user tags, pre-processing suggested tags, and LLM tags in priority order,
-/// deduplicating case-insensitively. Appends [`PENDING_TAG`] when there is no LLM response.
+/// deduplicating case-insensitively and dropping reserved workflow tags. Appends
+/// [`PENDING_TAG`] when there is no LLM response.
 fn merge_tags(msg: &ProcessedMessage) -> Vec<String> {
     let original = &msg.enriched.original;
-    let mut all = original.user_tags.clone();
+    let mut all: Vec<String> = original
+        .user_tags
+        .iter()
+        .filter(|t| !is_reserved_tag(t))
+        .cloned()
+        .collect();
     for t in &original.preprocessing_hints.suggested_tags {
-        if !all.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+        if !is_reserved_tag(t) && !all.iter().any(|x| x.eq_ignore_ascii_case(t)) {
             all.push(t.clone());
         }
     }
     if let Some(r) = &msg.llm_response {
         for t in &r.tags {
-            if !all.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+            if !is_reserved_tag(t) && !all.iter().any(|x| x.eq_ignore_ascii_case(t)) {
                 all.push(t.clone());
             }
         }

@@ -30,6 +30,7 @@ pub(super) fn test_config(policy: crate::config::JsShellPolicy) -> Config {
             preprocessing: crate::config::PreprocessingConfig::default(),
             resume: crate::config::ResumeConfig::default(),
             image_analysis: crate::config::ImageAnalysisConfig::default(),
+            memo_tags: vec!["memo".into()],
         },
         llm: crate::test_helpers::no_llm_config(),
         adapters: AdaptersConfig::default(),
@@ -391,10 +392,65 @@ async fn resume_image_analysis_preserves_stored_ocr_when_reanalysis_yields_nothi
             produced_by: "old".into(),
         });
 
-    pipeline.resume_image_analysis(&mut msg).await;
+    let resolved = pipeline.resume_image_analysis(&mut msg).await;
 
     assert_eq!(msg.image_analyses.len(), 1);
     assert_eq!(msg.image_analyses[0].recognized_text, "stored text");
+    assert_eq!(
+        resolved,
+        Some(false),
+        "a skipped (unreadable) image is not resolved → stays pending"
+    );
+}
+
+#[tokio::test]
+async fn resume_image_analysis_none_when_no_image() {
+    let pipeline = make_test_pipeline(test_config(crate::config::JsShellPolicy::Allow));
+    let mut msg = make_msg("just text");
+    assert_eq!(pipeline.resume_image_analysis(&mut msg).await, None);
+}
+
+#[tokio::test]
+async fn resume_image_analysis_resolved_when_backend_runs_with_no_text() {
+    // A recovered vision backend that runs and finds no readable text resolves
+    // the image (Some(true)) so the node finalizes instead of looping pending.
+    let resp = crate::message::LlmResponse {
+        title: String::new(),
+        tags: vec![],
+        summary: String::new(), // empty OCR
+        excerpt: None,
+        produced_by: "mock-vision".into(),
+    };
+    let llm = Arc::new(crate::llm::LlmChain::new(
+        vec![Box::new(crate::llm::mock::MockLlm::new(resp).with_vision())],
+        crate::config::FallbackMode::Raw,
+        5,
+        None,
+        1,
+        0,
+        0,
+    ));
+    let cfg = Arc::new(test_config(crate::config::JsShellPolicy::Allow));
+    let writer = Arc::new(crate::output::NullWriter);
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Pipeline::new(cfg, llm, writer, tracker, None, None).expect("build pipeline");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shot.jpg");
+    std::fs::write(&path, b"fake-jpeg-bytes").unwrap();
+    let mut msg = make_msg("");
+    msg.attachments.push(crate::message::Attachment {
+        original_name: "shot.jpg".into(),
+        saved_path: path,
+        mime_type: Some("image/jpeg".into()),
+        media_kind: crate::message::MediaKind::Image,
+    });
+
+    assert_eq!(
+        pipeline.resume_image_analysis(&mut msg).await,
+        Some(true),
+        "backend analyzed the image (empty text still counts) → resolved"
+    );
 }
 
 // ── Pipeline::process end-to-end tests ────────────────────────────────────────
@@ -483,6 +539,94 @@ async fn process_extracts_user_tags_from_text() {
     assert!(
         tags.iter().any(|t| t == "rust") && tags.iter().any(|t| t == "inbox"),
         "user_tags should be extracted and propagated: {tags:?}"
+    );
+}
+
+#[derive(Default)]
+struct NodeCapturingWriter {
+    node: std::sync::Mutex<String>,
+    backend: std::sync::Mutex<String>,
+}
+
+#[async_trait::async_trait]
+impl crate::output::OutputWriter for NodeCapturingWriter {
+    async fn write(
+        &self,
+        msg: &crate::message::ProcessedMessage,
+        cfg: &Config,
+    ) -> Result<(), crate::error::InboxError> {
+        let node = crate::render::render_org_node(msg, &cfg.general.attachments_dir)?;
+        *self.node.lock().unwrap() = node;
+        *self.backend.lock().unwrap() = msg
+            .llm_response
+            .as_ref()
+            .map(|r| r.produced_by.clone())
+            .unwrap_or_default();
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn process_memo_skips_llm_and_writes_final_node() {
+    // A #memo message must skip the LLM entirely (PanicOnComplete fails the test
+    // if invoked), produce a final node tagged :memo: but never :inbox_pending:,
+    // and never land in the pending store.
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(crate::config::JsShellPolicy::Allow);
+    cfg.general.attachments_dir = dir.path().to_path_buf();
+    cfg.general.output_file = dir.path().join("inbox.org");
+    cfg.url_fetch.enabled = false;
+    let cfg = Arc::new(cfg);
+
+    let store = Arc::new(
+        PendingStore::open(&dir.path().join("pending.db"))
+            .await
+            .unwrap(),
+    );
+    let llm = Arc::new(crate::llm::LlmChain::new(
+        vec![Box::new(PanicOnComplete)],
+        crate::config::FallbackMode::Raw,
+        5,
+        None,
+        1,
+        0,
+        0,
+    ));
+    let capture = Arc::new(NodeCapturingWriter::default());
+    let tracker = Arc::new(ProcessingTracker::new());
+    let pipeline = Pipeline::new(
+        cfg,
+        llm,
+        Arc::clone(&capture) as Arc<dyn crate::output::OutputWriter>,
+        tracker,
+        None,
+        Some(store.clone()),
+    )
+    .expect("build pipeline");
+
+    // A user-typed reserved tag must not forge a pending headline.
+    pipeline
+        .process(make_msg("Oil change 4851 km #memo #inbox_pending"))
+        .await
+        .unwrap();
+
+    let node = capture.node.lock().unwrap().clone();
+    assert!(node.contains(":memo:"), "memo tag must render: {node}");
+    assert!(
+        !node.contains(":inbox_pending:"),
+        "memo node must not be pending even if user typed the tag: {node}"
+    );
+    assert!(
+        node.contains("Oil change 4851 km"),
+        "memo text preserved: {node}"
+    );
+    assert_eq!(*capture.backend.lock().unwrap(), "memo");
+
+    let items = store.list(5, 10).await.unwrap();
+    assert!(
+        items.is_empty(),
+        "memo must not be persisted, got {}",
+        items.len()
     );
 }
 

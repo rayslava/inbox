@@ -119,3 +119,28 @@ fn merge_tags_deduplicates_suggested_tags() {
         "pending tag still present: {result}"
     );
 }
+
+#[test]
+fn merge_tags_strips_user_supplied_reserved_tags() {
+    // A user (or LLM) supplying a reserved workflow tag must not forge a
+    // pending/failed headline on an otherwise-final node.
+    let resp = LlmResponse {
+        title: "Title".into(),
+        tags: vec!["inbox_failed".into()],
+        summary: "summary".into(),
+        excerpt: None,
+        produced_by: "memo".into(),
+    };
+    let mut msg = make_processed("note", Some(resp));
+    msg.enriched.original.user_tags = vec!["inbox_pending".into(), "keep".into()];
+    let result = render_org_node(&msg, std::path::Path::new("/tmp")).unwrap();
+    assert!(
+        !result.contains(":inbox_pending:"),
+        "user-supplied reserved tag must be stripped: {result}"
+    );
+    assert!(
+        !result.contains(":inbox_failed:"),
+        "LLM-supplied reserved tag must be stripped: {result}"
+    );
+    assert!(result.contains(":keep:"), "non-reserved tag kept: {result}");
+}

@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PipelineConfig {
     #[serde(default)]
     pub web_content: WebContentConfig,
@@ -14,6 +14,28 @@ pub struct PipelineConfig {
     pub resume: ResumeConfig,
     #[serde(default)]
     pub image_analysis: ImageAnalysisConfig,
+    /// Hashtags that mark a message as a plain memo: URL fetch and the LLM
+    /// enrichment call are skipped and the content is written straight to org.
+    /// Image OCR still runs, so an image memo sent while vision is down is held
+    /// pending and re-OCR'd on resume rather than finalized empty.
+    #[serde(default = "default_memo_tags")]
+    pub memo_tags: Vec<String>,
+}
+
+impl Default for PipelineConfig {
+    fn default() -> Self {
+        Self {
+            web_content: WebContentConfig::default(),
+            preprocessing: PreprocessingConfig::default(),
+            resume: ResumeConfig::default(),
+            image_analysis: ImageAnalysisConfig::default(),
+            memo_tags: default_memo_tags(),
+        }
+    }
+}
+
+fn default_memo_tags() -> Vec<String> {
+    vec!["memo".into()]
 }
 
 // ── Image analysis ─────────────────────────────────────────────────────────────

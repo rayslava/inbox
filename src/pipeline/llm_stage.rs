@@ -251,7 +251,7 @@ impl Pipeline {
 /// Whether enrichment is incomplete: an image-bearing message whose vision was
 /// unavailable AND that produced no recognized image text. Applies even when the
 /// LLM produced a response (mixed image+URL where only the URL enriched).
-fn completeness_of(
+pub(super) fn completeness_of(
     enriched: &EnrichedMessage,
     vision_available: bool,
 ) -> crate::message::ProcessingCompleteness {

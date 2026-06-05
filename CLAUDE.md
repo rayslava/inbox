@@ -10,6 +10,7 @@ rules defined by the skill.
 
 - Input adapters: `telegram`, `http`, `email`
 - Pipeline: image analysis (vision-LLM classify + OCR), URL extraction/classification, fetch/scrape/download, LLM enrichment, template render
+- Memo tags: a message tagged with a `[pipeline].memo_tags` hashtag (default `#memo`) skips URL fetch and the LLM enrichment call (and memory recall); image OCR still runs. Written as a final node (`ENRICHED_BY: memo`, never `:inbox_pending:`). An image memo whose vision backends were all down is held `:inbox_pending:` and re-OCR'd on resume (never finalized empty). Reserved tags (`inbox_pending`/`inbox_failed`) typed by a user are stripped in `merge_tags`. See `src/pipeline/memo.rs`.
 - Image handling: image attachments are routed only to vision-capable backends; recognized text feeds enrichment. An image-bearing message is **never** written as an empty `:inbox_failed:` node — failing enrichment still yields a metadata/OCR node (`src/pipeline/image_analysis/`, `src/pipeline/llm_stage.rs`).
 - Output: atomic org append + optional Syncthing rescan
 - Admin server: health/readiness, metrics, optional web UI + attachments browser
