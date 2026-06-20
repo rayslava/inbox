@@ -337,6 +337,16 @@ pub fn parse_llm_json_response(text: &str, backend: &str) -> Result<LlmResponse,
         }
     };
 
+    // Some models wrap the object in a single-element array; unwrap to the
+    // first object element so field extraction below sees the real keys.
+    let json = match json {
+        serde_json::Value::Array(arr) => arr
+            .into_iter()
+            .find(serde_json::Value::is_object)
+            .unwrap_or(serde_json::Value::Null),
+        other => other,
+    };
+
     let title = json["title"].as_str().unwrap_or("(no title)").to_owned();
     let tags = json["tags"]
         .as_array()

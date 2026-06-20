@@ -28,6 +28,24 @@ fn parse_json_response_full() {
 }
 
 #[test]
+fn parse_json_unwraps_single_element_array() {
+    // Some models (e.g. gemma) wrap the object in a JSON array.
+    let json = r#"[{"title":"T","tags":["a"],"summary":"S","excerpt":"E"}]"#;
+    let r = parse_llm_json_response(json, "x").unwrap();
+    assert_eq!(r.title, "T");
+    assert_eq!(r.tags, vec!["a"]);
+    assert_eq!(r.summary, "S");
+    assert_eq!(r.excerpt.as_deref(), Some("E"));
+}
+
+#[test]
+fn parse_json_array_skips_non_objects() {
+    let json = r#"["junk", {"title":"T","tags":[],"summary":"S"}]"#;
+    let r = parse_llm_json_response(json, "x").unwrap();
+    assert_eq!(r.title, "T");
+}
+
+#[test]
 fn parse_json_strips_markdown_fences() {
     let json = "```json\n{\"title\":\"T\",\"summary\":\"S\",\"tags\":[]}\n```";
     let r = parse_llm_json_response(json, "x").unwrap();
