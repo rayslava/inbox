@@ -25,10 +25,27 @@ mod tests;
 
 pub(crate) type FeedbackMessageMap = Arc<DashMap<i32, Uuid>>;
 
+/// Per-process Telegram state shared between the live adapter and the
+/// background resume notifier. Status-message edits and feedback-button
+/// callbacks resolve against these maps, so both must use the same instances.
+#[derive(Clone, Default)]
+pub struct TelegramShared {
+    pub(crate) retry_store: Arc<DashMap<Uuid, RetryableMessage>>,
+    pub(crate) feedback_msg_map: FeedbackMessageMap,
+}
+
+impl TelegramShared {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 pub struct TelegramAdapter {
     pub cfg: TelegramConfig,
     pub attachments_dir: std::path::PathBuf,
     pub memory_store: Option<Arc<MemoryStore>>,
+    pub shared: TelegramShared,
 }
 
 #[async_trait::async_trait]
@@ -50,8 +67,8 @@ impl InputAdapter for TelegramAdapter {
 
         info!("Telegram adapter starting");
 
-        let retry_store: Arc<DashMap<Uuid, RetryableMessage>> = Arc::new(DashMap::new());
-        let feedback_msg_map: FeedbackMessageMap = Arc::new(DashMap::new());
+        let retry_store = self.shared.retry_store.clone();
+        let feedback_msg_map = self.shared.feedback_msg_map.clone();
 
         let policy = ReconnectPolicy {
             initial_backoff: Duration::from_secs(1),
@@ -83,20 +100,13 @@ impl InputAdapter for TelegramAdapter {
             };
 
             async move {
-                // Bind an IPv4 local address to avoid IPv6 connectivity issues
-                // in some environments. A build failure (not possible in
-                // practice) returns cleanly to the reconnect loop.
-                let client = match crate::tls::client_builder()
-                    .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
-                    .build()
-                {
-                    Ok(c) => c,
+                let bot = match build_bot(&bot_token) {
+                    Ok(b) => b,
                     Err(e) => {
                         warn!(error = %e, "Failed to build Telegram HTTP client, will reconnect");
                         return;
                     }
                 };
-                let bot = Bot::with_client(&bot_token, client);
                 let handler = build_handler(handler_cfg);
 
                 // Pre-flight: probe Telegram API so a startup DNS / network
@@ -133,6 +143,16 @@ impl InputAdapter for TelegramAdapter {
         info!("Telegram adapter shutdown");
         Ok(())
     }
+}
+
+/// Build a Telegram `Bot` using the IPv4-bound HTTP client used across the app.
+#[anodized::spec(requires: !token.is_empty())]
+pub fn build_bot(token: &str) -> Result<teloxide::Bot, InboxError> {
+    let client = crate::tls::client_builder()
+        .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+        .build()
+        .map_err(|e| InboxError::Adapter(format!("build Telegram HTTP client: {e}")))?;
+    Ok(teloxide::Bot::with_client(token, client))
 }
 
 pub struct HandlerConfig {

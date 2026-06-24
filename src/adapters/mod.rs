@@ -29,13 +29,15 @@ pub trait InputAdapter: Send + Sync + 'static {
     ) -> Result<(), InboxError>;
 }
 
-/// Build the list of `InputAdapter` instances enabled by `cfg`. Pure: no
-/// `tokio::spawn`, no I/O — just config inspection and adapter construction.
-/// `spawn_enabled` then fans this list out onto the runtime.
+/// Build the list of `InputAdapter` instances enabled by `cfg`.
+///
+/// `telegram_shared` is injected so the resume notifier and the live adapter
+/// share the same retry/feedback maps.
 #[must_use]
 pub fn build_enabled(
     cfg: &crate::config::Config,
     memory_store: Option<&Arc<crate::memory::MemoryStore>>,
+    telegram_shared: telegram::TelegramShared,
 ) -> Vec<Box<dyn InputAdapter>> {
     let mut adapters: Vec<Box<dyn InputAdapter>> = Vec::new();
     if cfg.adapters.http.enabled {
@@ -49,6 +51,7 @@ pub fn build_enabled(
             cfg: cfg.adapters.telegram.clone(),
             attachments_dir: cfg.general.attachments_dir.clone(),
             memory_store: memory_store.cloned(),
+            shared: telegram_shared,
         }));
     }
     if cfg.adapters.email.enabled {

@@ -1,4 +1,4 @@
-use super::build_enabled;
+use super::{build_enabled, telegram};
 
 fn minimal_config() -> crate::config::Config {
     use crate::config::{
@@ -28,7 +28,7 @@ fn minimal_config() -> crate::config::Config {
 #[test]
 fn build_enabled_returns_only_http_by_default() {
     let cfg = minimal_config();
-    let adapters = build_enabled(&cfg, None);
+    let adapters = build_enabled(&cfg, None, telegram::TelegramShared::new());
     let names: Vec<&'static str> = adapters.iter().map(|a| a.name()).collect();
     assert_eq!(names, vec!["http"]);
 }
@@ -37,7 +37,7 @@ fn build_enabled_returns_only_http_by_default() {
 fn build_enabled_returns_empty_when_all_disabled() {
     let mut cfg = minimal_config();
     cfg.adapters.http.enabled = false;
-    let adapters = build_enabled(&cfg, None);
+    let adapters = build_enabled(&cfg, None, telegram::TelegramShared::new());
     assert!(adapters.is_empty());
 }
 
@@ -46,7 +46,7 @@ fn build_enabled_includes_telegram_when_enabled() {
     let mut cfg = minimal_config();
     cfg.adapters.http.enabled = false;
     cfg.adapters.telegram.enabled = true;
-    let adapters = build_enabled(&cfg, None);
+    let adapters = build_enabled(&cfg, None, telegram::TelegramShared::new());
     let names: Vec<&'static str> = adapters.iter().map(|a| a.name()).collect();
     assert_eq!(names, vec!["telegram"]);
 }
@@ -56,7 +56,7 @@ fn build_enabled_includes_email_when_enabled() {
     let mut cfg = minimal_config();
     cfg.adapters.http.enabled = false;
     cfg.adapters.email.enabled = true;
-    let adapters = build_enabled(&cfg, None);
+    let adapters = build_enabled(&cfg, None, telegram::TelegramShared::new());
     let names: Vec<&'static str> = adapters.iter().map(|a| a.name()).collect();
     assert_eq!(names, vec!["email"]);
 }
@@ -67,7 +67,7 @@ fn build_enabled_returns_all_three_in_order() {
     cfg.adapters.http.enabled = true;
     cfg.adapters.telegram.enabled = true;
     cfg.adapters.email.enabled = true;
-    let adapters = build_enabled(&cfg, None);
+    let adapters = build_enabled(&cfg, None, telegram::TelegramShared::new());
     let names: Vec<&'static str> = adapters.iter().map(|a| a.name()).collect();
     assert_eq!(names, vec!["http", "telegram", "email"]);
 }

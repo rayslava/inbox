@@ -31,6 +31,19 @@ pub struct TelegramResumeNotifier {
 }
 
 impl TelegramResumeNotifier {
+    /// Build a resume notifier that shares the live adapter's maps.
+    #[must_use]
+    pub fn from_shared(
+        bot: teloxide::Bot,
+        shared: &crate::adapters::telegram::TelegramShared,
+    ) -> Self {
+        Self {
+            bot,
+            feedback_msg_map: shared.feedback_msg_map.clone(),
+            retry_store: shared.retry_store.clone(),
+        }
+    }
+
     /// Notify the user that retry succeeded: edit the original status message
     /// to show `✅ {title}` and attach star-rating buttons.
     #[anodized::spec(requires: !title.is_empty())]

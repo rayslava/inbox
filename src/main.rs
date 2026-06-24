@@ -102,13 +102,37 @@ async fn main() -> Result<()> {
     let pipeline_clone = Arc::clone(&pipeline);
     tokio::spawn(async move { pipeline_clone.run(rx).await });
 
+    let telegram_shared = adapters::telegram::TelegramShared::new();
+
+    let telegram_notifier = if cfg.adapters.telegram.enabled
+        && !cfg.adapters.telegram.bot_token.is_empty()
+    {
+        match adapters::telegram::build_bot(&cfg.adapters.telegram.bot_token) {
+            Ok(bot) => Some(Arc::new(
+                inbox::adapters::telegram_notifier::resume::TelegramResumeNotifier::from_shared(
+                    bot,
+                    &telegram_shared,
+                ),
+            )),
+            Err(e) => {
+                warn!(
+                    ?e,
+                    "Failed to build Telegram bot for resume notifier; resume notifications disabled"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Spawn background resume task if the pending store is available.
     if let Some(store) = pending_store {
         let args = ResumeTaskArgs {
             store,
             pipeline: Arc::clone(&pipeline),
             config: Arc::clone(&cfg),
-            telegram_notifier: None, // TODO: wire Telegram bot when adapter exposes it
+            telegram_notifier,
             shutdown: shutdown.clone(),
         };
         tokio::spawn(resume_task::run(args));
@@ -116,7 +140,7 @@ async fn main() -> Result<()> {
     }
 
     // Spawn adapters
-    let enabled_adapters = adapters::build_enabled(&cfg, memory_store.as_ref());
+    let enabled_adapters = adapters::build_enabled(&cfg, memory_store.as_ref(), telegram_shared);
     adapters::spawn_all(enabled_adapters, &tx, &shutdown);
 
     spawn_admin_server(AdminServerArgs {

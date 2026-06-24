@@ -9,6 +9,7 @@ use teloxide_tests::{MockBot, MockMessageText};
 use uuid::Uuid;
 
 use super::tests::dummy_retryable;
+use crate::adapters::telegram::{TelegramShared, build_bot};
 use crate::adapters::telegram_notifier::resume::TelegramResumeNotifier;
 use crate::message::{ProcessingHints, RetryableMessage, SourceMetadata};
 use crate::pending::PendingItem;
@@ -48,6 +49,36 @@ fn dummy_http_pending_item() -> PendingItem {
         url_count: 1,
         tool_count: 0,
     }
+}
+
+#[test]
+fn telegram_shared_new_starts_empty() {
+    let shared = TelegramShared::new();
+    assert!(shared.retry_store.is_empty());
+    assert!(shared.feedback_msg_map.is_empty());
+}
+
+#[test]
+fn build_bot_succeeds_for_nonempty_token() {
+    assert!(build_bot("fake:token").is_ok());
+}
+
+#[test]
+fn from_shared_reuses_the_same_maps() {
+    let shared = TelegramShared::new();
+    shared.retry_store.insert(Uuid::new_v4(), dummy_retryable());
+    shared.feedback_msg_map.insert(7, Uuid::new_v4());
+
+    let bot = build_bot("fake:token").expect("bot builds for non-empty token");
+    let notifier = TelegramResumeNotifier::from_shared(bot, &shared);
+
+    // Same underlying allocations — resume notifications and live callbacks
+    // must resolve against one shared map, not separate copies.
+    assert!(Arc::ptr_eq(&notifier.retry_store, &shared.retry_store));
+    assert!(Arc::ptr_eq(
+        &notifier.feedback_msg_map,
+        &shared.feedback_msg_map
+    ));
 }
 
 #[tokio::test]
