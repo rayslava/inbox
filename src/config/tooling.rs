@@ -146,6 +146,46 @@ impl Default for DuckDuckGoSearchToolConfig {
     }
 }
 
+/// Configuration for `[tooling.keenable_search]` — Keenable Search REST API backend.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KeenableSearchToolConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_keenable_description")]
+    pub description: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default = "default_keenable_endpoint")]
+    pub endpoint: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_tool_timeout")]
+    pub timeout_secs: u32,
+    #[serde(default = "default_web_search_limit")]
+    pub default_limit: u32,
+    #[serde(default = "default_web_search_max_snippet_chars")]
+    pub max_snippet_chars: usize,
+    /// Number of additional attempts after the first failure (0 = no retry).
+    #[serde(default = "default_tool_retries")]
+    pub retries: u32,
+}
+
+impl Default for KeenableSearchToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            description: default_keenable_description(),
+            prompt: String::new(),
+            endpoint: default_keenable_endpoint(),
+            api_key: None,
+            timeout_secs: default_tool_timeout(),
+            default_limit: default_web_search_limit(),
+            max_snippet_chars: default_web_search_max_snippet_chars(),
+            retries: default_tool_retries(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ToolingConfig {
     #[serde(default)]
@@ -158,6 +198,8 @@ pub struct ToolingConfig {
     pub web_search: KagiSearchToolConfig,
     #[serde(default)]
     pub duckduckgo_search: DuckDuckGoSearchToolConfig,
+    #[serde(default)]
+    pub keenable_search: KeenableSearchToolConfig,
 }
 
 impl ToolingConfig {
@@ -189,6 +231,12 @@ impl ToolingConfig {
             lines.push(format!(
                 "Tool duckduckgo_search: {}",
                 self.duckduckgo_search.prompt.trim()
+            ));
+        }
+        if self.keenable_search.enabled && !self.keenable_search.prompt.trim().is_empty() {
+            lines.push(format!(
+                "Tool keenable_search: {}",
+                self.keenable_search.prompt.trim()
             ));
         }
         lines.join("\n")
@@ -242,6 +290,18 @@ pub enum ToolBackendConfig {
         #[serde(default = "default_web_search_max_snippet_chars")]
         max_snippet_chars: usize,
     },
+    KeenableSearch {
+        #[serde(default = "default_keenable_endpoint")]
+        endpoint: String,
+        #[serde(default)]
+        api_key: Option<String>,
+        #[serde(default = "default_tool_timeout")]
+        timeout_secs: u32,
+        #[serde(default = "default_web_search_limit")]
+        default_limit: u32,
+        #[serde(default = "default_web_search_max_snippet_chars")]
+        max_snippet_chars: usize,
+    },
     DuckDuckGoSearch {
         #[serde(default = "default_ddg_endpoint")]
         endpoint: String,
@@ -287,6 +347,12 @@ fn default_kagi_description() -> String {
 }
 fn default_kagi_endpoint() -> String {
     "https://kagi.com/api/v0/search".into()
+}
+fn default_keenable_description() -> String {
+    "Search the web via Keenable Search API and return top results".into()
+}
+fn default_keenable_endpoint() -> String {
+    "https://api.keenable.ai/v1/search".into()
 }
 fn default_ddg_description() -> String {
     "Search the web via DuckDuckGo and return top results".into()

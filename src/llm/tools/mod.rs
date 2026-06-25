@@ -14,6 +14,8 @@ mod tests;
 #[cfg(test)]
 mod tests_runners;
 #[cfg(test)]
+mod tests_search;
+#[cfg(test)]
 mod tests_search_live;
 #[cfg(test)]
 mod tests_search_memory;
@@ -68,7 +70,7 @@ fn tool_parameters(name: &str) -> serde_json::Value {
             },
             "required": ["url"]
         }),
-        "web_search" | "duckduckgo_search" => serde_json::json!({
+        "web_search" | "duckduckgo_search" | "keenable_search" => serde_json::json!({
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "The web search query" },

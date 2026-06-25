@@ -61,6 +61,19 @@ pub fn default_tools(fetcher: UrlFetcher) -> Result<ToolExecutor, InboxError> {
                 max_snippet_chars: 320,
             },
         },
+        Tool {
+            name: "keenable_search".into(),
+            description: "Search the web via Keenable and return top results".into(),
+            enabled: false,
+            retries: 1,
+            backend: ToolBackendConfig::KeenableSearch {
+                endpoint: "https://api.keenable.ai/v1/search".into(),
+                api_key: None,
+                timeout_secs: 15,
+                default_limit: 5,
+                max_snippet_chars: 320,
+            },
+        },
     ];
     ToolExecutor::new(tools, fetcher)
 }
@@ -100,6 +113,10 @@ pub fn from_tooling(
     let ddg_search_desc = desc_or(
         &tooling.duckduckgo_search.description,
         "Search the web via DuckDuckGo and return top results",
+    );
+    let keenable_search_desc = desc_or(
+        &tooling.keenable_search.description,
+        "Search the web via Keenable and return top results",
     );
 
     let tools = vec![
@@ -152,6 +169,19 @@ pub fn from_tooling(
                 timeout_secs: tooling.duckduckgo_search.timeout_secs,
                 default_limit: tooling.duckduckgo_search.default_limit,
                 max_snippet_chars: tooling.duckduckgo_search.max_snippet_chars,
+            },
+        },
+        Tool {
+            name: "keenable_search".into(),
+            description: keenable_search_desc,
+            enabled: tooling.keenable_search.enabled,
+            retries: tooling.keenable_search.retries,
+            backend: ToolBackendConfig::KeenableSearch {
+                endpoint: tooling.keenable_search.endpoint.clone(),
+                api_key: tooling.keenable_search.api_key.clone(),
+                timeout_secs: tooling.keenable_search.timeout_secs,
+                default_limit: tooling.keenable_search.default_limit,
+                max_snippet_chars: tooling.keenable_search.max_snippet_chars,
             },
         },
     ];

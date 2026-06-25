@@ -1,7 +1,9 @@
-//! Opt-in live web-search tests (require `TEST_WITH_DDG` / `TEST_WITH_KAGI`).
+//! Opt-in live web-search tests (require `TEST_WITH_DDG` / `TEST_WITH_KAGI` /
+//! `TEST_WITH_KEENABLE`).
 
 use super::runners::{
-    DuckDuckGoSearchToolCfg, KagiSearchToolCfg, run_duckduckgo_search_tool, run_kagi_search_tool,
+    DuckDuckGoSearchToolCfg, KagiSearchToolCfg, KeenableSearchToolCfg, run_duckduckgo_search_tool,
+    run_kagi_search_tool, run_keenable_search_tool,
 };
 
 #[tokio::test]
@@ -53,6 +55,36 @@ async fn kagi_live_search() {
     println!("Kagi result:\n{text}");
     assert!(
         text.contains("Kagi web_search results"),
+        "Expected formatted results header, got: {text}"
+    );
+    assert!(!text.is_empty(), "Expected non-empty results");
+}
+
+#[tokio::test]
+async fn keenable_live_search() {
+    if std::env::var("TEST_WITH_KEENABLE").as_deref() != Ok("1") {
+        return;
+    }
+    let key = std::env::var("KEENABLE_API_KEY")
+        .expect("KEENABLE_API_KEY must be set when TEST_WITH_KEENABLE=1");
+
+    let client = reqwest::Client::new();
+    let cfg = KeenableSearchToolCfg {
+        endpoint: "https://api.keenable.ai/v1/search",
+        api_key: Some(&key),
+        timeout_secs: 15,
+        default_limit: 3,
+        max_snippet_chars: 320,
+    };
+
+    let result = run_keenable_search_tool(&client, cfg, "Rust programming language", Some(3))
+        .await
+        .expect("Keenable live search should succeed");
+
+    let text = result.text();
+    println!("Keenable result:\n{text}");
+    assert!(
+        text.contains("Keenable keenable_search results"),
         "Expected formatted results header, got: {text}"
     );
     assert!(!text.is_empty(), "Expected non-empty results");

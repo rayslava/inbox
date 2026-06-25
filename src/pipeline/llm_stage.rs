@@ -357,7 +357,8 @@ impl Pipeline {
         let hints = &enriched.original.preprocessing_hints;
         if hints.force_web_search {
             lines.push(
-                "Use the web_search tool to find more context before producing the final JSON."
+                "Use an available web search tool to find more context before producing the \
+                 final JSON."
                     .to_owned(),
             );
         }

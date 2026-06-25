@@ -241,7 +241,7 @@ fn build_llm_guidance_force_web_search() {
     let mut enriched = test_enriched("hello", vec![], vec![]);
     enriched.original.preprocessing_hints.force_web_search = true;
     let guidance = pipeline.build_llm_guidance(&enriched, "");
-    assert!(guidance.contains("web_search"));
+    assert!(guidance.contains("web search tool"));
 }
 
 #[tokio::test]

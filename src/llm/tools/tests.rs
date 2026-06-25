@@ -192,6 +192,86 @@ async fn execute_web_search_missing_query_arg_errors() {
 }
 
 #[tokio::test]
+async fn execute_keenable_search_missing_query_arg_errors() {
+    let tools = vec![Tool {
+        name: "keenable_search".into(),
+        description: "search".into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::KeenableSearch {
+            endpoint: "https://api.keenable.ai/v1/search".into(),
+            api_key: Some("key".into()),
+            timeout_secs: 5,
+            default_limit: 3,
+            max_snippet_chars: 120,
+        },
+    }];
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
+    let id = uuid::Uuid::new_v4();
+    let result = executor
+        .execute(
+            "keenable_search",
+            &serde_json::json!({}),
+            id,
+            std::path::Path::new("/tmp"),
+            "",
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn execute_keenable_search_with_wrong_backend_errors() {
+    let tools = vec![Tool {
+        name: "keenable_search".into(),
+        description: "search".into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Internal { timeout_secs: 15 },
+    }];
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
+    let id = uuid::Uuid::new_v4();
+    let result = executor
+        .execute(
+            "keenable_search",
+            &serde_json::json!({"query":"rust async"}),
+            id,
+            std::path::Path::new("/tmp"),
+            "",
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn execute_crawl_url_blank_url_errors() {
+    let tools = vec![Tool {
+        name: "crawl_url".into(),
+        description: "crawl".into(),
+        enabled: true,
+        retries: 0,
+        backend: ToolBackendConfig::Crawler {
+            endpoint: "http://localhost:11235/crawl".into(),
+            auth_header: None,
+            timeout_secs: 5,
+            priority: 10,
+        },
+    }];
+    let executor = ToolExecutor::new(tools, test_fetcher()).expect("build executor");
+    let id = uuid::Uuid::new_v4();
+    let result = executor
+        .execute(
+            "crawl_url",
+            &serde_json::json!({"url":"   "}),
+            id,
+            std::path::Path::new("/tmp"),
+            "",
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
 async fn execute_crawl_url_with_wrong_backend_errors() {
     let tools = vec![Tool {
         name: "crawl_url".into(),

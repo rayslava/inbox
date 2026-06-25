@@ -81,6 +81,14 @@ pub(super) struct DuckDuckGoSearchToolCfg<'a> {
     pub max_snippet_chars: usize,
 }
 
+pub(super) struct KeenableSearchToolCfg<'a> {
+    pub endpoint: &'a str,
+    pub api_key: Option<&'a str>,
+    pub timeout_secs: u32,
+    pub default_limit: u32,
+    pub max_snippet_chars: usize,
+}
+
 /// Execute an HTTP tool backend.
 #[spec(requires: !cfg.endpoint.is_empty() && !cfg.method.is_empty() && cfg.timeout_secs > 0)]
 pub(super) async fn run_http_tool(
@@ -168,11 +176,11 @@ pub(super) async fn run_crawler_tool(
     cfg: CrawlToolCfg<'_>,
     url: &str,
 ) -> Result<ToolResult, InboxError> {
-    #[spec(requires: !cfg.endpoint.is_empty() && cfg.timeout_secs > 0 && !url.trim().is_empty())]
-    fn validate_crawler_cfg(cfg: &CrawlToolCfg<'_>, url: &str) {
-        let _ = (cfg, url);
+    #[spec(requires: !cfg.endpoint.is_empty() && cfg.timeout_secs > 0)]
+    fn validate_crawler_cfg(cfg: &CrawlToolCfg<'_>) {
+        let _ = cfg;
     }
-    validate_crawler_cfg(&cfg, url);
+    validate_crawler_cfg(&cfg);
 
     let body = serde_json::json!({
         "urls": [url],
@@ -239,7 +247,9 @@ pub(super) async fn run_crawler_tool(
 }
 
 mod search;
-pub(crate) use search::{run_duckduckgo_search_tool, run_kagi_search_tool};
+pub(crate) use search::{
+    run_duckduckgo_search_tool, run_kagi_search_tool, run_keenable_search_tool,
+};
 
 /// Expand `${VAR}` patterns in a string using environment variables.
 pub(super) fn resolve_env_vars(s: &str) -> String {

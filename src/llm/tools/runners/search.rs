@@ -5,7 +5,10 @@ use std::time::Duration;
 use anodized::spec;
 
 use super::super::ToolResult;
-use super::{DuckDuckGoSearchToolCfg, KagiSearchToolCfg, resolve_env_vars, truncate_chars};
+use super::{
+    DuckDuckGoSearchToolCfg, KagiSearchToolCfg, KeenableSearchToolCfg, resolve_env_vars,
+    truncate_chars,
+};
 use crate::error::InboxError;
 
 pub(crate) async fn run_kagi_search_tool(
@@ -14,11 +17,11 @@ pub(crate) async fn run_kagi_search_tool(
     query: &str,
     limit: Option<u32>,
 ) -> Result<ToolResult, InboxError> {
-    #[spec(requires: !cfg.endpoint.is_empty() && cfg.timeout_secs > 0 && !query.trim().is_empty())]
-    fn validate_kagi_cfg(cfg: &KagiSearchToolCfg<'_>, query: &str) {
-        let _ = (cfg, query);
+    #[spec(requires: !cfg.endpoint.is_empty() && cfg.timeout_secs > 0)]
+    fn validate_kagi_cfg(cfg: &KagiSearchToolCfg<'_>) {
+        let _ = cfg;
     }
-    validate_kagi_cfg(&cfg, query);
+    validate_kagi_cfg(&cfg);
 
     let trimmed_query = query.trim();
     if trimmed_query.is_empty() {
@@ -169,17 +172,167 @@ fn format_kagi_result_line(
     )
 }
 
+pub(crate) async fn run_keenable_search_tool(
+    client: &reqwest::Client,
+    cfg: KeenableSearchToolCfg<'_>,
+    query: &str,
+    limit: Option<u32>,
+) -> Result<ToolResult, InboxError> {
+    #[spec(requires: !cfg.endpoint.is_empty() && cfg.timeout_secs > 0)]
+    fn validate_keenable_cfg(cfg: &KeenableSearchToolCfg<'_>) {
+        let _ = cfg;
+    }
+    validate_keenable_cfg(&cfg);
+
+    let trimmed_query = query.trim();
+    if trimmed_query.is_empty() {
+        return Err(InboxError::LlmTool(
+            "keenable_search missing non-empty 'query'".into(),
+        ));
+    }
+
+    let result_limit = limit.unwrap_or(cfg.default_limit).clamp(1, 20);
+    let req = build_keenable_request(client, &cfg, trimmed_query)?;
+    let timeout = Duration::from_secs(u64::from(cfg.timeout_secs));
+
+    let resp = tokio::time::timeout(timeout, req.send())
+        .await
+        .map_err(|_| {
+            InboxError::LlmTool(format!(
+                "Keenable keenable_search timed out after {}s",
+                cfg.timeout_secs
+            ))
+        })?
+        .map_err(|e| {
+            InboxError::LlmTool(format!("Keenable keenable_search request failed: {e}"))
+        })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let hint = if status.as_u16() == 401 {
+            " (check: keenable_search.api_key set? Get one at keenable.ai/console)"
+        } else {
+            ""
+        };
+        let preview: String = body.chars().take(200).collect();
+        return Err(InboxError::LlmTool(format!(
+            "Keenable keenable_search returned status {status}: {preview}{hint}"
+        )));
+    }
+
+    parse_keenable_response(
+        resp,
+        trimmed_query,
+        result_limit as usize,
+        cfg.max_snippet_chars,
+    )
+    .await
+}
+
+fn build_keenable_request(
+    client: &reqwest::Client,
+    cfg: &KeenableSearchToolCfg<'_>,
+    query: &str,
+) -> Result<reqwest::RequestBuilder, InboxError> {
+    let api_key = cfg.api_key.ok_or_else(|| {
+        InboxError::LlmTool("Keenable API key is not set (keenable_search.api_key)".into())
+    })?;
+    let resolved = resolve_env_vars(api_key);
+    let key_value = resolved.trim();
+    if key_value.is_empty() {
+        return Err(InboxError::LlmTool(
+            "Keenable API key is empty (keenable_search.api_key)".into(),
+        ));
+    }
+
+    let body = serde_json::json!({ "query": query });
+    Ok(client
+        .post(cfg.endpoint)
+        .header("X-API-Key", key_value)
+        .json(&body))
+}
+
+async fn parse_keenable_response(
+    resp: reqwest::Response,
+    query: &str,
+    limit: usize,
+    max_snippet_chars: usize,
+) -> Result<ToolResult, InboxError> {
+    let json: serde_json::Value = resp.json().await.map_err(|e| {
+        InboxError::LlmTool(format!("Keenable keenable_search JSON parse failed: {e}"))
+    })?;
+
+    let results = json
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            InboxError::LlmTool("Keenable keenable_search returned no results array".into())
+        })?;
+
+    if results.is_empty() {
+        return Ok(ToolResult::Text(format!(
+            "Keenable keenable_search results for \"{query}\": no results."
+        )));
+    }
+
+    let lines = results
+        .iter()
+        .take(limit)
+        .enumerate()
+        .map(|(idx, item)| format_keenable_result_line(idx + 1, item, max_snippet_chars))
+        .collect::<Vec<_>>();
+
+    Ok(ToolResult::Text(format!(
+        "Keenable keenable_search results for \"{query}\":\n\n{}",
+        lines.join("\n\n")
+    )))
+}
+
+#[spec(requires: rank > 0)]
+fn format_keenable_result_line(
+    rank: usize,
+    item: &serde_json::Value,
+    max_snippet_chars: usize,
+) -> String {
+    let title = item
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("(untitled)");
+    let url = item
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let str_field = |key: &str| {
+        item.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let snippet = str_field("snippet")
+        .or_else(|| str_field("description"))
+        .unwrap_or_default()
+        .replace('\n', " ");
+    let snippet = truncate_chars(&snippet, max_snippet_chars);
+    format!(
+        "{rank}. {}\nURL: {}\nSnippet: {}",
+        title.trim(),
+        url.trim(),
+        snippet.trim()
+    )
+}
+
 pub(crate) async fn run_duckduckgo_search_tool(
     client: &reqwest::Client,
     cfg: DuckDuckGoSearchToolCfg<'_>,
     query: &str,
     limit: Option<u32>,
 ) -> Result<ToolResult, InboxError> {
-    #[spec(requires: !cfg.endpoint.is_empty() && cfg.timeout_secs > 0 && !query.trim().is_empty())]
-    fn validate(cfg: &DuckDuckGoSearchToolCfg<'_>, query: &str) {
-        let _ = (cfg, query);
+    #[spec(requires: !cfg.endpoint.is_empty() && cfg.timeout_secs > 0)]
+    fn validate(cfg: &DuckDuckGoSearchToolCfg<'_>) {
+        let _ = cfg;
     }
-    validate(&cfg, query);
+    validate(&cfg);
 
     let trimmed_query = query.trim();
     if trimmed_query.is_empty() {

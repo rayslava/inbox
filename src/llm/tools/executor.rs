@@ -13,8 +13,9 @@ use crate::error::InboxError;
 use crate::pipeline::url_fetcher::UrlFetcher;
 
 use super::runners::{
-    CrawlToolCfg, DuckDuckGoSearchToolCfg, HttpToolCfg, KagiSearchToolCfg, run_crawler_tool,
-    run_duckduckgo_search_tool, run_http_tool, run_kagi_search_tool, run_shell_tool,
+    CrawlToolCfg, DuckDuckGoSearchToolCfg, HttpToolCfg, KagiSearchToolCfg, KeenableSearchToolCfg,
+    run_crawler_tool, run_duckduckgo_search_tool, run_http_tool, run_kagi_search_tool,
+    run_keenable_search_tool, run_shell_tool,
 };
 use super::{Tool, ToolExecutor, ToolResult};
 
@@ -121,7 +122,7 @@ impl ToolExecutor {
                     .await
             }
             "crawl_url" => self.run_crawl_call(&tool.backend, args).await,
-            "web_search" | "duckduckgo_search" => {
+            "web_search" | "duckduckgo_search" | "keenable_search" => {
                 self.run_web_search_call(&tool.backend, args).await
             }
             _ => Err(InboxError::LlmTool(format!("No handler for tool: {name}"))),
@@ -293,6 +294,7 @@ impl ToolExecutor {
                 "scrape_page does not support crawler backend".into(),
             )),
             ToolBackendConfig::KagiSearch { .. }
+            | ToolBackendConfig::KeenableSearch { .. }
             | ToolBackendConfig::DuckDuckGoSearch { .. }
             | ToolBackendConfig::Memory => Err(InboxError::LlmTool(
                 "scrape_page does not support this backend".into(),
@@ -362,6 +364,7 @@ impl ToolExecutor {
                 "download_file does not support crawler backend".into(),
             )),
             ToolBackendConfig::KagiSearch { .. }
+            | ToolBackendConfig::KeenableSearch { .. }
             | ToolBackendConfig::DuckDuckGoSearch { .. }
             | ToolBackendConfig::Memory => Err(InboxError::LlmTool(
                 "download_file does not support this backend".into(),
@@ -370,12 +373,16 @@ impl ToolExecutor {
     }
 
     #[instrument(skip(self, backend), fields(url = %url))]
-    #[spec(requires: !url.trim().is_empty())]
     async fn run_crawl(
         &self,
         backend: &ToolBackendConfig,
         url: &str,
     ) -> Result<ToolResult, InboxError> {
+        if url.trim().is_empty() {
+            return Err(InboxError::LlmTool(
+                "crawl_url missing non-empty 'url'".into(),
+            ));
+        }
         match backend {
             ToolBackendConfig::Crawler {
                 endpoint,
@@ -397,7 +404,6 @@ impl ToolExecutor {
         }
     }
 
-    #[spec(requires: !query.trim().is_empty())]
     async fn run_web_search(
         &self,
         backend: &ToolBackendConfig,
@@ -435,8 +441,26 @@ impl ToolExecutor {
                 };
                 run_duckduckgo_search_tool(&self.http_client, cfg, query, limit).await
             }
+            ToolBackendConfig::KeenableSearch {
+                endpoint,
+                api_key,
+                timeout_secs,
+                default_limit,
+                max_snippet_chars,
+            } => {
+                let cfg = KeenableSearchToolCfg {
+                    endpoint,
+                    api_key: api_key.as_deref(),
+                    timeout_secs: *timeout_secs,
+                    default_limit: *default_limit,
+                    max_snippet_chars: *max_snippet_chars,
+                };
+                run_keenable_search_tool(&self.http_client, cfg, query, limit).await
+            }
             _ => Err(InboxError::LlmTool(
-                "web_search requires a search backend (kagi_search or duckduckgo_search)".into(),
+                "web_search requires a search backend (kagi_search, duckduckgo_search or \
+                 keenable_search)"
+                    .into(),
             )),
         }
     }

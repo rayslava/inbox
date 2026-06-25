@@ -21,8 +21,8 @@ pub use pipeline::{
     ResumeConfig, RuleAction, RuleCondition, WebContentConfig,
 };
 pub use tooling::{
-    CrawlToolConfig, DuckDuckGoSearchToolConfig, KagiSearchToolConfig, NamedToolConfig,
-    ToolBackendConfig, ToolingConfig,
+    CrawlToolConfig, DuckDuckGoSearchToolConfig, KagiSearchToolConfig, KeenableSearchToolConfig,
+    NamedToolConfig, ToolBackendConfig, ToolingConfig,
 };
 
 // ── Top-level ─────────────────────────────────────────────────────────────────

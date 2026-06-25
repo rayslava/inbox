@@ -413,3 +413,15 @@ default_limit = 5
 max_snippet_chars = 320
 timeout_secs = 15
 retries = 1
+
+[tooling.keenable_search]
+enabled = false
+description = "Search the web via Keenable Search API and return top results"
+prompt = "Use this for general web lookups when page URLs are not provided."
+endpoint = "https://api.keenable.ai/v1/search"
+# REST API key required (the keyless free tier is CLI/MCP only); get one at keenable.ai/console
+api_key = "${KEENABLE_API_KEY}"
+default_limit = 5
+max_snippet_chars = 320
+timeout_secs = 15
+retries = 1
