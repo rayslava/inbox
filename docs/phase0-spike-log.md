@@ -218,10 +218,12 @@ churn bounded by facades, error split done, `make images`/tarpaulin/`.sqlx` unaf
 **Caveats surfaced by the spike (carry forward):**
 - `Config` must NOT enter `core` (god-object, 25 consumers); narrow per-trait params.
 - `core` stays transport-free; only async-trait/serde-family/url/thiserror landed so far.
-- `make images` (musl static `--bin inbox`) **not yet re-verified** post-split — do a
-  one-off `cargo zigbuild --bin inbox` check before relying on a release build.
 
 ### Status
 - Gate (cargo tree): **PASS**. Pipeline: clippy/fmt/test/tarpaulin **green**.
-- `make images`: deferred verification (zigbuild musl, expensive) — flagged above.
-- Spike commits on branch `phase0-dependency-split-spike`: #1 scaffold, #2 first trait.
+- **`make images`: VERIFIED** post-split (rc=0). musl static `--bin inbox` builds
+  both arches (amd64 34.8s, arm64 37.6s; 29M stripped static ELF) and `docker import`
+  produces `inbox:0.3.1-52-g7435c26-{amd64,arm64}`. The workspace split does not break
+  the Dockerfile-less zigbuild release path.
+- Spike commits on branch `phase0-dependency-split-spike`: #1 scaffold, #2 first trait,
+  #3 decision.
