@@ -7,10 +7,13 @@
 
 pub mod embedding;
 pub mod error;
+pub mod message;
+pub mod status;
 pub mod url_content;
 
 pub use embedding::EmbeddingProvider;
 pub use error::CoreError;
+pub use status::{NoopNotifier, ProcessingStage, StatusNotifier};
 pub use url_content::UrlContent;
 
 #[cfg(test)]

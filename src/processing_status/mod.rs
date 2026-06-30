@@ -5,35 +5,13 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use uuid::Uuid;
 
+// `ProcessingStage`, `StatusNotifier`, and `NoopNotifier` now live in
+// `inbox-core`; re-exported so existing `crate::processing_status::*` paths
+// keep working. The runtime tracker below (telemetry-coupled) stays in the bin.
+pub use inbox_core::status::{NoopNotifier, ProcessingStage, StatusNotifier};
+
 /// How long to retain Done/Failed entries in the tracker before pruning.
 pub(super) const DONE_RETAIN_SECS: i64 = 300;
-
-// ── Stage ─────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "snake_case", tag = "stage")]
-pub enum ProcessingStage {
-    Received,
-    AnalyzingImages,
-    Enriching,
-    RunningLlm {
-        turn: usize,
-        max_turns: usize,
-        last_tools: Vec<String>,
-    },
-    Writing,
-    Done {
-        title: String,
-    },
-    /// Written but not final — held for retry (e.g. image text unread because
-    /// vision was unavailable). Re-OCR'd on resume; never reported as success.
-    Pending {
-        title: String,
-    },
-    Failed {
-        reason: String,
-    },
-}
 
 // ── In-flight entry ───────────────────────────────────────────────────────────
 
@@ -111,28 +89,6 @@ impl Default for ProcessingTracker {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// ── StatusNotifier trait ──────────────────────────────────────────────────────
-
-#[async_trait::async_trait]
-pub trait StatusNotifier: Send + Sync {
-    async fn advance(&mut self, stage: ProcessingStage);
-
-    /// Returns the Telegram message ID of the status message, if this is a
-    /// Telegram notifier. Used by the pending store to enable resume notifications.
-    fn telegram_status_msg_id(&self) -> Option<i32> {
-        None
-    }
-}
-
-// ── NoopNotifier ──────────────────────────────────────────────────────────────
-
-pub struct NoopNotifier;
-
-#[async_trait::async_trait]
-impl StatusNotifier for NoopNotifier {
-    async fn advance(&mut self, _stage: ProcessingStage) {}
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

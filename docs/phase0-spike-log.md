@@ -219,6 +219,32 @@ churn bounded by facades, error split done, `make images`/tarpaulin/`.sqlx` unaf
 - `Config` must NOT enter `core` (god-object, 25 consumers); narrow per-trait params.
 - `core` stays transport-free; only async-trait/serde-family/url/thiserror landed so far.
 
+## Step 5 — Stage C1: message + status layer → core (per the plan)
+
+Foundational move (unblocks `IncomingMessage`, and later `LlmBackend`/`OutputWriter`).
+- **Moved to core**: all `message.rs` domain types (`IncomingMessage` … `LlmResponse`,
+  13 types + impls + tests) → `crates/core/src/message.rs`; `ProcessingStage` +
+  `StatusNotifier` + `NoopNotifier` → `crates/core/src/status.rs`. core gained
+  `chrono`+`uuid` (deps) and a `tokio` dev-dep.
+- **Facades**: `src/message.rs` = `pub use inbox_core::message::*;`;
+  `src/processing_status/mod.rs` re-exports the status trio and **keeps** the
+  telemetry-coupled `ProcessingTracker`/`InFlightEntry`/`update_gauge` in the bin.
+- **~30 `crate::message::*` consumers + both `StatusNotifier` impls (TelegramNotifier,
+  test RecordingNotifier) compiled UNCHANGED.** Single trait, single type set — the
+  facade pattern held at scale exactly as the spike predicted.
+
+**Pipeline:** clippy `--workspace` 0 warnings, fmt clean, test **700 passed / 0
+failed**, tarpaulin **85.29% (+0.23%)** (added core tests for status + relocated
+message methods → `message.rs` 56/56).
+
+**Codex review: APPROVE** (no blocking findings) — verified serde wire-shapes
+preserved (`ProcessingStage` tag, `RetryableMessage` `#[serde(default)]`,
+`SourceMetadata` external tagging), facade glob complete, pending-store format intact,
+exactly one `StatusNotifier` trait, `InFlightEntry` flatten still works.
+
+→ **Commit #5** (Stage C1). Confirms the estimate: this was the biggest single move
+and it cost ~zero consumer churn. Remaining traits are smaller repeats.
+
 ### Status
 - Gate (cargo tree): **PASS**. Pipeline: clippy/fmt/test/tarpaulin **green**.
 - **`make images`: VERIFIED** post-split (rc=0). musl static `--bin inbox` builds
