@@ -182,6 +182,46 @@ left untested — those error source types aren't cheaply constructible; trivial
 | Wire 1 trait (already-trait-shaped) | small: trait decl + delegating impl + error map + tests |
 | Config-in-signature traits (OutputWriter, LlmRequest::from_enriched) | **not yet paid** — needs param-struct narrowing; estimated next-largest |
 
-### Next
-- [ ] Stage C: record extend-vs-rebuild **decision + estimate** for the remaining 5
-      traits (incl. the Config-narrowing cost) in the log + the design doc. Spike done.
+## Step 4 — DECISION: extend `inbox` (do NOT rebuild)
+
+**Decision: EXTEND.** The spike de-risked the split end-to-end and the evidence is
+one-sided:
+- `lib.rs` is already pure module declarations; the daemon is library-shaped.
+- The **facade re-export** pattern moved a domain type with **zero consumer edits**
+  (all ~10 `UrlContent` users compiled untouched). This generalizes to the ~30
+  `message`-type consumers.
+- The coupling flagged by the codex review is **shallow — 3 edges**, not pervasive:
+  the `StatusNotifier` field, two `Config`-in-signature methods, and `InboxError`
+  placement. The error edge (the only non-trivial one) is **already paid** here.
+- 2 of 6 traits (`LlmClient`, `OutputWriter`) are **already trait-shaped**; one
+  (`EmbeddingProvider`) is now wired and green.
+- A rebuild would discard a working, **700-test**, multi-backend daemon to re-derive
+  the same boundary — negative value. There is no structural rot forcing a rewrite.
+
+### Future-path estimate (remaining boundary work, all incremental + green)
+Each item is the *same proven move* (trait in core + value-type move via facade +
+delegating impl + error map + tests). Sizes relative to the EmbeddingProvider slice:
+
+| Work item | Size | Notes |
+|---|---|---|
+| `message` types + `StatusNotifier`/`ProcessingStage` → core (facade) | M (1 PR) | unblocks `IncomingMessage`; consumer churn ≈ nil via re-exports |
+| `VectorStore` (`MemoryStore` + `MemoryEntry`/`SourceEntry`/`RelatedMemory`) | S–M | grafeo stays in bin; mirror EmbeddingProvider |
+| `UrlFetcher` trait | S | `UrlContent` already in core |
+| `AuthSession` trait (session store + credential verify) | S–M | argon2/dashmap/axum::http stay in bin; no existing trait |
+| `LlmBackend` = move `LlmClient` + value types; `from_enriched` → binary free fn | M | decouples `LlmConfig` from the trait; touches pipeline call sites |
+| `OutputWriter::write(&Config)` → narrow core param struct | M | touches `OrgFileWriter` + 2 call sites |
+| Cosmetic: move `inbox` under `crates/inbox` | S (optional) | not required; deferred |
+
+**Rough total:** ~4–6 focused, individually-green commits. Risk: low — pattern proven,
+churn bounded by facades, error split done, `make images`/tarpaulin/`.sqlx` unaffected.
+
+**Caveats surfaced by the spike (carry forward):**
+- `Config` must NOT enter `core` (god-object, 25 consumers); narrow per-trait params.
+- `core` stays transport-free; only async-trait/serde-family/url/thiserror landed so far.
+- `make images` (musl static `--bin inbox`) **not yet re-verified** post-split — do a
+  one-off `cargo zigbuild --bin inbox` check before relying on a release build.
+
+### Status
+- Gate (cargo tree): **PASS**. Pipeline: clippy/fmt/test/tarpaulin **green**.
+- `make images`: deferred verification (zigbuild musl, expensive) — flagged above.
+- Spike commits on branch `phase0-dependency-split-spike`: #1 scaffold, #2 first trait.
