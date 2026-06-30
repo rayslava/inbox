@@ -259,6 +259,28 @@ Same proven move as EmbeddingProvider (S–M as estimated):
 (+0.15%)**, `vector_impl.rs` 24/24. **Codex review: APPROVE** (re-export type-correct,
 UFCS hits inherent, dyn-compatible). → **Commit #6**.
 
+## Step 7 — Stage C3: UrlFetcher boundary
+
+Smallest trait (S, as estimated):
+- core `fetch.rs`: `UrlFetcher` trait (`fetch_page`/`head`, Option-based — no
+  `CoreError`); `UrlContent` already in core. `download_file` (returns `Attachment`)
+  deliberately left off the trait, bin-only.
+- `src/pipeline/url_fetcher.rs`: `impl inbox_core::UrlFetcher for UrlFetcher` (struct
+  shares the trait name — resolved by fully-qualifying the trait + UFCS to the inherent
+  methods, no `use` import). Trait-object wiremock test (head + fetch_page).
+
+**Pipeline:** clippy 0 warnings, test **707 passed / 0 failed**, tarpaulin **85.33%**
+(url_fetcher impl tested; dip is uncoverable trait-decl lines). **Codex: APPROVE**
+(name-collision/recursion checked, return-type identity confirmed). → **Commit #7**.
+
+### Remaining
+- `AuthSession` — note: the cloud private web uses **Dex+LLDAP OIDC**, not inbox's
+  argon2/DashMap, so a core auth trait is lower value (mainly the local private API).
+  Candidate to define minimally or defer.
+- `LlmBackend` + `OutputWriter` — the heavier stage: needs `LlmConfig`/`Config`
+  **signature-narrowing** (move `from_enriched` to a bin free fn; replace `&Config` with
+  a small param struct) + call-site edits. Not a pure facade move.
+
 ### Status
 - Gate (cargo tree): **PASS**. Pipeline: clippy/fmt/test/tarpaulin **green**.
 - **`make images`: VERIFIED** post-split (rc=0). musl static `--bin inbox` builds

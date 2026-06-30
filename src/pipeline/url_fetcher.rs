@@ -259,6 +259,19 @@ impl UrlFetcher {
     }
 }
 
+/// Bridges the concrete reqwest-backed fetcher to the `inbox_core::UrlFetcher`
+/// trait so downstream crates depend on the trait, not reqwest.
+#[async_trait::async_trait]
+impl inbox_core::UrlFetcher for UrlFetcher {
+    async fn fetch_page(&self, url: &Url) -> Option<UrlContent> {
+        UrlFetcher::fetch_page(self, url).await
+    }
+
+    async fn head(&self, url: &Url) -> Option<String> {
+        UrlFetcher::head(self, url).await
+    }
+}
+
 /// Rewrite a Twitter/X URL to a Nitter instance.
 /// Returns `None` if `nitter_base_url` is `None` or the URL is not a Twitter/X domain.
 #[must_use]
@@ -403,5 +416,38 @@ mod tests {
         // URL in result should be the original Twitter URL, not the Nitter URL
         assert_eq!(content.url, "https://twitter.com/user/status/123");
         assert!(content.text.contains("Tweet content here"));
+    }
+
+    #[tokio::test]
+    async fn url_fetcher_trait_object_delegates_head_and_fetch() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/html"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/html")
+                    .set_body_string("<html><body><p>hello world</p></body></html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let fetcher = UrlFetcher::new(&crate::config::UrlFetchConfig::default()).expect("fetcher");
+        let dynf: &dyn inbox_core::UrlFetcher = &fetcher;
+        let url = Url::parse(&server.uri()).unwrap();
+
+        assert!(
+            dynf.head(&url)
+                .await
+                .unwrap_or_default()
+                .contains("text/html")
+        );
+        let page = dynf.fetch_page(&url).await.expect("fetch_page");
+        assert!(page.text.contains("hello world"));
     }
 }
