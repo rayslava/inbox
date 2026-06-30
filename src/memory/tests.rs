@@ -197,6 +197,42 @@ async fn embed_client_returns_vector_on_success() {
 }
 
 #[tokio::test]
+async fn embedding_provider_trait_path_maps_success_and_error() {
+    use inbox_core::{CoreError, EmbeddingProvider};
+
+    // Success path through the core trait object (not the inherent method).
+    let ok_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/embed"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({ "embeddings": [[0.5f32, 0.6f32]] })),
+        )
+        .mount(&ok_server)
+        .await;
+    let ok_client =
+        EmbedClient::new(ok_server.uri(), "test-model".into(), None).expect("build embed client");
+    let ok_provider: &dyn EmbeddingProvider = &ok_client;
+    assert_eq!(ok_provider.embed("hi").await.expect("ok path").len(), 2);
+
+    // Error path: the adapter's InboxError::Memory maps into CoreError::Memory.
+    let err_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/embed"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&err_server)
+        .await;
+    let err_client =
+        EmbedClient::new(err_server.uri(), "test-model".into(), None).expect("build embed client");
+    let err_provider: &dyn EmbeddingProvider = &err_client;
+    assert!(matches!(
+        err_provider.embed("hi").await,
+        Err(CoreError::Memory(_))
+    ));
+}
+
+#[tokio::test]
 async fn embed_client_returns_error_on_api_failure() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

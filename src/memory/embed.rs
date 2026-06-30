@@ -1,4 +1,6 @@
 use anodized::spec;
+use async_trait::async_trait;
+use inbox_core::{CoreError, EmbeddingProvider};
 
 use crate::error::InboxError;
 
@@ -80,5 +82,16 @@ impl EmbedClient {
         }
 
         Ok(embedding)
+    }
+}
+
+/// Bridges the concrete Ollama-native client to the `inbox_core` trait boundary,
+/// mapping `InboxError` into the dependency-light `CoreError`.
+#[async_trait]
+impl EmbeddingProvider for EmbedClient {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, CoreError> {
+        EmbedClient::embed(self, text)
+            .await
+            .map_err(CoreError::from)
     }
 }

@@ -5,9 +5,11 @@
 //! axum, teloxide, sqlx, …). Adapters live in the `inbox` binary and implement
 //! the traits declared here, mapping their concrete errors into [`CoreError`].
 
+pub mod embedding;
 pub mod error;
 pub mod url_content;
 
+pub use embedding::EmbeddingProvider;
 pub use error::CoreError;
 pub use url_content::UrlContent;
 

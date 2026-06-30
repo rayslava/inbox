@@ -141,6 +141,47 @@ see the daemon — the boundary holds.
 
 → **Commit #1** (Stage A).
 
+## Step 3 — Stage B: first trait end-to-end through the boundary
+
+Representative vertical slice to measure the real per-trait cost:
+- **Facade move**: `UrlContent` physically moved to `inbox_core`; `src/url_content.rs`
+  is now `pub use inbox_core::UrlContent;`. **All ~10 consumers compiled unchanged** —
+  the re-export facade works exactly as hoped (zero churn). No orphan-rule issue (the
+  type had no inbox-side impls).
+- **inbox now depends on `inbox-core`** (path dep).
+- **`EmbeddingProvider`** trait added to core (`async_trait`); `EmbedClient` in the
+  binary `impl`s it, delegating to its inherent `embed` via UFCS `EmbedClient::embed(
+  self, text)` (calls inherent, no recursion) and `.map_err(CoreError::from)`.
+- **`From<InboxError> for CoreError`** (total, category-preserving; `Http`/`Template`
+  degrade to `Fetch`/`Output` strings) — the one real friction point, now closed.
+- **`kb-web` consumes `&dyn EmbeddingProvider`** (test-only mock + `#[tokio::test]`),
+  proving a downstream crate drives the trait without seeing the daemon. async-trait/
+  tokio are **dev-deps only** — normal-dep gate still core-only.
+
+**Codex review of Stage B → 1 MEDIUM + 1 LOW, both fixed pre-commit:**
+- MED: trait method lacked `# Errors` + the non-empty contract → documented on the
+  core trait (enforcement still via the inherent `#[spec]` it delegates to).
+- LOW: new boundary mappings untested → added `From<InboxError>` unit tests (12
+  constructible arms, `src/error.rs`) + a wiremock trait-path test (success + 500→
+  `CoreError::Memory`) so `EmbeddingProvider for EmbedClient` is covered.
+
+**Pipeline:** clippy `--workspace` 0 warnings; fmt clean; `cargo test --workspace`
+**700 passed / 0 failed**; `cargo tarpaulin --workspace` **85.20%** (≥80%; embed.rs
+restored to full by the trait-path test). Heavy `Http`/`Template` From-arms (2 lines)
+left untested — those error source types aren't cheaply constructible; trivial
+`to_string` mapping, logged as accepted.
+
+→ **Commit #2** (Stage B).
+
+### Measured friction (feeds the estimate)
+| Concern | Cost observed |
+|---|---|
+| Workspace + boundary | trivial (root package+workspace, facade re-exports) |
+| Move a pure domain type | ~nil (1-line re-export, 0 consumer edits) |
+| Error split | **the** real cost: light `CoreError` + total `From<InboxError>`; one-time, mechanical |
+| Wire 1 trait (already-trait-shaped) | small: trait decl + delegating impl + error map + tests |
+| Config-in-signature traits (OutputWriter, LlmRequest::from_enriched) | **not yet paid** — needs param-struct narrowing; estimated next-largest |
+
 ### Next
-- [ ] Stage B: move domain types + `StatusNotifier`/`ProcessingStage` into core with
-      re-export facades; add `From<InboxError> for CoreError`; wire first trait impl.
+- [ ] Stage C: record extend-vs-rebuild **decision + estimate** for the remaining 5
+      traits (incl. the Config-narrowing cost) in the log + the design doc. Spike done.
