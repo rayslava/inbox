@@ -1,0 +1,17 @@
+[package]
+name = "omi-bridge"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Second Mind omi capture bridge (STT + durable outbox → inbox /ingest). Phase 0 stub — depends on inbox-core only."
+license = "MIT"
+
+[[bin]]
+name = "omi-bridge"
+path = "src/main.rs"
+
+[dependencies]
+inbox-core = { path = "../core" }
+
+[lints]
+workspace = true

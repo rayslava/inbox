@@ -1,0 +1,17 @@
+[package]
+name = "kb-web"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Second Mind cloud web crate (public anon + private OIDC). Phase 0 stub — depends on inbox-core only."
+license = "MIT"
+
+[[bin]]
+name = "kb-web"
+path = "src/main.rs"
+
+[dependencies]
+inbox-core = { path = "../core" }
+
+[lints]
+workspace = true

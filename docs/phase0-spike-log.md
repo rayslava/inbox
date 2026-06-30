@@ -1,0 +1,146 @@
+# Phase 0 — Dependency-Split Spike — Step Log
+
+**Goal** (from `~/second-mind-plan.md`, rev.4): convert `inbox` into a Cargo
+workspace with a dependency-light `core` crate (domain types + narrow traits),
+leaving adapters/telemetry/render/Syncthing in the `inbox` bin. Prove via
+`cargo tree` that downstream crates (`kb-web`, `omi-bridge`) can build against
+`core` alone. Record an **extend-inbox vs build-new** decision + future-path
+estimate. This is a *spike to estimate the path*, not a production migration.
+
+**Traits to extract:** `LlmBackend`, `EmbeddingProvider`, `VectorStore`,
+`Auth/Session`, `UrlFetcher`, `OutputWriter`.
+
+**Rules in force:** rust-dev skill (clippy pedantic, no `unwrap/expect/panic`
+in prod, no `#[allow]`, files <500 LOC, post-change pipeline clippy→fix→fmt→test,
+anodized specs on non-trivial pub fns), inbox project rules (TBD from explore),
+ask-codex review before every commit.
+
+---
+
+## Step 0 — recon (read-only)
+
+- Repo: `/home/ray/projects/inbox`, single crate, branch `master` (default
+  `origin/master`). Untracked pre-existing: `.dockerignore`, `improve.md`,
+  `tarpaulin-report.html` — left alone.
+- `src/` modules: `adapters/ config/ llm/ memory/ output/ pending/ pipeline/
+  processing_status/ render/ web/ feedback/` + `message.rs error.rs telemetry.rs
+  health.rs resume_task.rs url_content.rs tls.rs lib.rs main.rs`.
+- `Makefile` targets: `images` (image-amd64 + image-arm64), `push`, `manifest`,
+  `clean` — i.e. `make images` builds the container, no lint/test targets there.
+- Branched: `phase0-dependency-split-spike` off `master` @ 030a380.
+
+## Step 1 — synthesized design (from 3 read-only explores)
+
+### Project rules that constrain the split
+- edition 2024, rust 1.95; `[lints.clippy] pedantic = "warn"` in Cargo.toml → must
+  hoist to `[workspace.lints]` + `lints.workspace = true` in each member.
+- `main.rs` has `#![deny(clippy::unwrap_used, expect_used, panic)]`.
+- No CI; release = `make images` → `cargo zigbuild --release --target <musl> --bin
+  inbox`, `docker import` of the static binary. **Binary crate must stay named
+  `inbox`.** No Dockerfile.
+- deny.toml: `wildcards="deny"` but `allow-wildcard-paths=true` → intra-workspace
+  `path` deps are fine. License allow-list is broad.
+- Coverage ≥ 80% (`tarpaulin.toml`, excludes `tests/*`, keeps `main.rs` in math).
+- Deps declared **major-only** (`"0"`,`"1"`). anodized specs on non-trivial pub fns.
+- Conventional Commits (git-cliff). config.example.toml must mirror config changes.
+- Tests: separate files; no real API calls (wiremock / teloxide_tests / Ollama opt-in).
+- `lib.rs` is pure module decls; `[lib] name=inbox` + `[[bin]] name=inbox`; dev-dep
+  self path `inbox = { path = ".", features=["test-helpers"] }`.
+
+### Coupling — the 3 real blockers (everything else is clean)
+1. `IncomingMessage` holds `status_notifier: Option<Box<dyn StatusNotifier>>`
+   (`message.rs:24`). → move `StatusNotifier`+`ProcessingStage`+`NoopNotifier` to
+   core (drop `ProcessingTracker`/`InFlightEntry`/telemetry gauge — stay in bin).
+2. `Config`/`LlmConfig` leak into trait signatures: `OutputWriter::write(.., &Config)`
+   (`output/mod.rs:14`), `LlmRequest::from_enriched(.., &LlmConfig)` (`llm/mod.rs:61`).
+   → narrow `OutputWriter::write` to a small core param struct; make `from_enriched`
+   a **binary-side free constructor** (`inbox::llm::request_from_enriched`).
+3. `InboxError` (`error.rs`) appears in every trait `Result`. → move to core (verify
+   it's dependency-light first); re-export from `inbox::error`.
+
+### Trait inventory (current → core)
+| Trait (core) | Current | Loc | Already trait | Notes |
+|---|---|---|---|---|
+| LlmBackend | `LlmClient` | llm/mod.rs:240 | yes (async_trait) | move trait + value types; `LlmResponse` lives in message.rs |
+| OutputWriter | `OutputWriter` | output/mod.rs:13 | yes (async_trait) | narrow `&Config` param |
+| EmbeddingProvider | `EmbedClient` struct | memory/embed.rs:5 | no | 1 method `embed(&str)->Vec<f32>`; reqwest stays in bin |
+| VectorStore | `MemoryStore` struct | memory/mod.rs:54 | no | keep **grafeo** out of core; expose MemoryEntry/SourceEntry value types |
+| AuthSession | free fns + `type SessionStore=DashMap` | web/auth.rs | no | argon2/dashmap/axum::http stay in bin |
+| UrlFetcher | `UrlFetcher` struct | pipeline/url_fetcher.rs:17 | no | returns `UrlContent` (clean); reqwest stays in bin |
+
+### Strategy — facade re-exports to bound churn
+Move only **definitions** into `crates/core`; in the binary, re-export them at the
+existing paths (`pub use core::message::*;` in `inbox::message`, same for `error`,
+`processing_status`, `url_content`, `llm` value types). The ~30 files using
+`crate::message::X` keep compiling untouched. Concrete adapters (Ollama/OpenRouter/
+FreeRouter, OrgFileWriter+Syncthing, EmbedClient, MemoryStore+grafeo, UrlFetcher,
+auth fns) **stay in the bin** and `impl core::Trait`.
+
+### core dependency budget (must stay light)
+serde, serde_json, chrono, uuid, url, async-trait, thiserror, anodized, tokio
+(sync mpsc only — for `LlmTurnProgress` sender). **NOT** in core: reqwest, grafeo,
+axum, teloxide, dashmap, argon2, metrics, tracing-subscriber, sqlx.
+
+### Workspace layout
+```
+Cargo.toml            # [workspace] members + [workspace.lints] + [workspace.dependencies]
+crates/core/          # traits + domain types (light deps)
+crates/inbox/         # the existing daemon (bin name stays `inbox`), impls the traits
+crates/kb-web/        # STUB — depends on core ONLY (gate proof)
+crates/omi-bridge/    # STUB — depends on core ONLY (gate proof)
+```
+Gate: `cargo tree -p kb-web -p omi-bridge` shows `core` but **not** `inbox`.
+
+### Spike scope (estimate the path, stay green at every step)
+Land a green workspace proving the boundary; where a trait's narrowing balloons,
+log it as "deferred + estimate" rather than forcing it. Run the rust-dev pipeline
+(clippy→fix→fmt→test, then tarpaulin) at each stage. Codex-review before each commit.
+
+## Step 2 — Stage A: workspace skeleton + core + stubs (binary untouched)
+
+**Decisions made while scaffolding:**
+- Crate named **`inbox-core`** (lib `inbox_core`), not `core` — avoids shadowing
+  std `core`. Conceptual `core/*` modules in the plan map to `inbox_core::*`.
+- **Kept `inbox` at the repo root** (not moved to `crates/inbox`). Root `Cargo.toml`
+  is both `[package]` (the bin/lib) and `[workspace]`. Rationale: zero disruption to
+  `make images` (`--bin inbox`), `tarpaulin.toml`, `.sqlx`, migrations paths. The
+  doc's `crates/inbox` layout is a later cosmetic move; not needed to prove the gate.
+- Hoisted clippy pedantic to `[workspace.lints.clippy]`; every member sets
+  `lints.workspace = true`. `resolver = "3"` (edition 2024).
+- **`CoreError`** is a *light* split of `InboxError`: drops the `reqwest`/`askama`
+  `#[from]` variants (those stay in the binary's `InboxError`); keeps io/json/url +
+  string variants, plus new `Embedding`/`VectorStore`/`Fetch` variants for the traits.
+  The binary will gain `From<InboxError> for CoreError` at the boundary (Stage ≥B).
+- Stubs `kb-web`/`omi-bridge` are minimal bins exercising `inbox_core::api_tag()` to
+  anchor the dep without pulling Result-wrapping noise (pedantic `unnecessary_wraps`).
+
+**Files added:** `crates/core/{Cargo.toml,src/lib.rs,src/error.rs,src/url_content.rs,
+src/tests.rs}`, `crates/kb-web/{Cargo.toml,src/main.rs}`,
+`crates/omi-bridge/{Cargo.toml,src/main.rs}`. Root `Cargo.toml` gained `[workspace]`.
+
+**Gate (PASS):** `cargo tree -p kb-web -p omi-bridge` → `inbox-core` only
+(serde/serde_json/thiserror/url); **never `inbox`**. The downstream crates cannot
+see the daemon — the boundary holds.
+
+**Pipeline on new crates:** clippy pedantic clean, fmt clean, 6 tests green
+(4 core + 1 kb-web + 1 omi-bridge). Full-workspace clippy (incl. `inbox`) running.
+
+**Full workspace green:** `cargo clippy --workspace` 0 warnings; `cargo test
+--workspace` **696 passed / 0 failed** (15 binaries). (Caught a footgun: piping
+`cargo test | tail` masks cargo's exit code — must capture full output + `$?`.)
+
+**Codex review of Stage A → 2 MEDIUM, both fixed pre-commit:**
+1. No `default-members` → bare root `cargo test/clippy/tarpaulin` only hit the
+   `inbox` package, silently skipping the new crates. → added
+   `default-members = [".", "crates/core", "crates/kb-web", "crates/omi-bridge"]`
+   (verified: workspace_default_members now lists all four).
+2. `From<InboxError> for CoreError` would not be category-preserving (InboxError has
+   LlmTool/Attachment/Pipeline/Adapter/Memory; CoreError lacked them). → mirrored
+   those `String` categories into `CoreError`; only the heavy `Http`/`Template`
+   variants degrade to `Fetch`/`Output` strings at the boundary (documented).
+
+→ **Commit #1** (Stage A).
+
+### Next
+- [ ] Stage B: move domain types + `StatusNotifier`/`ProcessingStage` into core with
+      re-export facades; add `From<InboxError> for CoreError`; wire first trait impl.
