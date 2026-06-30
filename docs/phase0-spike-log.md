@@ -245,6 +245,20 @@ exactly one `StatusNotifier` trait, `InFlightEntry` flatten still works.
 → **Commit #5** (Stage C1). Confirms the estimate: this was the biggest single move
 and it cost ~zero consumer churn. Remaining traits are smaller repeats.
 
+## Step 6 — Stage C2: VectorStore boundary
+
+Same proven move as EmbeddingProvider (S–M as estimated):
+- core `vector.rs`: `MemoryEntry`/`SourceEntry` value types (moved) + `VectorStore`
+  trait (save/link_source/link_memories/recall/context/sources → `CoreError`).
+- `src/memory/mod.rs` re-exports the two value types; `RelatedMemory`/`RecallOutcome`
+  stay bin-side; new `vector_impl.rs` `impl VectorStore for MemoryStore` (UFCS
+  delegation + `CoreError::from`). grafeo stays entirely in the bin.
+- Trait-path test drives `&dyn VectorStore` through an in-memory store (all 6 methods).
+
+**Pipeline:** clippy 0 warnings, test **706 passed / 0 failed**, tarpaulin **85.44%
+(+0.15%)**, `vector_impl.rs` 24/24. **Codex review: APPROVE** (re-export type-correct,
+UFCS hits inherent, dyn-compatible). → **Commit #6**.
+
 ### Status
 - Gate (cargo tree): **PASS**. Pipeline: clippy/fmt/test/tarpaulin **green**.
 - **`make images`: VERIFIED** post-split (rc=0). musl static `--bin inbox` builds

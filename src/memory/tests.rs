@@ -553,3 +553,29 @@ async fn resolve_embed_client_returns_none_on_probe_failure() {
 
     assert!(resolve_embed_client(&cfg).await.is_none());
 }
+
+#[tokio::test]
+async fn vector_store_trait_path_exercises_all_methods() {
+    use inbox_core::VectorStore;
+
+    let store = MemoryStore::new_in_memory().expect("in-memory store");
+    let vs: &dyn VectorStore = &store;
+
+    vs.save("k1", "the quick brown fox").await.expect("save k1");
+    vs.save("k2", "a memory about dogs").await.expect("save k2");
+
+    let hits = vs.recall("quick fox", 5).await.expect("recall");
+    assert!(hits.iter().any(|e| e.key == "k1"));
+
+    vs.link_source("k1", "note", "id1", "Title")
+        .await
+        .expect("link_source");
+    let srcs = vs.sources("k1").await.expect("sources");
+    assert!(srcs.iter().any(|s| s.source_id == "id1"));
+
+    vs.link_memories("k1", "k2", "related")
+        .await
+        .expect("link_memories");
+    // Graph traversal result may vary; exercising the path is enough here.
+    let _ = vs.context("fox", 1).await.expect("context");
+}

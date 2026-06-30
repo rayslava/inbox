@@ -13,25 +13,16 @@ pub(crate) mod feedback;
 mod queries;
 mod store_feedback;
 mod util;
+mod vector_impl;
 
 #[cfg(test)]
 mod tests;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-pub struct MemoryEntry {
-    pub key: String,
-    pub value: String,
-    pub score: f64,
-}
-
-#[derive(Debug, Clone)]
-pub struct SourceEntry {
-    pub kind: String,
-    pub source_id: String,
-    pub title: String,
-}
+// `MemoryEntry`/`SourceEntry` now live in `inbox-core`; re-exported so existing
+// `crate::memory::*` paths and the inherent methods below keep working.
+pub use inbox_core::vector::{MemoryEntry, SourceEntry};
 
 #[derive(Debug, Clone)]
 pub struct RelatedMemory {

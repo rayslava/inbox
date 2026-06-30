@@ -10,11 +10,13 @@ pub mod error;
 pub mod message;
 pub mod status;
 pub mod url_content;
+pub mod vector;
 
 pub use embedding::EmbeddingProvider;
 pub use error::CoreError;
 pub use status::{NoopNotifier, ProcessingStage, StatusNotifier};
 pub use url_content::UrlContent;
+pub use vector::{MemoryEntry, SourceEntry, VectorStore};
 
 #[cfg(test)]
 mod tests;
