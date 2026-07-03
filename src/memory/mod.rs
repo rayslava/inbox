@@ -112,7 +112,7 @@ impl MemoryStore {
             dims: embedding_dims.unwrap_or(0),
             metric: "cosine".to_owned(),
             normalization: "none".to_owned(),
-            chunker_version: "v1".to_owned(),
+            chunker_version: crate::kb_index::chunk::CHUNKER_VERSION.to_owned(),
         };
 
         Ok(Self {
@@ -383,7 +383,7 @@ impl MemoryStore {
                 dims: 0,
                 metric: "cosine".to_owned(),
                 normalization: "none".to_owned(),
-                chunker_version: "v1".to_owned(),
+                chunker_version: crate::kb_index::chunk::CHUNKER_VERSION.to_owned(),
             },
         })
     }

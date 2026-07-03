@@ -8,6 +8,7 @@ pub mod config;
 pub mod error;
 pub mod feedback;
 pub mod health;
+pub mod kb_index;
 pub mod llm;
 pub mod log_capture;
 pub mod memory;
