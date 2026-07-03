@@ -259,13 +259,7 @@ impl Pipeline {
             .await?
         };
 
-        self.run_stage(
-            id,
-            &mut notifier,
-            ProcessingStage::Writing,
-            self.writer.write(&processed, &self.config),
-        )
-        .await?;
+        self.write_output(id, &mut notifier, &processed).await?;
 
         // Persist items for background retry: raw fallbacks (no LLM response) and
         // incomplete nodes (vision unavailable — re-OCR on resume).
@@ -303,6 +297,27 @@ impl Pipeline {
             n.advance(final_stage).await;
         }
         Ok(())
+    }
+
+    /// Render and persist a processed message via the writer, under the
+    /// `Writing` stage. Narrows the god-object `Config` to a core `OutputTarget`.
+    async fn write_output(
+        &self,
+        id: uuid::Uuid,
+        notifier: &mut Option<Box<dyn crate::processing_status::StatusNotifier>>,
+        processed: &crate::message::ProcessedMessage,
+    ) -> Result<(), InboxError> {
+        let target = inbox_core::OutputTarget {
+            output_file: &self.config.general.output_file,
+            attachments_dir: &self.config.general.attachments_dir,
+        };
+        self.run_stage(id, notifier, ProcessingStage::Writing, async {
+            self.writer
+                .write(processed, &target)
+                .await
+                .map_err(InboxError::from)
+        })
+        .await
     }
 
     async fn run_stage<T>(

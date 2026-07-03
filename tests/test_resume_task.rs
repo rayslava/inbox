@@ -115,7 +115,8 @@ async fn retry_item_success_removes_pending_and_patches_org() {
 
     let cfg = Arc::new(minimal_config(dir.clone(), output_file.clone()));
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
-    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let writer = Arc::new(OrgFileWriter::new(inbox::config::SyncthingConfig::default()))
+        as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
     let pipeline = Arc::new(
         Pipeline::new(
@@ -185,7 +186,8 @@ async fn retry_item_memo_finalizes_without_llm() {
     // Always-fall-back chain: if the memo path were skipped and run_llm called,
     // the item would stay pending.
     let llm = helpers::always_fail_llm_chain();
-    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let writer = Arc::new(OrgFileWriter::new(inbox::config::SyncthingConfig::default()))
+        as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
     let pipeline = Arc::new(
         Pipeline::new(
@@ -257,7 +259,8 @@ async fn retry_item_memo_image_unreadable_stays_pending() {
 
     let cfg = Arc::new(minimal_config(dir.clone(), output_file.clone()));
     let llm = helpers::always_fail_llm_chain();
-    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let writer = Arc::new(OrgFileWriter::new(inbox::config::SyncthingConfig::default()))
+        as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
     let pipeline = Arc::new(
         Pipeline::new(
@@ -313,7 +316,8 @@ async fn retry_item_exhausts_and_flips_tag_to_failed() {
     let cfg = Arc::new(minimal_config(dir.clone(), output_file.clone()));
     // Chain that always falls back (Raw mode → llm_response is None).
     let llm = helpers::always_fail_llm_chain();
-    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let writer = Arc::new(OrgFileWriter::new(inbox::config::SyncthingConfig::default()))
+        as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
     let pipeline = Arc::new(
         Pipeline::new(

@@ -1,37 +1,53 @@
 use std::path::Path;
 
 use async_trait::async_trait;
+use inbox_core::{CoreError, OutputTarget};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tracing::{instrument, warn};
 
-use crate::config::{Config, SyncthingConfig};
-use crate::error::InboxError;
+use crate::config::SyncthingConfig;
 use crate::message::ProcessedMessage;
 use crate::render;
 
 use super::OutputWriter;
 
-pub struct OrgFileWriter;
+/// Writes enriched messages as org nodes, then optionally triggers a Syncthing
+/// rescan. Holds its own [`SyncthingConfig`] so the write boundary stays narrow
+/// (paths only, via [`OutputTarget`]) instead of taking the whole `Config`.
+pub struct OrgFileWriter {
+    syncthing: SyncthingConfig,
+}
+
+impl OrgFileWriter {
+    #[must_use]
+    pub fn new(syncthing: SyncthingConfig) -> Self {
+        Self { syncthing }
+    }
+}
 
 #[async_trait]
 impl OutputWriter for OrgFileWriter {
-    #[instrument(skip(self, msg, cfg))]
-    async fn write(&self, msg: &ProcessedMessage, cfg: &Config) -> Result<(), InboxError> {
+    #[instrument(skip(self, msg, target))]
+    async fn write(
+        &self,
+        msg: &ProcessedMessage,
+        target: &OutputTarget<'_>,
+    ) -> Result<(), CoreError> {
         let start = std::time::Instant::now();
-        let node = render::render_org_node(msg, &cfg.general.attachments_dir)?;
+        let node = render::render_org_node(msg, target.attachments_dir)?;
 
-        append_to_file(&cfg.general.output_file, &node)
+        append_to_file(target.output_file, &node)
             .await
             .map_err(|e| {
                 metrics::counter!(crate::telemetry::WRITE_ERRORS).increment(1);
                 metrics::counter!(crate::telemetry::WRITES_TOTAL, "status" => "failure")
                     .increment(1);
-                InboxError::Output(format!("Failed to append org node: {e}"))
+                CoreError::Output(format!("Failed to append org node: {e}"))
             })?;
 
-        if cfg.syncthing.enabled && cfg.syncthing.rescan_on_write {
-            trigger_syncthing_rescans(&cfg.syncthing).await;
+        if self.syncthing.enabled && self.syncthing.rescan_on_write {
+            trigger_syncthing_rescans(&self.syncthing).await;
         }
 
         metrics::counter!(crate::telemetry::WRITES_TOTAL, "status" => "success").increment(1);
@@ -97,11 +113,20 @@ async fn rescan_folder(client: &reqwest::Client, cfg: &SyncthingConfig, folder_i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
     use crate::message::{
         EnrichedMessage, IncomingMessage, MessageSource, ProcessedMessage, SourceMetadata,
     };
+    use inbox_core::{CoreError, OutputTarget};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn target_for(cfg: &Config) -> OutputTarget<'_> {
+        OutputTarget {
+            output_file: &cfg.general.output_file,
+            attachments_dir: &cfg.general.attachments_dir,
+        }
+    }
 
     fn test_processed_message(text: &str) -> ProcessedMessage {
         ProcessedMessage {
@@ -244,9 +269,12 @@ org_folder_id = "org-folder"
         );
         let cfg: Config = toml::from_str(&cfg_toml).expect("config");
 
-        let writer = OrgFileWriter;
+        let writer = OrgFileWriter::new(cfg.syncthing.clone());
         let msg = test_processed_message("test message");
-        writer.write(&msg, &cfg).await.expect("write ok");
+        writer
+            .write(&msg, &target_for(&cfg))
+            .await
+            .expect("write ok");
 
         let content = tokio::fs::read_to_string(&output_file)
             .await
@@ -273,10 +301,13 @@ attachments_dir = "{}"
         );
         let cfg: Config = toml::from_str(&cfg_toml).expect("config");
 
-        let writer = OrgFileWriter;
+        let writer = OrgFileWriter::new(cfg.syncthing.clone());
         let msg = test_processed_message("test message");
-        let err = writer.write(&msg, &cfg).await.expect_err("must fail");
-        assert!(matches!(err, InboxError::Output(_)));
+        let err = writer
+            .write(&msg, &target_for(&cfg))
+            .await
+            .expect_err("must fail");
+        assert!(matches!(err, CoreError::Output(_)));
     }
 
     #[tokio::test]

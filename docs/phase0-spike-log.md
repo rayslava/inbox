@@ -304,6 +304,37 @@ JSON), which would fail plain prompts. Fixed to delegate to the inherent plain-t
 (`backend_impl` 4/4). → **Commit #8**. (Estimate refined: the LLM boundary is *cheaper*
 than predicted by exposing the right altitude — narrow trait, zero internal churn.)
 
+## Step 9 — Stage C5: OutputWriter + Config-narrowing (the heavy one)
+
+The estimate's flagged unknown — a `Config`-in-signature trait — now paid and proven:
+- core `output.rs`: `OutputWriter { write(&ProcessedMessage, &OutputTarget) -> CoreError }`
+  + `OutputTarget { output_file, attachments_dir }` (narrow replacement for `&Config`).
+- `OrgFileWriter` becomes a struct **holding its `SyncthingConfig`** (`::new(syncthing)`);
+  render/append/rescan behavior unchanged. `NullWriter` + 3 test writers + main + 2
+  integration test files migrated.
+- **Reverse `From<CoreError> for InboxError`** added (category-preserving) so the
+  `InboxError`-based pipeline can consume the core-trait error; `process()` calls a new
+  `write_output()` helper that builds `OutputTarget` and maps the error back.
+
+**Churn: real but bounded** — ~10 sites (unlike the ~zero-churn facade moves), because
+the trait's error flipped and every writer signature changed. This validates the
+estimate: Config-narrowing traits cost more than pure domain-type moves, but are still
+a bounded, mechanical, single-commit change.
+
+**17 pedantic warnings surfaced + fixed** (match_same_arms in the reverse From,
+too_many_lines in process() → extracted `write_output`, elided lifetime, default_trait_access
+in tests). **Codex review:** behavior equivalent, no live config-reload path; only ask
+was to stage the new `crates/core/src/output.rs` (done).
+
+**Pipeline:** clippy 0 warnings, test **710 passed / 0 failed**, tarpaulin **85.49%
+(+0.16%)** (`error.rs` 32/32 via a reverse-From test). → **Commit #9**.
+
+## ALL 6 TRAIT BOUNDARIES DONE (AuthSession deferred by decision)
+EmbeddingProvider · VectorStore · UrlFetcher · LlmBackend · OutputWriter + the
+message/status domain move. `core` deps stayed light (serde/serde_json/thiserror/url/
+async-trait/chrono/uuid + tokio-sync dev). Estimate held: facade moves ≈ zero churn;
+the one Config-narrowing trait was the only above-trivial cost.
+
 ### Status
 - Gate (cargo tree): **PASS**. Pipeline: clippy/fmt/test/tarpaulin **green**.
 - **`make images`: VERIFIED** post-split (rc=0). musl static `--bin inbox` builds

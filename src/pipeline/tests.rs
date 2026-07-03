@@ -501,8 +501,8 @@ impl crate::output::OutputWriter for CapturingWriter {
     async fn write(
         &self,
         msg: &crate::message::ProcessedMessage,
-        _cfg: &Config,
-    ) -> Result<(), crate::error::InboxError> {
+        _target: &inbox_core::OutputTarget<'_>,
+    ) -> Result<(), inbox_core::CoreError> {
         *self.captured_tags.lock().unwrap() = msg.enriched.original.user_tags.clone();
         Ok(())
     }
@@ -553,9 +553,9 @@ impl crate::output::OutputWriter for NodeCapturingWriter {
     async fn write(
         &self,
         msg: &crate::message::ProcessedMessage,
-        cfg: &Config,
-    ) -> Result<(), crate::error::InboxError> {
-        let node = crate::render::render_org_node(msg, &cfg.general.attachments_dir)?;
+        target: &inbox_core::OutputTarget<'_>,
+    ) -> Result<(), inbox_core::CoreError> {
+        let node = crate::render::render_org_node(msg, target.attachments_dir)?;
         *self.node.lock().unwrap() = node;
         *self.backend.lock().unwrap() = msg
             .llm_response

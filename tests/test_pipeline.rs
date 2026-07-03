@@ -44,7 +44,8 @@ async fn pipeline_writes_org_node_for_plain_text_message() {
     let cfg = Arc::new(minimal_config(dir.clone(), output_file.clone()));
 
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
-    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let writer = Arc::new(OrgFileWriter::new(inbox::config::SyncthingConfig::default()))
+        as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
     let pipeline = Arc::new(
         Pipeline::new(Arc::clone(&cfg), llm, writer, tracker, None, None).expect("build pipeline"),
@@ -80,7 +81,8 @@ async fn pipeline_handles_empty_text_gracefully() {
     let cfg = Arc::new(minimal_config(dir.clone(), output_file.clone()));
 
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
-    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let writer = Arc::new(OrgFileWriter::new(inbox::config::SyncthingConfig::default()))
+        as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
     let pipeline = Arc::new(
         Pipeline::new(Arc::clone(&cfg), llm, writer, tracker, None, None).expect("build pipeline"),
@@ -109,7 +111,8 @@ async fn pipeline_appends_multiple_messages() {
     let cfg = Arc::new(minimal_config(dir.clone(), output_file.clone()));
 
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
-    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let writer = Arc::new(OrgFileWriter::new(inbox::config::SyncthingConfig::default()))
+        as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
     let pipeline = Arc::new(
         Pipeline::new(Arc::clone(&cfg), llm, writer, tracker, None, None).expect("build pipeline"),
@@ -141,7 +144,8 @@ async fn pipeline_llm_discard_returns_error() {
     let output_file = dir.join("inbox.org");
     let cfg = Arc::new(minimal_config(dir.clone(), output_file.clone()));
     let llm = helpers::failing_llm_chain("simulated LLM failure");
-    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let writer = Arc::new(OrgFileWriter::new(inbox::config::SyncthingConfig::default()))
+        as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
     let pipeline = Arc::new(
         Pipeline::new(Arc::clone(&cfg), llm, writer, tracker, None, None).expect("build pipeline"),
@@ -169,7 +173,8 @@ async fn pipeline_output_writer_failure_returns_error() {
     let output_file = dir.clone();
     let cfg = Arc::new(minimal_config(dir.clone(), output_file));
     let llm = helpers::mock_llm_chain(helpers::default_llm_response());
-    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let writer = Arc::new(OrgFileWriter::new(inbox::config::SyncthingConfig::default()))
+        as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
     let pipeline = Arc::new(
         Pipeline::new(Arc::clone(&cfg), llm, writer, tracker, None, None).expect("build pipeline"),

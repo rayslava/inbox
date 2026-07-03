@@ -82,7 +82,7 @@ async fn main() -> Result<()> {
         memory_store,
     } = llm::build_chain(&cfg)?;
     let llm_chain = Arc::new(llm_chain);
-    let writer = Arc::new(OrgFileWriter) as Arc<dyn OutputWriter>;
+    let writer = Arc::new(OrgFileWriter::new(cfg.syncthing.clone())) as Arc<dyn OutputWriter>;
     let tracker = Arc::new(ProcessingTracker::new());
 
     let pending_store = pending::open_optional(&cfg).await;

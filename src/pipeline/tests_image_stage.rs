@@ -26,8 +26,8 @@ impl OutputWriter for AnalysisCapturingWriter {
     async fn write(
         &self,
         msg: &ProcessedMessage,
-        _cfg: &crate::config::Config,
-    ) -> Result<(), crate::error::InboxError> {
+        _target: &inbox_core::OutputTarget<'_>,
+    ) -> Result<(), inbox_core::CoreError> {
         *self.analyses.lock().unwrap() = msg.enriched.original.image_analyses.clone();
         *self.suggested_tags.lock().unwrap() = msg
             .enriched

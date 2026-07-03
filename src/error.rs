@@ -72,6 +72,31 @@ impl From<InboxError> for inbox_core::CoreError {
     }
 }
 
+/// Reverse boundary conversion, so daemon code that works in `InboxError` can
+/// `?` a `CoreError` returned by a core-trait impl. Category-preserving; the two
+/// core-only categories (`Embedding`/`VectorStore`) fold into `Memory` and
+/// `Fetch` into `Adapter`, carrying their message.
+impl From<inbox_core::CoreError> for InboxError {
+    fn from(err: inbox_core::CoreError) -> Self {
+        use inbox_core::CoreError as C;
+        match err {
+            C::Io(e) => InboxError::Io(e),
+            C::Json(e) => InboxError::Json(e),
+            C::UrlParse(e) => InboxError::UrlParse(e),
+            C::Config(s) => InboxError::Config(s),
+            C::Llm(s) => InboxError::Llm(s),
+            C::LlmTool(s) => InboxError::LlmTool(s),
+            // Core-only categories fold into the nearest daemon category.
+            C::Embedding(s) | C::VectorStore(s) | C::Memory(s) => InboxError::Memory(s),
+            C::Fetch(s) | C::Adapter(s) => InboxError::Adapter(s),
+            C::Attachment(s) => InboxError::Attachment(s),
+            C::Auth(s) => InboxError::Auth(s),
+            C::Pipeline(s) => InboxError::Pipeline(s),
+            C::Output(s) => InboxError::Output(s),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::InboxError;
@@ -128,5 +153,67 @@ mod tests {
 
         let urlp = InboxError::UrlParse(url::Url::parse("http://[bad").unwrap_err());
         assert!(matches!(CoreError::from(urlp), CoreError::UrlParse(_)));
+    }
+
+    #[test]
+    fn reverse_core_to_inbox_is_category_preserving() {
+        use inbox_core::CoreError as C;
+        assert!(matches!(
+            InboxError::from(C::Config("x".into())),
+            InboxError::Config(_)
+        ));
+        assert!(matches!(
+            InboxError::from(C::Llm("x".into())),
+            InboxError::Llm(_)
+        ));
+        assert!(matches!(
+            InboxError::from(C::LlmTool("x".into())),
+            InboxError::LlmTool(_)
+        ));
+        // Core-only categories fold into the nearest daemon category.
+        assert!(matches!(
+            InboxError::from(C::Embedding("x".into())),
+            InboxError::Memory(_)
+        ));
+        assert!(matches!(
+            InboxError::from(C::VectorStore("x".into())),
+            InboxError::Memory(_)
+        ));
+        assert!(matches!(
+            InboxError::from(C::Fetch("x".into())),
+            InboxError::Adapter(_)
+        ));
+        assert!(matches!(
+            InboxError::from(C::Attachment("x".into())),
+            InboxError::Attachment(_)
+        ));
+        assert!(matches!(
+            InboxError::from(C::Auth("x".into())),
+            InboxError::Auth(_)
+        ));
+        assert!(matches!(
+            InboxError::from(C::Pipeline("x".into())),
+            InboxError::Pipeline(_)
+        ));
+        assert!(matches!(
+            InboxError::from(C::Adapter("x".into())),
+            InboxError::Adapter(_)
+        ));
+        assert!(matches!(
+            InboxError::from(C::Output("x".into())),
+            InboxError::Output(_)
+        ));
+        assert!(matches!(
+            InboxError::from(C::Memory("x".into())),
+            InboxError::Memory(_)
+        ));
+        assert!(matches!(
+            InboxError::from(C::Io(std::io::Error::other("d"))),
+            InboxError::Io(_)
+        ));
+        let json = C::Json(serde_json::from_str::<i32>("nope").unwrap_err());
+        assert!(matches!(InboxError::from(json), InboxError::Json(_)));
+        let urlp = C::UrlParse(url::Url::parse("http://[bad").unwrap_err());
+        assert!(matches!(InboxError::from(urlp), InboxError::UrlParse(_)));
     }
 }
