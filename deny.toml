@@ -10,6 +10,7 @@ ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode 2.0.1 — transitive via grafeo-* crates; no upstream fix yet" },
     { id = "RUSTSEC-2021-0141", reason = "dotenv 0.15.0 — dev-only via teloxide_tests; no maintained drop-in upgrade path" },
     { id = "RUSTSEC-2025-0052", reason = "async-std 1.13.2 — transitive via async-imap; no maintained fork yet" },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained — transitive via aquamarine→teloxide; pre-existing (fails on master too), no upstream fix" },
 ]
 
 [licenses]

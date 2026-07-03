@@ -11,7 +11,7 @@ name = "omi-bridge"
 path = "src/main.rs"
 
 [dependencies]
-inbox-core = { path = "../core" }
+inbox-core = { path = "../core", version = "0.1.0" }
 
 [lints]
 workspace = true
