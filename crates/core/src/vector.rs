@@ -71,4 +71,12 @@ pub trait VectorStore: Send + Sync {
     /// # Errors
     /// Returns [`CoreError`] if the lookup fails.
     async fn sources(&self, memory_key: &str) -> Result<Vec<SourceEntry>, CoreError>;
+
+    /// KB-only recall (RAG path): the top `limit` `kind=kb-chunk` entries for
+    /// `query`. Never returns behavioral memories. Each entry's `key` is the
+    /// namespaced chunk id `kb:<source>:<note-id>:<chunker>:<hash>`.
+    ///
+    /// # Errors
+    /// Returns [`CoreError`] if the query fails.
+    async fn recall_kb(&self, query: &str, limit: usize) -> Result<Vec<MemoryEntry>, CoreError>;
 }

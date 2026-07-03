@@ -1,3 +1,5 @@
+#[cfg(all(test, feature = "test-helpers"))]
+mod brain_tests;
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helpers;
 #[cfg(test)]

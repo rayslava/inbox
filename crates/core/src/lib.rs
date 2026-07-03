@@ -5,6 +5,7 @@
 //! axum, teloxide, sqlx, …). Adapters live in the `inbox` binary and implement
 //! the traits declared here, mapping their concrete errors into [`CoreError`].
 
+pub mod brain;
 pub mod embedding;
 pub mod error;
 pub mod fetch;

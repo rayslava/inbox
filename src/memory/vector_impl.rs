@@ -55,4 +55,10 @@ impl VectorStore for MemoryStore {
             .await
             .map_err(CoreError::from)
     }
+
+    async fn recall_kb(&self, query: &str, limit: usize) -> Result<Vec<MemoryEntry>, CoreError> {
+        MemoryStore::kb_recall(self, query, limit)
+            .await
+            .map_err(CoreError::from)
+    }
 }
