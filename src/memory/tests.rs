@@ -555,6 +555,110 @@ async fn resolve_embed_client_returns_none_on_probe_failure() {
 }
 
 #[tokio::test]
+async fn kb_save_and_recall_with_embeddings() {
+    use crate::memory::kb;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/embed"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({ "embeddings": [[0.1f32, 0.2, 0.3]] })),
+        )
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg = crate::config::MemoryConfig {
+        embedding_endpoint: Some(server.uri()),
+        embedding_dims: Some(3),
+        ..Default::default()
+    };
+    let store = MemoryStore::open(&cfg, &dir.path().join("m.grafeo"))
+        .await
+        .expect("open store");
+
+    let id = kb::kb_id("org", "n1", "v1", "h1");
+    store
+        .kb_save(&id, "quantum computing basics", "org", "n1", "/n1.org")
+        .await
+        .expect("kb_save (insert with embedding)");
+
+    let hits = store
+        .kb_recall("quantum", 5)
+        .await
+        .expect("kb_recall (hybrid)");
+    assert!(hits.iter().any(|e| e.key.starts_with("kb:")));
+
+    // Same id again → update path (SET value + embedding).
+    store
+        .kb_save(&id, "quantum computing revised", "org", "n1", "/n1.org")
+        .await
+        .expect("kb_save (update)");
+}
+
+#[tokio::test]
+async fn kb_chunks_do_not_pollute_memory_recall() {
+    use crate::memory::kb;
+
+    let store = MemoryStore::new_in_memory().expect("in-memory store");
+
+    store
+        .save("fox-memory", "the quick brown fox")
+        .await
+        .expect("save m1");
+    store
+        .save("dog-memory", "a dog barks loudly")
+        .await
+        .expect("save m2");
+
+    let before: Vec<String> = store
+        .recall("fox", 10)
+        .await
+        .expect("recall")
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+    assert!(before.iter().any(|v| v.contains("quick brown fox")));
+
+    // Bulk-insert KB chunks whose text overlaps the query.
+    for i in 0..5 {
+        store
+            .kb_save(
+                &kb::kb_id("org", &format!("note{i}"), "v1", &format!("h{i}")),
+                "the quick brown fox appears in this document too",
+                "org",
+                &format!("note{i}"),
+                &format!("/note{i}.org"),
+            )
+            .await
+            .expect("kb_save");
+    }
+
+    // Behavioral recall is byte-for-byte unchanged — KB volume did not leak in.
+    let after: Vec<String> = store
+        .recall("fox", 10)
+        .await
+        .expect("recall2")
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+    assert_eq!(before, after);
+    assert!(after.iter().all(|v| !v.contains("document too")));
+
+    // KB-only recall returns chunks (namespaced ids), never memories.
+    let kb_hits = store.kb_recall("fox", 10).await.expect("kb_recall");
+    assert!(!kb_hits.is_empty());
+    assert!(kb_hits.iter().all(|e| e.key.starts_with("kb:")));
+    assert!(kb_hits.iter().any(|e| e.value.contains("document too")));
+
+    // Behavioral recall never returns a KB chunk id.
+    let mem_hits = store.recall("fox", 10).await.expect("recall3");
+    assert!(mem_hits.iter().all(|e| !e.key.starts_with("kb:")));
+}
+
+#[tokio::test]
 async fn vector_store_trait_path_exercises_all_methods() {
     use inbox_core::VectorStore;
 

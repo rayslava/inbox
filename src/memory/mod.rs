@@ -10,6 +10,7 @@ use crate::error::InboxError;
 
 pub mod embed;
 pub(crate) mod feedback;
+pub mod kb;
 mod queries;
 mod store_feedback;
 mod util;
@@ -45,6 +46,9 @@ pub struct RecallOutcome {
 pub struct MemoryStore {
     db: Arc<GrafeoDB>,
     embed_client: Option<embed::EmbedClient>,
+    /// Active embedding fingerprint; KB chunks written under a different
+    /// fingerprint are rejected so vector spaces never mix.
+    fingerprint: kb::EmbeddingFingerprint,
 }
 
 impl MemoryStore {
@@ -76,28 +80,46 @@ impl MemoryStore {
             None
         };
 
-        // Create indexes if we know the dimensions.
+        // Create indexes if we know the dimensions (both :Memory and :KbChunk).
         if let Some(dims) = embedding_dims {
             let db_ref = Arc::clone(&db);
             tokio::task::spawn_blocking(move || {
                 queries::create_indexes(&db_ref, dims);
+                kb::create_kb_indexes(&db_ref, dims);
             })
             .await
             .map_err(|e| InboxError::Memory(e.to_string()))?;
         }
 
-        // Always create the text index for BM25 recall.
+        // Always create the BM25 text indexes for :Memory and :KbChunk recall.
         let db_ref = Arc::clone(&db);
         tokio::task::spawn_blocking(move || {
-            if let Err(e) = db_ref.create_text_index("Memory", "value") {
-                // Ignore "already exists" style errors on reopening.
-                warn!("Text index creation (may already exist): {e}");
+            for label in ["Memory", "KbChunk"] {
+                if let Err(e) = db_ref.create_text_index(label, "value") {
+                    // Ignore "already exists" style errors on reopening.
+                    warn!("Text index creation for {label} (may already exist): {e}");
+                }
             }
         })
         .await
         .map_err(|e| InboxError::Memory(e.to_string()))?;
 
-        Ok(Self { db, embed_client })
+        let fingerprint = kb::EmbeddingFingerprint {
+            model: cfg
+                .embedding_model
+                .clone()
+                .unwrap_or_else(|| "nomic-embed-text".to_owned()),
+            dims: embedding_dims.unwrap_or(0),
+            metric: "cosine".to_owned(),
+            normalization: "none".to_owned(),
+            chunker_version: "v1".to_owned(),
+        };
+
+        Ok(Self {
+            db,
+            embed_client,
+            fingerprint,
+        })
     }
 
     /// Save (upsert) a key-value pair. Embeds the value if an embedding client is configured.
@@ -268,6 +290,75 @@ impl MemoryStore {
         result
     }
 
+    /// Upsert a KB chunk (`kind=kb-chunk`) under its namespaced `id`, embedding
+    /// the value if a client is configured. Stored on the `:KbChunk` label, so
+    /// it never affects behavioral `:Memory` recall.
+    ///
+    /// # Errors
+    /// Returns an error if the active fingerprint mismatches or the write fails.
+    #[spec(requires: !id.trim().is_empty())]
+    pub async fn kb_save(
+        &self,
+        id: &str,
+        value: &str,
+        source: &str,
+        note_id: &str,
+        path: &str,
+    ) -> Result<(), InboxError> {
+        let embedding: Option<Vec<f32>> = if let Some(embed) = &self.embed_client {
+            embed.embed(value).await.ok()
+        } else {
+            None
+        };
+        let (id, value) = (id.to_owned(), value.to_owned());
+        let (source, note_id, path) = (source.to_owned(), note_id.to_owned(), path.to_owned());
+        let fp = self.fingerprint.tag();
+        let db = Arc::clone(&self.db);
+
+        tokio::task::spawn_blocking(move || {
+            kb::upsert_kb_chunk(
+                &db,
+                &kb::KbChunkWrite {
+                    id: &id,
+                    value: &value,
+                    embedding: embedding.as_deref(),
+                    source: &source,
+                    note_id: &note_id,
+                    path: &path,
+                    fingerprint: &fp,
+                },
+                &fp,
+            )
+        })
+        .await
+        .map_err(|e| InboxError::Memory(e.to_string()))?
+    }
+
+    /// KB-only recall (RAG path): hybrid vector+BM25 over `:KbChunk`. Never
+    /// returns behavioral `:Memory` entries.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub async fn kb_recall(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>, InboxError> {
+        let query_vec: Option<Vec<f32>> = if let Some(embed) = &self.embed_client {
+            embed.embed(query).await.ok()
+        } else {
+            None
+        };
+        let query = query.to_owned();
+        let fp = self.fingerprint.tag();
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || {
+            kb::kb_recall_entries(&db, &query, query_vec.as_deref(), limit, &fp)
+        })
+        .await
+        .map_err(|e| InboxError::Memory(e.to_string()))
+    }
+
     /// Test helper: create a `MemoryStore` backed by an in-memory Grafeo database.
     ///
     /// # Errors
@@ -277,14 +368,23 @@ impl MemoryStore {
         let db = GrafeoDB::new_in_memory();
         let db = Arc::new(db);
 
-        // Create text index for BM25.
-        if let Err(e) = db.create_text_index("Memory", "value") {
-            warn!("Text index creation: {e}");
+        // Create text indexes for BM25 (:Memory and :KbChunk).
+        for label in ["Memory", "KbChunk"] {
+            if let Err(e) = db.create_text_index(label, "value") {
+                warn!("Text index creation for {label}: {e}");
+            }
         }
 
         Ok(Self {
             db,
             embed_client: None,
+            fingerprint: kb::EmbeddingFingerprint {
+                model: "test".to_owned(),
+                dims: 0,
+                metric: "cosine".to_owned(),
+                normalization: "none".to_owned(),
+                chunker_version: "v1".to_owned(),
+            },
         })
     }
 }
