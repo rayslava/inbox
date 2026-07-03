@@ -13,11 +13,14 @@ pub mod ollama;
 pub mod openrouter;
 pub mod tools;
 
+mod backend_impl;
 mod chain;
 mod chain_tools;
 #[cfg(test)]
 mod chain_tools_tests;
 mod circuit;
+#[cfg(all(test, feature = "test-helpers"))]
+mod tests_backend;
 pub use chain::LlmChain;
 pub(crate) use chain::VisionUnavailable;
 #[cfg(test)]

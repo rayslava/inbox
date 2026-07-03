@@ -281,6 +281,29 @@ Smallest trait (S, as estimated):
   **signature-narrowing** (move `from_enriched` to a bin free fn; replace `&Config` with
   a small param struct) + call-site edits. Not a pure facade move.
 
+## Step 8 — Stage C4: LlmBackend boundary (narrow, not the full move)
+
+**Scope call:** the estimate said "move `LlmClient` + value types, `from_enriched` →
+bin fn". On contact that's heavy (the internal trait returns `InboxError`; ~17
+`from_enriched` call sites) **and the wrong altitude** — downstream (brain RAG,
+kb-web) needs *prompt→answer*, not the tool loop. So the boundary is a **narrow**
+core trait; the rich `LlmClient`/`LlmRequest`/backends stay internal, untouched.
+- core `llm.rs`: `LlmBackend { async fn complete_text(&self, system, user) ->
+  Result<(String,String), CoreError> }`.
+- `src/llm/backend_impl.rs`: `impl LlmBackend for LlmChain` delegating to the
+  **existing inherent `LlmChain::complete_text`** (UFCS) → `ok_or_else` into `CoreError`.
+- Tests in `src/llm/tests_backend.rs` (new small file, keeps tests.rs <500): success
+  via `test_helpers::mock_llm_chain`, error via empty-backend chain.
+
+**Codex review caught a real correctness bug** (conf .95): my first impl routed through
+`LlmChain::complete` (structured enrichment path — attaches tools, parses `{summary}`
+JSON), which would fail plain prompts. Fixed to delegate to the inherent plain-text
+`complete_text` (uses `complete_raw`, no tool loop). Re-verified green.
+
+**Pipeline:** clippy 0 warnings, test **709 passed / 0 failed**, tarpaulin **85.35%**
+(`backend_impl` 4/4). → **Commit #8**. (Estimate refined: the LLM boundary is *cheaper*
+than predicted by exposing the right altitude — narrow trait, zero internal churn.)
+
 ### Status
 - Gate (cargo tree): **PASS**. Pipeline: clippy/fmt/test/tarpaulin **green**.
 - **`make images`: VERIFIED** post-split (rc=0). musl static `--bin inbox` builds
