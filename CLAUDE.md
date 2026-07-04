@@ -59,6 +59,8 @@ cargo run -- hash-password
 - Use `wiremock` for external HTTP interactions.
 - Use `teloxide_tests::MockBot` for Telegram bot flows.
 - Ollama-dependent tests are opt-in via `TEST_WITH_OLLAMA=1`.
+- The llama.cpp live backend test (`tests/test_llama_cpp_live.rs`) is opt-in via
+  `LLAMACPP_BASE_URL` (e.g. `http://127.0.0.1:32000/v1`); skipped otherwise.
 - Coverage is measured with `cargo tarpaulin`; the repo config is in
   `tarpaulin.toml` (excludes `src/main.rs` — startup wiring only).
 
