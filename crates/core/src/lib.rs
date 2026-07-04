@@ -16,6 +16,7 @@ pub mod status;
 pub mod url_content;
 pub mod vector;
 
+pub use brain::RetrievalMode;
 pub use embedding::EmbeddingProvider;
 pub use error::CoreError;
 pub use fetch::UrlFetcher;

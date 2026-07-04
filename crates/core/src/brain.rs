@@ -1,9 +1,22 @@
-//! The local "second brain": KB-only RAG over the store traits. Retrieves the
-//! top kb chunks for a question, asks the LLM to answer from them, and returns a
-//! deterministic list of cited note ids (parsed from the chunk ids, so the model
-//! can never invent a citation).
+//! The local "second brain": per-kind RAG over the store traits. Retrieves the
+//! top entries for a question (behavioral memory, KB chunks, or a quota'd blend),
+//! asks the LLM to answer from them, and returns a deterministic list of cited
+//! note ids (parsed from the chunk ids, so the model can never invent a citation).
 
-use crate::{CoreError, LlmBackend, VectorStore};
+use crate::{CoreError, LlmBackend, MemoryEntry, VectorStore};
+
+/// Which store(s) a brain query draws from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetrievalMode {
+    /// Behavioral `:Memory` nodes only — what the daemon has learned/been told.
+    MemoryOnly,
+    /// KB chunks only (`:KbChunk`) — the RAG default over the note corpus.
+    KbOnly,
+    /// Both stores, capping the KB at `kb_quota` slots so behavioral memory is
+    /// never fully crowded out. Tuned for vague queries, where blending an
+    /// imprecise match from either store beats a single-store miss.
+    Hybrid { kb_quota: usize },
+}
 
 /// An answer plus the note ids it drew from.
 #[derive(Debug, Clone)]
@@ -31,8 +44,8 @@ impl Answer {
     }
 }
 
-/// Answer `question` from the KB only: retrieve `top_k` chunks, have `llm`
-/// answer from them, and cite the source notes.
+/// Answer `question` under `mode`: retrieve up to `top_k` entries, have `llm`
+/// answer from them, and cite any source notes.
 ///
 /// # Errors
 /// Returns [`CoreError`] if retrieval or the LLM call fails.
@@ -41,8 +54,9 @@ pub async fn answer(
     llm: &dyn LlmBackend,
     question: &str,
     top_k: usize,
+    mode: RetrievalMode,
 ) -> Result<Answer, CoreError> {
-    let chunks = vs.recall_kb(question, top_k).await?;
+    let chunks = retrieve(vs, question, top_k, mode).await?;
     if chunks.is_empty() {
         return Ok(Answer {
             text: "I couldn't find any relevant notes.".to_owned(),
@@ -70,6 +84,35 @@ pub async fn answer(
     }
 
     Ok(Answer { text, note_ids })
+}
+
+/// Retrieve the entries feeding an answer under `mode`. For `Hybrid`, the KB is
+/// capped at `kb_quota` (never more than `top_k`) and behavioral memory fills the
+/// remaining slots, so a large KB can never fully displace memory.
+async fn retrieve(
+    vs: &dyn VectorStore,
+    question: &str,
+    top_k: usize,
+    mode: RetrievalMode,
+) -> Result<Vec<MemoryEntry>, CoreError> {
+    match mode {
+        RetrievalMode::MemoryOnly => vs.recall(question, top_k).await,
+        RetrievalMode::KbOnly => vs.recall_kb(question, top_k).await,
+        RetrievalMode::Hybrid { kb_quota } => {
+            let cap = kb_quota.min(top_k);
+            let mut out: Vec<MemoryEntry> = vs
+                .recall_kb(question, top_k)
+                .await?
+                .into_iter()
+                .take(cap)
+                .collect();
+            let remaining = top_k - out.len();
+            if remaining > 0 {
+                out.extend(vs.recall(question, remaining).await?);
+            }
+            Ok(out)
+        }
+    }
 }
 
 /// Parse the note id from a namespaced chunk id
