@@ -25,6 +25,11 @@ log_format = "pretty"
 # If you do not need remote access, prefer 127.0.0.1 and a reverse proxy/firewall.
 bind_addr = "0.0.0.0:9090"
 
+# Bind address for the local private /ask second-brain endpoint. It serves the
+# FULL private KB with no authentication, so keep it on loopback (127.0.0.1) or a
+# trusted VPN interface only — never 0.0.0.0.
+ask_bind = "127.0.0.1:9091"
+
 # Username for the web UI login.
 username = "admin"
 

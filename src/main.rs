@@ -41,6 +41,23 @@ enum Commands {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+/// Wait for the configured drain window before completing shutdown.
+async fn drain_before_shutdown(drain_secs: u64) {
+    if drain_secs > 0 {
+        info!(drain_secs, "Draining (waiting for load balancer)");
+        tokio::time::sleep(std::time::Duration::from_secs(drain_secs)).await;
+    }
+}
+
+/// Build the Prometheus recorder handle and register metric descriptions.
+fn install_metrics() -> metrics_exporter_prometheus::PrometheusHandle {
+    let handle = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .build_recorder()
+        .handle();
+    inbox_telemetry::describe_metrics();
+    handle
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
@@ -64,11 +81,7 @@ async fn main() -> Result<()> {
 
     info!(version = env!("CARGO_PKG_VERSION"), "inbox starting");
 
-    // Metrics
-    let prometheus_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
-        .build_recorder()
-        .handle();
-    inbox_telemetry::describe_metrics();
+    let prometheus_handle = install_metrics();
 
     // Shared state
     let readiness = ReadinessState::new(false);
@@ -89,7 +102,7 @@ async fn main() -> Result<()> {
 
     let pipeline = Arc::new(Pipeline::new(
         Arc::clone(&cfg),
-        llm_chain,
+        Arc::clone(&llm_chain),
         writer,
         Arc::clone(&tracker),
         memory_store.clone(),
@@ -154,6 +167,12 @@ async fn main() -> Result<()> {
         memory_store: memory_store.clone(),
     });
 
+    spawn_ask_server(AskServerArgs {
+        bind_addr: cfg.admin.ask_bind,
+        memory_store: memory_store.clone(),
+        llm: Arc::clone(&llm_chain),
+    });
+
     // Mark ready
     readiness.set_ready();
     info!("Inbox ready");
@@ -165,11 +184,7 @@ async fn main() -> Result<()> {
     info!("Shutdown signal received");
     readiness.set_not_ready();
 
-    let drain_secs = cfg.admin.shutdown_drain_secs;
-    if drain_secs > 0 {
-        info!(drain_secs, "Draining (waiting for load balancer)");
-        tokio::time::sleep(std::time::Duration::from_secs(drain_secs)).await;
-    }
+    drain_before_shutdown(cfg.admin.shutdown_drain_secs).await;
 
     shutdown.cancel();
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -197,6 +212,41 @@ fn init_logging(format: &str, level: &str, log_store: std::sync::Arc<log_capture
     } else {
         registry.with(fmt::layer().pretty()).init();
     }
+}
+
+struct AskServerArgs {
+    bind_addr: std::net::SocketAddr,
+    memory_store: Option<Arc<inbox::memory::MemoryStore>>,
+    llm: Arc<inbox::llm::LlmChain>,
+}
+
+/// Spawn the local private `/ask` server on a dedicated (default loopback)
+/// listener. It reads the full private KB without auth, so a non-loopback bind
+/// is loudly warned about.
+fn spawn_ask_server(args: AskServerArgs) {
+    let addr = args.bind_addr;
+    if !addr.ip().is_loopback() {
+        warn!(
+            %addr,
+            "ask server bind is not loopback — the local /ask endpoint serves the \
+             full private KB with no auth; bind 127.0.0.1 unless behind a trusted VPN"
+        );
+    }
+    let router = web::ask::ask_router(web::ask::AskState {
+        memory_store: args.memory_store,
+        llm: args.llm,
+    });
+    tokio::spawn(async move {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => {
+                info!(%addr, "Ask server listening (local /ask)");
+                if let Err(e) = axum::serve(listener, router).await {
+                    warn!(?e, "Ask server exited with error");
+                }
+            }
+            Err(e) => warn!(?e, %addr, "Failed to bind ask server"),
+        }
+    });
 }
 
 struct AdminServerArgs {

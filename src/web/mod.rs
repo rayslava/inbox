@@ -20,6 +20,7 @@ use crate::memory::MemoryStore;
 use crate::message::IncomingMessage;
 use crate::processing_status::ProcessingTracker;
 
+pub mod ask;
 pub mod attachments;
 pub mod auth;
 pub mod feedback;

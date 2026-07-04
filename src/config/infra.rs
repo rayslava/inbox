@@ -28,6 +28,11 @@ fn default_log_format() -> String {
 pub struct AdminConfig {
     #[serde(default = "default_admin_bind")]
     pub bind_addr: SocketAddr,
+    /// Bind address for the local private `/ask` second-brain endpoint. Defaults
+    /// to loopback — it serves the full KB with no auth, so keep it 127.0.0.1
+    /// (or a trusted VPN interface).
+    #[serde(default = "default_ask_bind")]
+    pub ask_bind: SocketAddr,
     #[serde(default = "default_admin_user")]
     pub username: String,
     /// Argon2id hash generated via `inbox hash-password`.
@@ -43,6 +48,7 @@ impl Default for AdminConfig {
     fn default() -> Self {
         Self {
             bind_addr: default_admin_bind(),
+            ask_bind: default_ask_bind(),
             username: default_admin_user(),
             password_hash: String::new(),
             session_ttl_days: default_session_ttl(),
@@ -53,6 +59,10 @@ impl Default for AdminConfig {
 
 fn default_admin_bind() -> SocketAddr {
     SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 9090))
+}
+
+fn default_ask_bind() -> SocketAddr {
+    SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 9091))
 }
 fn default_admin_user() -> String {
     "admin".into()
