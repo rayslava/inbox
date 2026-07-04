@@ -93,6 +93,41 @@ fn ollama_backend() -> LlmBackendConfig {
     }
 }
 
+fn llama_cpp_backend() -> LlmBackendConfig {
+    LlmBackendConfig {
+        backend_type: LlmBackendType::LlamaCpp,
+        model: "qwen2.5".into(),
+        api_key: None,
+        base_url: "http://localhost:8080/v1".into(),
+        retries: 1,
+        timeout_secs: 30,
+        think: None,
+        think_timeout_secs: None,
+        thinking_supported: false,
+        vision_supported: false,
+        max_concurrent: Some(1),
+        context_size: None,
+        format: None,
+        connect_timeout_secs: 10,
+        circuit_open_secs: 0,
+        api_url: "https://shir-man.com/api/free-llm/top-models".into(),
+        parallel_fanout: 3,
+        per_model_retries: 2,
+        min_refresh_interval_secs: 300,
+        min_context_length: 0,
+        prefer_structured_outputs: false,
+        prefer_reasoning: false,
+    }
+}
+
+#[tokio::test]
+async fn build_chain_with_llama_cpp_backend() {
+    let cfg = test_config(vec![llama_cpp_backend()], false);
+    let result = build_chain(&cfg).expect("build chain");
+    assert!(result.memory_store.is_none());
+    assert_eq!(result.chain.max_tool_turns(), 5);
+}
+
 #[tokio::test]
 async fn build_chain_no_backends_no_memory() {
     let cfg = test_config(vec![], false);

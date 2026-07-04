@@ -3,17 +3,80 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn make_client(base_url: &str) -> OpenRouterClient {
+    make_labeled_client(base_url, "openrouter")
+}
+
+fn make_labeled_client(base_url: &str, label: &'static str) -> OpenRouterClient {
     OpenRouterClient {
         model: "test-model".into(),
         api_key: "test-key".into(),
         base_url: base_url.to_owned(),
         retries: 1,
         timeout: std::time::Duration::from_secs(5),
+        label,
         vision_supported: false,
         semaphore: None,
         client: reqwest::Client::new(),
         circuit: crate::llm::CircuitBreaker::new(0),
     }
+}
+
+#[tokio::test]
+async fn llama_cpp_label_flows_to_name_and_provenance() {
+    let server = MockServer::start().await;
+    let body = serde_json::json!({
+        "choices": [{ "message": { "content": r#"{"title":"T","tags":[],"summary":"S"}"# } }]
+    });
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let client = make_labeled_client(&server.uri(), "llama_cpp");
+    assert_eq!(client.name(), "llama_cpp");
+    let result = client
+        .complete(LlmRequest::simple("sys", "user"))
+        .await
+        .unwrap();
+    match result {
+        LlmCompletion::Message(m) => {
+            // `:ENRICHED_BY:` provenance carries the label, not "openrouter".
+            assert_eq!(m.produced_by, "llama_cpp:test-model");
+        }
+        LlmCompletion::ToolCalls(_) => panic!("expected message, got tool calls"),
+    }
+}
+
+#[test]
+fn from_config_labeled_sets_llama_cpp_name() {
+    let cfg = crate::config::LlmBackendConfig {
+        backend_type: crate::config::LlmBackendType::LlamaCpp,
+        model: "qwen2.5".into(),
+        api_key: None,
+        base_url: "http://localhost:8080/v1".into(),
+        retries: 1,
+        timeout_secs: 30,
+        think: None,
+        think_timeout_secs: None,
+        thinking_supported: false,
+        vision_supported: false,
+        max_concurrent: None,
+        context_size: None,
+        format: None,
+        connect_timeout_secs: 10,
+        circuit_open_secs: 0,
+        api_url: String::new(),
+        parallel_fanout: 3,
+        per_model_retries: 2,
+        min_refresh_interval_secs: 300,
+        min_context_length: 0,
+        prefer_structured_outputs: false,
+        prefer_reasoning: false,
+    };
+    let client = OpenRouterClient::from_config_labeled(&cfg, "llama_cpp").expect("build");
+    assert_eq!(client.name(), "llama_cpp");
+    assert_eq!(client.model(), "qwen2.5");
 }
 
 #[test]
@@ -207,6 +270,7 @@ fn make_client_with_cooldown(base_url: &str) -> OpenRouterClient {
         base_url: base_url.to_owned(),
         retries: 1,
         timeout: std::time::Duration::from_secs(5),
+        label: "openrouter",
         vision_supported: false,
         semaphore: None,
         client: reqwest::Client::new(),

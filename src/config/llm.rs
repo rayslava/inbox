@@ -129,8 +129,9 @@ pub enum FallbackMode {
 pub struct LlmBackendConfig {
     #[serde(rename = "type")]
     pub backend_type: LlmBackendType,
-    /// Model ID. Required for `openrouter` and `ollama`; ignored by
-    /// `free_router` (which sources its models from the index API).
+    /// Model ID. Required for `openrouter`, `ollama`, and `llama_cpp` (llama.cpp
+    /// echoes it but serves whatever model was loaded); ignored by `free_router`
+    /// (which sources its models from the index API).
     #[serde(default)]
     pub model: String,
     pub api_key: Option<String>,
@@ -253,4 +254,9 @@ pub enum LlmBackendType {
     Openrouter,
     Ollama,
     FreeRouter,
+    /// A local llama.cpp `server` speaking the OpenAI-compatible
+    /// `/v1/chat/completions` dialect. Reuses the `OpenRouter` client path with a
+    /// `base_url` pointing at the server (e.g. `http://localhost:8080/v1`) and
+    /// usually no API key.
+    LlamaCpp,
 }

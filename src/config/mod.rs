@@ -15,7 +15,7 @@ pub mod tooling;
 pub use adapters::{AdaptersConfig, EmailConfig, HttpAdapterConfig, TelegramConfig};
 pub use infra::{AdminConfig, GeneralConfig, SyncthingConfig, UrlFetchConfig, WebUiConfig};
 pub use llm::{FallbackMode, LlmBackendConfig, LlmBackendType, LlmConfig, LlmPromptsConfig};
-pub use memory::MemoryConfig;
+pub use memory::{EmbeddingApi, MemoryConfig};
 pub use pipeline::{
     ImageAnalysisConfig, JsShellPolicy, PipelineConfig, PreprocessingConfig, PreprocessingRule,
     ResumeConfig, RuleAction, RuleCondition, WebContentConfig,

@@ -140,5 +140,8 @@ fn build_backend(cfg: &LlmBackendConfig) -> Result<Box<dyn LlmClient>, InboxErro
         LlmBackendType::FreeRouter => {
             Box::new(super::free_router::FreeRouterClient::from_config(cfg)?)
         }
+        LlmBackendType::LlamaCpp => Box::new(
+            super::openrouter::OpenRouterClient::from_config_labeled(cfg, "llama_cpp")?,
+        ),
     })
 }

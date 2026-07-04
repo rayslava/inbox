@@ -2,6 +2,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{MemoryStore, embed::EmbedClient, resolve_embed_client};
+use crate::config::EmbeddingApi;
 
 #[tokio::test]
 async fn save_and_recall() {
@@ -189,8 +190,13 @@ async fn embed_client_returns_vector_on_success() {
         .mount(&server)
         .await;
 
-    let client =
-        EmbedClient::new(server.uri(), "test-model".into(), None).expect("build embed client");
+    let client = EmbedClient::new(
+        server.uri(),
+        EmbeddingApi::Ollama,
+        "test-model".into(),
+        None,
+    )
+    .expect("build embed client");
     let vec = client.embed("hello world").await.unwrap();
     assert_eq!(vec.len(), 3);
     assert!((vec[0] - 0.1).abs() < 1e-6);
@@ -211,8 +217,13 @@ async fn embedding_provider_trait_path_maps_success_and_error() {
         )
         .mount(&ok_server)
         .await;
-    let ok_client =
-        EmbedClient::new(ok_server.uri(), "test-model".into(), None).expect("build embed client");
+    let ok_client = EmbedClient::new(
+        ok_server.uri(),
+        EmbeddingApi::Ollama,
+        "test-model".into(),
+        None,
+    )
+    .expect("build embed client");
     let ok_provider: &dyn EmbeddingProvider = &ok_client;
     assert_eq!(ok_provider.embed("hi").await.expect("ok path").len(), 2);
 
@@ -223,8 +234,13 @@ async fn embedding_provider_trait_path_maps_success_and_error() {
         .respond_with(ResponseTemplate::new(500))
         .mount(&err_server)
         .await;
-    let err_client =
-        EmbedClient::new(err_server.uri(), "test-model".into(), None).expect("build embed client");
+    let err_client = EmbedClient::new(
+        err_server.uri(),
+        EmbeddingApi::Ollama,
+        "test-model".into(),
+        None,
+    )
+    .expect("build embed client");
     let err_provider: &dyn EmbeddingProvider = &err_client;
     assert!(matches!(
         err_provider.embed("hi").await,
@@ -241,8 +257,13 @@ async fn embed_client_returns_error_on_api_failure() {
         .mount(&server)
         .await;
 
-    let client =
-        EmbedClient::new(server.uri(), "test-model".into(), None).expect("build embed client");
+    let client = EmbedClient::new(
+        server.uri(),
+        EmbeddingApi::Ollama,
+        "test-model".into(),
+        None,
+    )
+    .expect("build embed client");
     let result = client.embed("hello").await;
     assert!(result.is_err(), "should fail on 500 response");
 }
@@ -261,13 +282,47 @@ async fn embed_client_returns_error_on_missing_embedding_field() {
         .mount(&server)
         .await;
 
-    let client =
-        EmbedClient::new(server.uri(), "test-model".into(), None).expect("build embed client");
+    let client = EmbedClient::new(
+        server.uri(),
+        EmbeddingApi::Ollama,
+        "test-model".into(),
+        None,
+    )
+    .expect("build embed client");
     let result = client.embed("hello").await;
     assert!(
         result.is_err(),
         "should fail when embedding field is missing"
     );
+}
+
+#[tokio::test]
+async fn embed_client_openai_api_parses_data_embedding() {
+    let server = MockServer::start().await;
+    // OpenAI/llama.cpp shape: {"data": [{"embedding": [...]}]} at POST /embeddings.
+    let body = serde_json::json!({
+        "data": [{"embedding": [0.7f32, 0.8f32, 0.9f32]}]
+    });
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(body),
+        )
+        .mount(&server)
+        .await;
+
+    let client = EmbedClient::new(
+        server.uri(),
+        EmbeddingApi::Openai,
+        "test-model".into(),
+        None,
+    )
+    .expect("build embed client");
+    let vec = client.embed("hello world").await.unwrap();
+    assert_eq!(vec.len(), 3);
+    assert!((vec[2] - 0.9).abs() < 1e-6);
 }
 
 // ── Feedback tests ───────────────────────────────────────────────────────────
@@ -427,8 +482,13 @@ async fn embed_client_uses_api_key_when_set() {
         .mount(&server)
         .await;
 
-    let client = EmbedClient::new(server.uri(), "test-model".into(), Some("test-key".into()))
-        .expect("build embed client");
+    let client = EmbedClient::new(
+        server.uri(),
+        EmbeddingApi::Ollama,
+        "test-model".into(),
+        Some("test-key".into()),
+    )
+    .expect("build embed client");
     let result = client.embed("hello").await;
     assert!(result.is_ok(), "should succeed with valid auth header");
 }

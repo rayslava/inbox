@@ -41,9 +41,14 @@ cargo run -- hash-password
 
 - Backends: `free_router` (dynamic pool of free OpenRouter models from the
   shir-man top-models index, hedged parallel dispatch), `openrouter`
-  (pinned paid model), `ollama` (local). Chain iterates `[[llm.backends]]`
-  top-to-bottom; order expresses priority. Recommended order:
-  `free_router` → `openrouter` (optional) → `ollama` (offline fallback).
+  (pinned paid model), `llama_cpp` (local llama.cpp `server`, OpenAI-compatible
+  `/v1/chat/completions` — reuses the openrouter client with a `base_url`
+  pointing at the server, usually no API key), `ollama` (local). Chain iterates
+  `[[llm.backends]]` top-to-bottom; order expresses priority. Recommended order:
+  `free_router` → `openrouter` (optional) → `llama_cpp`/`ollama` (offline fallback).
+- Embeddings (`[memory]`): `embedding_api` selects the wire dialect — `ollama`
+  (default, `POST /api/embed`) or `openai` (`POST /embeddings`, for a llama.cpp
+  server at `.../v1`).
 - Built-in tools: `scrape_page`, `download_file`, `crawl_url`; optional `web_search`.
 - Tool backend modes: `internal`, `shell`, `http` (per tool config).
 - Max tool turns controlled by `[llm].max_tool_turns`.

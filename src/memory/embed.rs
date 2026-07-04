@@ -2,10 +2,12 @@ use anodized::spec;
 use async_trait::async_trait;
 use inbox_core::{CoreError, EmbeddingProvider};
 
+use crate::config::EmbeddingApi;
 use crate::error::InboxError;
 
 pub struct EmbedClient {
     endpoint: String,
+    api: EmbeddingApi,
     model: String,
     api_key: Option<String>,
     client: reqwest::Client,
@@ -16,6 +18,7 @@ impl EmbedClient {
     /// Returns an error if the HTTP client cannot be built.
     pub fn new(
         endpoint: String,
+        api: EmbeddingApi,
         model: String,
         api_key: Option<String>,
     ) -> Result<Self, InboxError> {
@@ -25,6 +28,7 @@ impl EmbedClient {
             .map_err(|e| InboxError::Memory(format!("Failed to build embed HTTP client: {e}")))?;
         Ok(Self {
             endpoint,
+            api,
             model,
             api_key,
             client,
@@ -33,13 +37,18 @@ impl EmbedClient {
 
     /// Embed `text` and return the embedding vector.
     ///
+    /// Routes to the Ollama-native `/api/embed` or the OpenAI-compatible
+    /// `/embeddings` endpoint per the configured [`EmbeddingApi`].
+    ///
     /// # Errors
     /// Returns an error if the HTTP request fails or the response is unparseable.
     #[spec(requires: !text.is_empty())]
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>, InboxError> {
-        // Uses Ollama's native POST /api/embed endpoint.
-        // Response: {"embeddings": [[...f32 vector...]]}
-        let url = format!("{}/api/embed", self.endpoint);
+        let path = match self.api {
+            EmbeddingApi::Ollama => "/api/embed",
+            EmbeddingApi::Openai => "/embeddings",
+        };
+        let url = format!("{}{path}", self.endpoint);
         let body = serde_json::json!({
             "input": text,
             "model": self.model,
@@ -70,9 +79,15 @@ impl EmbedClient {
             .await
             .map_err(|e| InboxError::Memory(format!("Embedding parse error: {e}")))?;
 
-        let embedding: Vec<f32> = json["embeddings"][0]
+        // Ollama nests the vector under `embeddings[0]`; OpenAI under
+        // `data[0].embedding`.
+        let vector = match self.api {
+            EmbeddingApi::Ollama => &json["embeddings"][0],
+            EmbeddingApi::Openai => &json["data"][0]["embedding"],
+        };
+        let embedding: Vec<f32> = vector
             .as_array()
-            .ok_or_else(|| InboxError::Memory("Missing embeddings[0] in response".into()))?
+            .ok_or_else(|| InboxError::Memory("Missing embedding vector in response".into()))?
             .iter()
             .filter_map(|v| serde_json::from_value::<f32>(v.clone()).ok())
             .collect();
@@ -85,7 +100,7 @@ impl EmbedClient {
     }
 }
 
-/// Bridges the concrete Ollama-native client to the `inbox_core` trait boundary,
+/// Bridges the concrete embedding client to the `inbox_core` trait boundary,
 /// mapping `InboxError` into the dependency-light `CoreError`.
 #[async_trait]
 impl EmbeddingProvider for EmbedClient {

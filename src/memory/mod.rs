@@ -394,6 +394,7 @@ async fn resolve_embed_client(cfg: &MemoryConfig) -> Option<embed::EmbedClient> 
 
     let client = match embed::EmbedClient::new(
         endpoint.clone(),
+        cfg.embedding_api,
         cfg.embedding_model
             .clone()
             .unwrap_or_else(|| "nomic-embed-text".into()),

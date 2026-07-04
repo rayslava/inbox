@@ -18,6 +18,10 @@ pub struct OpenRouterClient {
     pub base_url: String,
     pub retries: u32,
     pub timeout: Duration,
+    /// Backend label used in logs, errors, and `:ENRICHED_BY:` provenance —
+    /// `"openrouter"` or `"llama_cpp"`, since both share this OpenAI-compatible
+    /// client.
+    label: &'static str,
     vision_supported: bool,
     semaphore: Option<Arc<Semaphore>>,
     client: reqwest::Client,
@@ -29,18 +33,31 @@ impl OpenRouterClient {
     ///
     /// # Errors
     /// Returns an error if the HTTP client cannot be built.
+    pub fn from_config(cfg: &LlmBackendConfig) -> Result<Self, InboxError> {
+        Self::from_config_labeled(cfg, "openrouter")
+    }
+
+    /// Create an OpenAI-compatible client tagged with `label`. Used for both
+    /// `openrouter` and `llama_cpp`, which speak the same wire protocol.
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP client cannot be built.
     #[spec(requires:
         !cfg.model.trim().is_empty()
         && !cfg.base_url.trim().is_empty()
         && cfg.timeout_secs > 0
         && cfg.retries > 0
+        && !label.is_empty()
     )]
-    pub fn from_config(cfg: &LlmBackendConfig) -> Result<Self, InboxError> {
+    pub fn from_config_labeled(
+        cfg: &LlmBackendConfig,
+        label: &'static str,
+    ) -> Result<Self, InboxError> {
         let client = crate::tls::client_builder()
             .connect_timeout(Duration::from_secs(cfg.connect_timeout_secs))
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .build()
-            .map_err(|e| InboxError::Llm(format!("Failed to build OpenRouter HTTP client: {e}")))?;
+            .map_err(|e| InboxError::Llm(format!("Failed to build {label} HTTP client: {e}")))?;
 
         Ok(Self {
             model: cfg.model.clone(),
@@ -48,6 +65,7 @@ impl OpenRouterClient {
             base_url: cfg.base_url.clone(),
             retries: cfg.retries,
             timeout: Duration::from_secs(cfg.timeout_secs),
+            label,
             vision_supported: cfg.vision_supported,
             semaphore: cfg.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             client,
@@ -114,8 +132,8 @@ struct ResponseMessage {
 
 #[async_trait]
 impl LlmClient for OpenRouterClient {
-    fn name(&self) -> &'static str {
-        "openrouter"
+    fn name(&self) -> &str {
+        self.label
     }
     fn model(&self) -> &str {
         &self.model
@@ -139,7 +157,8 @@ impl LlmClient for OpenRouterClient {
     async fn complete(&self, req: LlmRequest) -> Result<LlmCompletion, InboxError> {
         if let Some(d) = self.circuit.remaining() {
             return Err(InboxError::Llm(format!(
-                "openrouter circuit open: cooldown {}s remaining",
+                "{} circuit open: cooldown {}s remaining",
+                self.label,
                 d.as_secs()
             )));
         }
@@ -156,7 +175,7 @@ impl LlmClient for OpenRouterClient {
             &self.api_key,
             &self.model,
             &req,
-            "openrouter",
+            self.label,
         )
         .await;
         // Trip the cooldown on a transient outage; clear it on any success.

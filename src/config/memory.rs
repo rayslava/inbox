@@ -1,5 +1,17 @@
 use serde::Deserialize;
 
+/// Wire dialect of the embeddings endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingApi {
+    /// Ollama-native `POST /api/embed`, response `{"embeddings": [[...]]}`.
+    #[default]
+    Ollama,
+    /// OpenAI-compatible `POST /embeddings` (e.g. llama.cpp `server` at
+    /// `.../v1`), response `{"data": [{"embedding": [...]}]}`.
+    Openai,
+}
+
 /// Configuration for the persistent LLM memory store (Grafeo graph database).
 #[derive(Debug, Clone, Deserialize)]
 pub struct MemoryConfig {
@@ -8,9 +20,13 @@ pub struct MemoryConfig {
     pub enabled: bool,
     /// Grafeo database path. Defaults to `{attachments_dir}/memory.grafeo`.
     pub db_path: Option<String>,
-    /// OpenAI-compatible embeddings endpoint base URL
-    /// (e.g. `http://localhost:11434/v1` for Ollama).
+    /// Embeddings endpoint base URL. For `ollama` this is the Ollama base
+    /// (e.g. `http://localhost:11434`); for `openai` it includes the version
+    /// prefix (e.g. `http://localhost:8080/v1` for a llama.cpp `server`).
     pub embedding_endpoint: Option<String>,
+    /// Wire dialect of `embedding_endpoint`. Default: `ollama`.
+    #[serde(default)]
+    pub embedding_api: EmbeddingApi,
     /// Embedding model name (e.g. `nomic-embed-text`).
     pub embedding_model: Option<String>,
     /// Embedding vector dimensions. Auto-detected via probe call if not set.
@@ -55,6 +71,7 @@ impl Default for MemoryConfig {
             enabled: false,
             db_path: None,
             embedding_endpoint: None,
+            embedding_api: EmbeddingApi::default(),
             embedding_model: None,
             embedding_dims: None,
             embedding_api_key: None,
