@@ -85,12 +85,16 @@ impl EmbedClient {
             EmbeddingApi::Ollama => &json["embeddings"][0],
             EmbeddingApi::Openai => &json["data"][0]["embedding"],
         };
+        // Parse strictly: a non-numeric element (e.g. `null`) must fail, not be
+        // silently dropped — a truncated vector would corrupt dimension
+        // detection and the vector index.
         let embedding: Vec<f32> = vector
             .as_array()
             .ok_or_else(|| InboxError::Memory("Missing embedding vector in response".into()))?
             .iter()
-            .filter_map(|v| serde_json::from_value::<f32>(v.clone()).ok())
-            .collect();
+            .map(|v| serde_json::from_value::<f32>(v.clone()))
+            .collect::<Result<_, _>>()
+            .map_err(|e| InboxError::Memory(format!("Malformed embedding element: {e}")))?;
 
         if embedding.is_empty() {
             return Err(InboxError::Memory("Empty embedding vector".into()));

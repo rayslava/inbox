@@ -1,6 +1,6 @@
 use super::*;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 fn make_client(base_url: &str) -> OpenRouterClient {
     make_labeled_client(base_url, "openrouter")
@@ -168,6 +168,44 @@ fn parse_json_extracts_first_object_from_preamble() {
 fn parse_json_truly_malformed_returns_error() {
     let result = parse_llm_json_response("no braces here at all", "x");
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn empty_api_key_omits_authorization_header() {
+    let server = MockServer::start().await;
+    let body = serde_json::json!({
+        "choices": [{ "message": { "content": r#"{"title":"T","tags":[],"summary":"S"}"# } }]
+    });
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(|req: &Request| !req.headers.contains_key("authorization"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    // A llama.cpp backend configured with no key must not send `Bearer `.
+    let mut client = make_labeled_client(&server.uri(), "llama_cpp");
+    client.api_key = String::new();
+    let result = client.complete(LlmRequest::simple("sys", "user")).await;
+    assert!(result.is_ok(), "no-key request should succeed: {result:?}");
+}
+
+#[tokio::test]
+async fn non_empty_api_key_sends_bearer_header() {
+    let server = MockServer::start().await;
+    let body = serde_json::json!({
+        "choices": [{ "message": { "content": r#"{"title":"T","tags":[],"summary":"S"}"# } }]
+    });
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(header("authorization", "Bearer test-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let client = make_client(&server.uri()); // api_key = "test-key"
+    let result = client.complete(LlmRequest::simple("sys", "user")).await;
+    assert!(result.is_ok(), "keyed request should succeed: {result:?}");
 }
 
 #[tokio::test]

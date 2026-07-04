@@ -325,6 +325,42 @@ async fn embed_client_openai_api_parses_data_embedding() {
     assert!((vec[2] - 0.9).abs() < 1e-6);
 }
 
+#[tokio::test]
+async fn embed_client_rejects_malformed_vector_element() {
+    // A `null` element must fail the whole parse, not be silently dropped
+    // (a truncated vector would corrupt dimension detection / the index).
+    for (api, route, body) in [
+        (
+            EmbeddingApi::Ollama,
+            "/api/embed",
+            serde_json::json!({ "embeddings": [[0.1f32, serde_json::Value::Null, 0.3f32]] }),
+        ),
+        (
+            EmbeddingApi::Openai,
+            "/embeddings",
+            serde_json::json!({ "data": [{ "embedding": [0.1f32, serde_json::Value::Null, 0.3f32] }] }),
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(route))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(body),
+            )
+            .mount(&server)
+            .await;
+
+        let client = EmbedClient::new(server.uri(), api, "test-model".into(), None)
+            .expect("build embed client");
+        assert!(
+            client.embed("hello").await.is_err(),
+            "{api:?}: malformed element must error, not truncate"
+        );
+    }
+}
+
 // ── Feedback tests ───────────────────────────────────────────────────────────
 
 #[tokio::test]

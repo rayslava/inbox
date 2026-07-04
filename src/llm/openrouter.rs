@@ -251,10 +251,13 @@ pub(crate) async fn call_chat_completion(
 
     let url = format!("{base_url}/chat/completions");
     debug!(url = %url, model = %model, "Sending chat completion request");
-    let resp = client
-        .post(&url)
-        .bearer_auth(api_key)
-        .json(&body)
+    // Omit the header entirely when there is no key (local llama.cpp defaults to
+    // no auth); an empty `Bearer ` can be rejected by strict proxies.
+    let mut request = client.post(&url).json(&body);
+    if !api_key.trim().is_empty() {
+        request = request.bearer_auth(api_key);
+    }
+    let resp = request
         .send()
         .await
         .map_err(|e| InboxError::Llm(e.to_string()))?;
