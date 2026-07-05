@@ -10,7 +10,7 @@ use tracing::warn;
 use crate::error::InboxError;
 
 use super::MemoryEntry;
-use super::util::{format_vector, gql_escape, value_to_string};
+use super::util::{format_vector, gql_escape, value_to_f64, value_to_string};
 
 /// Identifies the vector space a chunk was embedded in. Chunks from a different
 /// fingerprint are never co-queried; changing any field forces a re-embed.
@@ -140,10 +140,13 @@ pub(super) fn upsert_kb_chunk(
     Ok(())
 }
 
-/// KB-only recall: hybrid vector+BM25 over `:KbChunk` (never touches `:Memory`).
-/// Results are filtered to `active_fp` so a stale-fingerprint chunk (left over
-/// from a model/chunker change not yet re-embedded) is never co-queried.
-/// Query/index errors are swallowed to an empty result, so this is infallible.
+/// KB-only recall over `:KbChunk` (never touches `:Memory`): hybrid vector+BM25,
+/// then BM25 text, then a **pure-vector cosine fallback** so semantic-only
+/// queries (cross-lingual, paraphrase, vague) still match when there is no
+/// lexical overlap. Results are filtered to `active_fp` so a stale-fingerprint
+/// chunk (left over from a model/chunker/prefix change not yet re-embedded) is
+/// never co-queried. Query/index errors are swallowed to an empty result, so
+/// this is infallible.
 pub(super) fn kb_recall_entries(
     db: &GrafeoDB,
     query: &str,
@@ -180,6 +183,38 @@ pub(super) fn kb_recall_entries(
         let entries = kb_node_ids_to_entries(db, &results, active_fp, limit);
         if !entries.is_empty() {
             return entries;
+        }
+    }
+
+    // Pure-vector fallback: `hybrid_search` needs lexical overlap to seed
+    // candidates, so a semantic-only query (cross-lingual, paraphrase, vague)
+    // otherwise finds nothing. Scan embeddings by cosine, fingerprint-filtered
+    // in the query so stale vector spaces never leak in. Mirrors memory recall.
+    if let Some(qvec) = query_vec {
+        let session = db.session();
+        let vec_str = format_vector(qvec);
+        if let Ok(result) = session.execute(&format!(
+            "MATCH (c:KbChunk) \
+             WHERE c.embedding IS NOT NULL AND c.fingerprint = '{fp}' \
+             WITH c, cosine_similarity(c.embedding, vector({vec_str})) AS score \
+             WHERE score > 0.5 \
+             RETURN c.id, c.value, score \
+             ORDER BY score DESC LIMIT {limit}",
+            fp = gql_escape(active_fp),
+        )) {
+            let mut entries = Vec::new();
+            for row in result.iter() {
+                if row.len() >= 3 {
+                    entries.push(MemoryEntry {
+                        key: value_to_string(&row[0]),
+                        value: value_to_string(&row[1]),
+                        score: value_to_f64(&row[2]),
+                    });
+                }
+            }
+            if !entries.is_empty() {
+                return entries;
+            }
         }
     }
 
@@ -295,5 +330,47 @@ mod tests {
         // Active fingerprint changed → stale chunk is filtered out at recall.
         let none = kb_recall_entries(&db, "quantum", None, 5, "NEW");
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn recall_finds_by_vector_without_lexical_overlap() {
+        let db = GrafeoDB::new_in_memory();
+        let chunk = KbChunkWrite {
+            id: "kb:org:n:v1:h",
+            value: "alpha bravo charlie",
+            embedding: Some(&[1.0, 0.0, 0.0]),
+            source: "org",
+            note_id: "n",
+            path: "/n.org",
+            fingerprint: "FP",
+        };
+        upsert_kb_chunk(&db, &chunk, "FP").expect("insert with embedding");
+
+        // Query text shares no tokens with the chunk; only the vector matches.
+        // Without the pure-vector fallback this returns empty (the cross-lingual bug).
+        let hits = kb_recall_entries(
+            &db,
+            "zzz totally unrelated words",
+            Some(&[1.0, 0.0, 0.0]),
+            5,
+            "FP",
+        );
+        assert!(
+            hits.iter().any(|e| e.value.contains("alpha")),
+            "pure-vector recall must find a semantically-matching chunk with no lexical overlap"
+        );
+
+        // A stale fingerprint must still exclude it even on the vector path.
+        let stale = kb_recall_entries(
+            &db,
+            "zzz totally unrelated words",
+            Some(&[1.0, 0.0, 0.0]),
+            5,
+            "OTHER",
+        );
+        assert!(
+            stale.is_empty(),
+            "vector fallback must honour the fingerprint filter"
+        );
     }
 }
