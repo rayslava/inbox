@@ -21,6 +21,13 @@ fn extract_note_id_falls_back_to_filename() {
     );
 }
 
+#[test]
+fn extract_note_id_ignores_stray_id_outside_drawer() {
+    // A `:ID:` in body text (not inside the file-level drawer) must not win.
+    let content = "#+title: Note\n* H\nbody mentioning :ID: not-a-real-id\n";
+    assert_eq!(extract_note_id(content, Path::new("/x/stem.org")), "stem");
+}
+
 #[tokio::test]
 async fn index_content_stores_retrievable_chunks() {
     let store = MemoryStore::new_in_memory().expect("store");

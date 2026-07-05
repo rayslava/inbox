@@ -15,15 +15,31 @@ use crate::memory::{MemoryStore, kb};
 /// Source tag for chunks indexed from the local org corpus.
 pub const ORG_SOURCE: &str = "org";
 
-/// Extract a note id: the org-roam file-level `:ID:` if present, else the file
-/// stem. Scans only the leading lines where a top-level PROPERTIES drawer lives.
+/// Extract the file-level note id: the `:ID:` **inside the top-of-file
+/// `:PROPERTIES:` drawer** (before the first heading), else the file stem. Only a
+/// drawer-scoped `:ID:` counts — a stray `:ID:` line in body text does not.
 #[must_use]
 pub fn extract_note_id(content: &str, path: &Path) -> String {
-    for line in content.lines().take(15) {
-        if let Some(rest) = line.trim().strip_prefix(":ID:") {
-            let id = rest.trim();
-            if !id.is_empty() {
-                return id.to_owned();
+    let mut in_props = false;
+    for line in content.lines().take(30) {
+        let t = line.trim();
+        // File-level drawer only: stop at the first heading.
+        let stars = t.chars().take_while(|&c| c == '*').count();
+        if stars > 0 && t[stars..].starts_with(' ') {
+            break;
+        }
+        if t.eq_ignore_ascii_case(":PROPERTIES:") {
+            in_props = true;
+        } else if in_props {
+            if t.eq_ignore_ascii_case(":END:") {
+                break;
+            }
+            let b = t.as_bytes();
+            if b.len() >= 4 && b[..4].eq_ignore_ascii_case(b":id:") {
+                let id = t[4..].trim();
+                if !id.is_empty() {
+                    return id.to_owned();
+                }
             }
         }
     }
@@ -33,19 +49,22 @@ pub fn extract_note_id(content: &str, path: &Path) -> String {
         .to_owned()
 }
 
-/// Chunk `content` and upsert each chunk. Returns the number of chunks stored.
+/// Chunk `content` and upsert each chunk under its **owning entry id** (the
+/// chunk's inherited `:ID:`, falling back to `fallback_note_id` when a chunk has
+/// none). Returns the number of chunks stored.
 ///
 /// # Errors
 /// Returns an error if a chunk fails to embed or write.
 pub async fn index_content(
     store: &MemoryStore,
     source: &str,
-    note_id: &str,
+    fallback_note_id: &str,
     path: &str,
     content: &str,
 ) -> Result<usize, InboxError> {
     let chunks = chunk::chunk_org(content);
     for c in &chunks {
+        let note_id = c.note_id.as_deref().unwrap_or(fallback_note_id);
         let id = kb::kb_id(source, note_id, chunk::CHUNKER_VERSION, &c.hash);
         store.kb_save(&id, &c.text, source, note_id, path).await?;
     }
