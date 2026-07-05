@@ -372,6 +372,8 @@ rescan_on_write      = true
 [memory]
 enabled = false
 # db_path = ""                          # default: {attachments_dir}/memory.grafeo
+# Org corpus root to index into the KB via `inbox index-kb` (no default).
+# kb_root = "/home/ray/orgmode"
 # embedding_api = "ollama"              # "ollama" (POST /api/embed) or "openai" (POST /embeddings)
 # For Ollama (default): base URL, uses POST /api/embed.
 # embedding_endpoint = "http://localhost:11434"

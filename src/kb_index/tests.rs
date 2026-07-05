@@ -91,6 +91,88 @@ async fn index_file_reads_and_indexes_with_id() {
     assert!(hits.iter().any(|e| e.key.starts_with("kb:org:id-42:")));
 }
 
+fn write_cfg(dir: &Path, body: &str) -> std::path::PathBuf {
+    let p = dir.join("config.toml");
+    let toml = format!(
+        "[general]\noutput_file = \"{out}\"\nattachments_dir = \"{att}\"\n\
+         log_level = \"info\"\nlog_format = \"pretty\"\n[llm]\n{body}",
+        out = dir.join("out.org").display(),
+        att = dir.display(),
+    );
+    std::fs::write(&p, toml).expect("write cfg");
+    p
+}
+
+#[tokio::test]
+async fn index_corpus_indexes_configured_root() {
+    let dir = tempfile::tempdir().expect("dir");
+    let corpus = dir.path().join("corpus");
+    std::fs::create_dir_all(&corpus).expect("mkdir");
+    std::fs::write(
+        corpus.join("note.org"),
+        ":PROPERTIES:\n:ID: n1\n:END:\n* T\nunique kbcorpustoken\n",
+    )
+    .expect("write note");
+    // No db_path → exercises the `{attachments_dir}/memory.grafeo` default.
+    let cfg_path = write_cfg(
+        dir.path(),
+        &format!(
+            "[memory]\nenabled = true\nkb_root = \"{root}\"\n",
+            root = corpus.display(),
+        ),
+    );
+    let cfg = crate::config::load(&cfg_path).expect("load cfg");
+    let n = super::index_corpus(&cfg).await.expect("index_corpus");
+    assert!(n >= 1, "should index the corpus note");
+}
+
+#[tokio::test]
+async fn index_corpus_errors_without_kb_root() {
+    let dir = tempfile::tempdir().expect("dir");
+    let cfg_path = write_cfg(dir.path(), "[memory]\nenabled = true\n");
+    let cfg = crate::config::load(&cfg_path).expect("load cfg");
+    assert!(
+        super::index_corpus(&cfg).await.is_err(),
+        "missing kb_root must error"
+    );
+}
+
+#[tokio::test]
+async fn index_corpus_errors_on_nonexistent_kb_root() {
+    let dir = tempfile::tempdir().expect("dir");
+    let missing = dir.path().join("does-not-exist");
+    let cfg_path = write_cfg(
+        dir.path(),
+        &format!(
+            "[memory]\nenabled = true\ndb_path = \"{db}\"\nkb_root = \"{root}\"\n",
+            db = dir.path().join("m.grafeo").display(),
+            root = missing.display(),
+        ),
+    );
+    let cfg = crate::config::load(&cfg_path).expect("load cfg");
+    assert!(
+        super::index_corpus(&cfg).await.is_err(),
+        "a nonexistent kb_root must error, not silently index 0"
+    );
+}
+
+#[tokio::test]
+async fn index_corpus_errors_when_memory_disabled() {
+    let dir = tempfile::tempdir().expect("dir");
+    let cfg_path = write_cfg(
+        dir.path(),
+        &format!(
+            "[memory]\nenabled = false\nkb_root = \"{r}\"\n",
+            r = dir.path().display()
+        ),
+    );
+    let cfg = crate::config::load(&cfg_path).expect("load cfg");
+    assert!(
+        super::index_corpus(&cfg).await.is_err(),
+        "disabled memory must error"
+    );
+}
+
 #[tokio::test]
 async fn index_directory_indexes_org_and_skips_others() {
     let dir = tempfile::tempdir().expect("dir");

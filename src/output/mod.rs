@@ -1,6 +1,10 @@
+// Used only by the `NullWriter` test/helper impl below.
+#[cfg(any(test, feature = "test-helpers"))]
 use async_trait::async_trait;
+#[cfg(any(test, feature = "test-helpers"))]
 use inbox_core::CoreError;
 
+#[cfg(any(test, feature = "test-helpers"))]
 use crate::message::ProcessedMessage;
 
 pub mod org_file;

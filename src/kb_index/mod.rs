@@ -116,6 +116,40 @@ pub async fn index_directory(store: &MemoryStore, dir: &Path) -> Result<usize, I
     Ok(total)
 }
 
+/// Index the whole org corpus configured at `[memory].kb_root` into the KB:
+/// open the memory store, then `index_directory` over the root. The `main`
+/// `index-kb` command is a thin wrapper over this (kept testable here).
+///
+/// Opens only the `MemoryStore` (async, no `block_on`, runtime-flavor safe) —
+/// it does **not** build the LLM chain, so indexing never triggers backend
+/// startup side effects (e.g. a `free_router` pool fetch).
+///
+/// # Errors
+/// Returns an error if `kb_root` is unset or not a directory, memory is
+/// disabled, the store cannot be opened, or the sweep fails.
+pub async fn index_corpus(cfg: &crate::config::Config) -> Result<usize, InboxError> {
+    let kb_root = cfg.memory.kb_root.as_deref().ok_or_else(|| {
+        InboxError::Memory("[memory].kb_root is not set (org corpus directory)".to_owned())
+    })?;
+    if !cfg.memory.enabled {
+        return Err(InboxError::Memory(
+            "memory is disabled — set [memory].enabled = true and configure embeddings".to_owned(),
+        ));
+    }
+    let root = Path::new(kb_root);
+    if !root.is_dir() {
+        return Err(InboxError::Memory(format!(
+            "[memory].kb_root is not a directory: {kb_root}"
+        )));
+    }
+    let db_path = cfg.memory.db_path.as_ref().map_or_else(
+        || cfg.general.attachments_dir.join("memory.grafeo"),
+        PathBuf::from,
+    );
+    let store = MemoryStore::open(&cfg.memory, &db_path).await?;
+    index_directory(&store, root).await
+}
+
 /// Recursively collect indexable `*.org` files, skipping hidden entries,
 /// `*.gpg`, and Syncthing conflict copies.
 fn collect_org_files(root: &Path) -> Vec<PathBuf> {

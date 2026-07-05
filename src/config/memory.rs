@@ -20,6 +20,9 @@ pub struct MemoryConfig {
     pub enabled: bool,
     /// Grafeo database path. Defaults to `{attachments_dir}/memory.grafeo`.
     pub db_path: Option<String>,
+    /// Root directory of the org corpus to index into the KB (used by the
+    /// `index-kb` command / reindex). No default — required to run indexing.
+    pub kb_root: Option<String>,
     /// Embeddings endpoint base URL. For `ollama` this is the Ollama base
     /// (e.g. `http://localhost:11434`); for `openai` it includes the version
     /// prefix (e.g. `http://localhost:8080/v1` for a llama.cpp `server`).
@@ -76,6 +79,7 @@ impl Default for MemoryConfig {
         Self {
             enabled: false,
             db_path: None,
+            kb_root: None,
             embedding_endpoint: None,
             embedding_api: EmbeddingApi::default(),
             embedding_model: None,

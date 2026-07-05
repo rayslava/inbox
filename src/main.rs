@@ -37,6 +37,8 @@ struct Cli {
 enum Commands {
     /// Generate an Argon2id password hash for use in `admin.password_hash`
     HashPassword,
+    /// Index the org KB corpus (`[memory].kb_root`) into the second-brain store.
+    IndexKb,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -81,6 +83,10 @@ async fn main() -> Result<()> {
 
     info!(version = env!("CARGO_PKG_VERSION"), "inbox starting");
 
+    if let Some(Commands::IndexKb) = cli.command {
+        return index_kb_cmd(&cfg).await;
+    }
+
     let prometheus_handle = install_metrics();
 
     // Shared state
@@ -116,28 +122,7 @@ async fn main() -> Result<()> {
     tokio::spawn(async move { pipeline_clone.run(rx).await });
 
     let telegram_shared = adapters::telegram::TelegramShared::new();
-
-    let telegram_notifier = if cfg.adapters.telegram.enabled
-        && !cfg.adapters.telegram.bot_token.is_empty()
-    {
-        match adapters::telegram::build_bot(&cfg.adapters.telegram.bot_token) {
-            Ok(bot) => Some(Arc::new(
-                inbox::adapters::telegram_notifier::resume::TelegramResumeNotifier::from_shared(
-                    bot,
-                    &telegram_shared,
-                ),
-            )),
-            Err(e) => {
-                warn!(
-                    ?e,
-                    "Failed to build Telegram bot for resume notifier; resume notifications disabled"
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let telegram_notifier = build_telegram_resume_notifier(&cfg, &telegram_shared);
 
     // Spawn background resume task if the pending store is available.
     if let Some(store) = pending_store {
@@ -314,6 +299,43 @@ async fn wait_for_shutdown_signal() {
     {
         let _ = signal::ctrl_c().await;
     }
+}
+
+/// Build the Telegram resume notifier from a shared bot handle, or `None` when
+/// Telegram is disabled/unconfigured or the bot fails to build.
+fn build_telegram_resume_notifier(
+    cfg: &config::Config,
+    telegram_shared: &adapters::telegram::TelegramShared,
+) -> Option<Arc<inbox::adapters::telegram_notifier::resume::TelegramResumeNotifier>> {
+    if !cfg.adapters.telegram.enabled || cfg.adapters.telegram.bot_token.is_empty() {
+        return None;
+    }
+    match adapters::telegram::build_bot(&cfg.adapters.telegram.bot_token) {
+        Ok(bot) => Some(Arc::new(
+            inbox::adapters::telegram_notifier::resume::TelegramResumeNotifier::from_shared(
+                bot,
+                telegram_shared,
+            ),
+        )),
+        Err(e) => {
+            warn!(
+                ?e,
+                "Failed to build Telegram bot for resume notifier; resume notifications disabled"
+            );
+            None
+        }
+    }
+}
+
+/// `index-kb`: thin wrapper over `kb_index::index_corpus` (the testable
+/// orchestration lives in the library); prints the chunk count.
+async fn index_kb_cmd(cfg: &config::Config) -> Result<()> {
+    let count = inbox::kb_index::index_corpus(cfg)
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+    info!(count, "index-kb complete");
+    println!("indexed {count} chunks");
+    Ok(())
 }
 
 fn hash_password_cmd() -> Result<()> {

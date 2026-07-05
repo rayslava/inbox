@@ -36,7 +36,7 @@ pub struct ResumeTaskArgs {
 /// Run the background resume loop.
 ///
 /// Wakes every `interval_secs`, checks that the pipeline is idle, then
-/// processes up to [`BATCH_SIZE`] pending items. Exits cleanly when
+/// processes up to `BATCH_SIZE` pending items. Exits cleanly when
 /// `shutdown` is cancelled.
 #[spec(requires: args.config.pipeline.resume.interval_secs > 0)]
 pub async fn run(args: ResumeTaskArgs) {
