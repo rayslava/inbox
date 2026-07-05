@@ -82,3 +82,53 @@ async fn index_directory_indexes_org_and_skips_others() {
     let hidden = store.kb_recall("hidden", 5).await.expect("recall hidden");
     assert!(hidden.is_empty(), "hidden file must not be indexed");
 }
+
+#[tokio::test]
+async fn index_directory_skips_syncthing_artifacts() {
+    let dir = tempfile::tempdir().expect("dir");
+    tokio::fs::write(dir.path().join("real.org"), "* R\nrealtoken\n")
+        .await
+        .expect("write real");
+    // Syncthing version history: a hidden `.stversions/` directory.
+    let stver = dir.path().join(".stversions");
+    tokio::fs::create_dir(&stver)
+        .await
+        .expect("mkdir stversions");
+    tokio::fs::write(stver.join("real.org"), "* V\nversiontoken\n")
+        .await
+        .expect("write versioned");
+    // Syncthing conflict copy.
+    tokio::fs::write(
+        dir.path()
+            .join("real.sync-conflict-20260602-224449-DBLEJ2Q.org"),
+        "* C\nconflicttoken\n",
+    )
+    .await
+    .expect("write conflict");
+
+    let store = MemoryStore::new_in_memory().expect("store");
+    let n = index_directory(&store, dir.path())
+        .await
+        .expect("index_directory");
+    assert_eq!(
+        n, 1,
+        "only real.org — .stversions and sync-conflict excluded"
+    );
+
+    assert!(
+        store
+            .kb_recall("versiontoken", 5)
+            .await
+            .expect("recall")
+            .is_empty(),
+        ".stversions copy must not be indexed"
+    );
+    assert!(
+        store
+            .kb_recall("conflicttoken", 5)
+            .await
+            .expect("recall")
+            .is_empty(),
+        "sync-conflict copy must not be indexed"
+    );
+}
