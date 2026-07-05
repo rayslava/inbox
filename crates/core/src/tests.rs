@@ -1,4 +1,30 @@
-use super::{CoreError, UrlContent, api_tag};
+use super::{CoreError, EmbeddingProvider, UrlContent, api_tag};
+
+/// A provider that only implements `embed`, echoing the text back through an
+/// error so `embed_document`/`embed_query` exercise the trait's default
+/// (verbatim delegation, no prefix).
+struct EchoProvider;
+
+#[async_trait::async_trait]
+impl EmbeddingProvider for EchoProvider {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, CoreError> {
+        Err(CoreError::VectorStore(text.to_owned()))
+    }
+}
+
+#[tokio::test]
+async fn embed_document_and_query_default_to_verbatim_embed() {
+    let p = EchoProvider;
+    for got in [
+        p.embed_document("hello").await,
+        p.embed_query("hello").await,
+    ] {
+        match got {
+            Err(CoreError::VectorStore(s)) => assert_eq!(s, "hello", "default must not alter text"),
+            other => panic!("expected echoed text, got {other:?}"),
+        }
+    }
+}
 
 #[test]
 fn api_tag_names_crate_and_phase() {

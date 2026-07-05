@@ -10,6 +10,12 @@ pub struct EmbedClient {
     api: EmbeddingApi,
     model: String,
     api_key: Option<String>,
+    /// Task prefix prepended when embedding a document/passage for storage
+    /// (asymmetric embedders like nomic: `"search_document: "`). `None` = none.
+    document_prefix: Option<String>,
+    /// Task prefix prepended when embedding a search query
+    /// (nomic: `"search_query: "`). `None` = none.
+    query_prefix: Option<String>,
     client: reqwest::Client,
 }
 
@@ -31,11 +37,52 @@ impl EmbedClient {
             api,
             model,
             api_key,
+            document_prefix: None,
+            query_prefix: None,
             client,
         })
     }
 
-    /// Embed `text` and return the embedding vector.
+    /// Set the asymmetric task prefixes for `embed_document` / `embed_query`.
+    #[must_use]
+    pub fn with_prefixes(mut self, document: Option<String>, query: Option<String>) -> Self {
+        self.document_prefix = document;
+        self.query_prefix = query;
+        self
+    }
+
+    /// Embed a document/passage for storage, applying the document prefix.
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP request fails or the response is unparseable.
+    #[spec(requires: !text.is_empty())]
+    pub async fn embed_document(&self, text: &str) -> Result<Vec<f32>, InboxError> {
+        self.embed_prefixed(self.document_prefix.as_deref(), text)
+            .await
+    }
+
+    /// Embed a search query, applying the query prefix.
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP request fails or the response is unparseable.
+    #[spec(requires: !text.is_empty())]
+    pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>, InboxError> {
+        self.embed_prefixed(self.query_prefix.as_deref(), text)
+            .await
+    }
+
+    async fn embed_prefixed(
+        &self,
+        prefix: Option<&str>,
+        text: &str,
+    ) -> Result<Vec<f32>, InboxError> {
+        match prefix {
+            Some(p) if !p.is_empty() => self.embed(&format!("{p}{text}")).await,
+            _ => self.embed(text).await,
+        }
+    }
+
+    /// Embed `text` verbatim and return the embedding vector.
     ///
     /// Routes to the Ollama-native `/api/embed` or the OpenAI-compatible
     /// `/embeddings` endpoint per the configured [`EmbeddingApi`].
@@ -110,6 +157,18 @@ impl EmbedClient {
 impl EmbeddingProvider for EmbedClient {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, CoreError> {
         EmbedClient::embed(self, text)
+            .await
+            .map_err(CoreError::from)
+    }
+
+    async fn embed_document(&self, text: &str) -> Result<Vec<f32>, CoreError> {
+        EmbedClient::embed_document(self, text)
+            .await
+            .map_err(CoreError::from)
+    }
+
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, CoreError> {
+        EmbedClient::embed_query(self, text)
             .await
             .map_err(CoreError::from)
     }

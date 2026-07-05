@@ -1,4 +1,4 @@
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{MemoryStore, embed::EmbedClient, resolve_embed_client};
@@ -359,6 +359,94 @@ async fn embed_client_rejects_malformed_vector_element() {
             "{api:?}: malformed element must error, not truncate"
         );
     }
+}
+
+#[tokio::test]
+async fn embed_applies_task_prefixes() {
+    let server = MockServer::start().await;
+    let ok = |v: f64| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "application/json")
+            .set_body_json(serde_json::json!({ "embeddings": [[v]] }))
+    };
+    // Distinct mocks keyed on the (prefixed) input actually sent.
+    Mock::given(method("POST"))
+        .and(path("/api/embed"))
+        .and(body_string_contains("search_document: hello"))
+        .respond_with(ok(0.1))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/embed"))
+        .and(body_string_contains("search_query: hello"))
+        .respond_with(ok(0.2))
+        .mount(&server)
+        .await;
+
+    let client = EmbedClient::new(server.uri(), EmbeddingApi::Ollama, "m".into(), None)
+        .expect("build")
+        .with_prefixes(
+            Some("search_document: ".into()),
+            Some("search_query: ".into()),
+        );
+
+    // Each routes to the mock matching its prefix; a missing prefix → no match → err.
+    assert!(
+        client.embed_document("hello").await.is_ok(),
+        "document prefix not applied"
+    );
+    assert!(
+        client.embed_query("hello").await.is_ok(),
+        "query prefix not applied"
+    );
+}
+
+#[tokio::test]
+async fn embed_prefixes_apply_through_trait_object() {
+    use inbox_core::EmbeddingProvider;
+    let server = MockServer::start().await;
+    for frag in ["search_document: hi", "search_query: hi"] {
+        Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .and(body_string_contains(frag))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(serde_json::json!({ "embeddings": [[0.4f32]] })),
+            )
+            .mount(&server)
+            .await;
+    }
+    let client = EmbedClient::new(server.uri(), EmbeddingApi::Ollama, "m".into(), None)
+        .expect("build")
+        .with_prefixes(
+            Some("search_document: ".into()),
+            Some("search_query: ".into()),
+        );
+    let provider: &dyn EmbeddingProvider = &client;
+    assert!(provider.embed_document("hi").await.is_ok());
+    assert!(provider.embed_query("hi").await.is_ok());
+}
+
+#[tokio::test]
+async fn embed_without_prefixes_sends_verbatim() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/embed"))
+        .and(body_string_contains("\"input\":\"hello\""))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({ "embeddings": [[0.3f32]] })),
+        )
+        .mount(&server)
+        .await;
+
+    let client =
+        EmbedClient::new(server.uri(), EmbeddingApi::Ollama, "m".into(), None).expect("build");
+    // No prefixes configured → document/query embed the raw text.
+    assert!(client.embed_document("hello").await.is_ok());
+    assert!(client.embed_query("hello").await.is_ok());
 }
 
 // ── Feedback tests ───────────────────────────────────────────────────────────

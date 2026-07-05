@@ -33,6 +33,12 @@ pub struct MemoryConfig {
     pub embedding_dims: Option<usize>,
     /// Optional API key for the embedding endpoint.
     pub embedding_api_key: Option<String>,
+    /// Task prefix prepended to stored documents/passages before embedding.
+    /// Asymmetric embedders need this — nomic: `"search_document: "`. `None` = none.
+    pub embedding_document_prefix: Option<String>,
+    /// Task prefix prepended to search queries before embedding.
+    /// nomic: `"search_query: "`. `None` = none.
+    pub embedding_query_prefix: Option<String>,
 
     // ── Pre-load settings (active whenever `enabled = true`) ─────────────
     /// Maximum number of recalled memories to inject into the LLM context.
@@ -75,6 +81,8 @@ impl Default for MemoryConfig {
             embedding_model: None,
             embedding_dims: None,
             embedding_api_key: None,
+            embedding_document_prefix: None,
+            embedding_query_prefix: None,
             preload_max_memories: default_preload_max_memories(),
             preload_graph_hops: default_preload_graph_hops(),
             preload_feedback: true,

@@ -113,6 +113,7 @@ impl MemoryStore {
             metric: "cosine".to_owned(),
             normalization: "none".to_owned(),
             chunker_version: crate::kb_index::chunk::CHUNKER_VERSION.to_owned(),
+            doc_prefix: cfg.embedding_document_prefix.clone().unwrap_or_default(),
         };
 
         Ok(Self {
@@ -130,7 +131,7 @@ impl MemoryStore {
     pub async fn save(&self, key: &str, value: &str) -> Result<(), InboxError> {
         let start = std::time::Instant::now();
         let embedding: Option<Vec<f32>> = if let Some(embed) = &self.embed_client {
-            embed.embed(value).await.ok()
+            embed.embed_document(value).await.ok()
         } else {
             None
         };
@@ -226,7 +227,7 @@ impl MemoryStore {
     pub async fn recall(&self, query: &str, limit: usize) -> Result<Vec<MemoryEntry>, InboxError> {
         let start = std::time::Instant::now();
         let query_vec: Option<Vec<f32>> = if let Some(embed) = &self.embed_client {
-            embed.embed(query).await.ok()
+            embed.embed_query(query).await.ok()
         } else {
             None
         };
@@ -306,7 +307,7 @@ impl MemoryStore {
         path: &str,
     ) -> Result<(), InboxError> {
         let embedding: Option<Vec<f32>> = if let Some(embed) = &self.embed_client {
-            embed.embed(value).await.ok()
+            embed.embed_document(value).await.ok()
         } else {
             None
         };
@@ -345,7 +346,7 @@ impl MemoryStore {
         limit: usize,
     ) -> Result<Vec<MemoryEntry>, InboxError> {
         let query_vec: Option<Vec<f32>> = if let Some(embed) = &self.embed_client {
-            embed.embed(query).await.ok()
+            embed.embed_query(query).await.ok()
         } else {
             None
         };
@@ -384,6 +385,7 @@ impl MemoryStore {
                 metric: "cosine".to_owned(),
                 normalization: "none".to_owned(),
                 chunker_version: crate::kb_index::chunk::CHUNKER_VERSION.to_owned(),
+                doc_prefix: String::new(),
             },
         })
     }
@@ -400,7 +402,10 @@ async fn resolve_embed_client(cfg: &MemoryConfig) -> Option<embed::EmbedClient> 
             .unwrap_or_else(|| "nomic-embed-text".into()),
         cfg.embedding_api_key.clone(),
     ) {
-        Ok(c) => c,
+        Ok(c) => c.with_prefixes(
+            cfg.embedding_document_prefix.clone(),
+            cfg.embedding_query_prefix.clone(),
+        ),
         Err(e) => {
             warn!("Failed to build embed client, disabling embeddings: {e}");
             return None;

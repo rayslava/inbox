@@ -21,6 +21,11 @@ pub struct EmbeddingFingerprint {
     pub metric: String,
     pub normalization: String,
     pub chunker_version: String,
+    /// The `embed_document` task prefix baked into every stored chunk vector
+    /// (empty for symmetric embedders). Part of the vector-space identity:
+    /// changing it must invalidate old chunks, since query vectors would then
+    /// be compared against documents embedded under a different task prompt.
+    pub doc_prefix: String,
 }
 
 impl EmbeddingFingerprint {
@@ -28,8 +33,13 @@ impl EmbeddingFingerprint {
     #[must_use]
     pub fn tag(&self) -> String {
         format!(
-            "{}|{}|{}|{}|{}",
-            self.model, self.dims, self.metric, self.normalization, self.chunker_version
+            "{}|{}|{}|{}|{}|{}",
+            self.model,
+            self.dims,
+            self.metric,
+            self.normalization,
+            self.chunker_version,
+            self.doc_prefix
         )
     }
 }
@@ -226,8 +236,16 @@ mod tests {
             metric: "cosine".into(),
             normalization: "none".into(),
             chunker_version: "v1".into(),
+            doc_prefix: String::new(),
         };
-        assert_eq!(fp.tag(), "nomic|768|cosine|none|v1");
+        assert_eq!(fp.tag(), "nomic|768|cosine|none|v1|");
+        // Enabling a document prefix changes the vector-space identity, so old
+        // unprefixed chunks stop matching and are filtered from recall.
+        let prefixed = EmbeddingFingerprint {
+            doc_prefix: "search_document: ".into(),
+            ..fp.clone()
+        };
+        assert_ne!(fp.tag(), prefixed.tag());
     }
 
     #[test]

@@ -381,6 +381,10 @@ enabled = false
 # embedding_model = "nomic-embed-text"
 # embedding_dims = 768                  # optional: auto-detected from endpoint on startup
 # embedding_api_key = ""
+# Asymmetric embedders (nomic-*) need task prefixes: one for stored passages,
+# one for queries. Omit both for symmetric models (bge, most OpenAI). For nomic:
+# embedding_document_prefix = "search_document: "
+# embedding_query_prefix = "search_query: "
 
 # When memory is enabled, relevant memories are always pre-loaded into the LLM
 # context before enrichment (no toggle — enabled = true means pre-load is active).

@@ -31,7 +31,7 @@ mod tests {
     /// Embeds through any core `EmbeddingProvider` — the future RAG path drives
     /// the trait, never the concrete inbox client.
     async fn embed_query_dims(provider: &dyn EmbeddingProvider, query: &str) -> usize {
-        provider.embed(query).await.map_or(0, |v| v.len())
+        provider.embed_query(query).await.map_or(0, |v| v.len())
     }
 
     #[test]
