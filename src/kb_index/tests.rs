@@ -43,6 +43,36 @@ async fn index_content_stores_retrievable_chunks() {
 }
 
 #[tokio::test]
+async fn index_content_reindex_replaces_stale_chunks() {
+    let store = MemoryStore::new_in_memory().expect("store");
+    index_content(&store, "org", "n", "/n.org", "* H\noldtoken content\n")
+        .await
+        .expect("index v1");
+    // Re-index the same path with edited content → transactional replace.
+    index_content(&store, "org", "n", "/n.org", "* H\nnewtoken content\n")
+        .await
+        .expect("index v2");
+
+    assert!(
+        store
+            .kb_recall("newtoken", 5)
+            .await
+            .expect("recall")
+            .iter()
+            .any(|e| e.value.contains("newtoken")),
+        "new content indexed"
+    );
+    assert!(
+        store
+            .kb_recall("oldtoken", 5)
+            .await
+            .expect("recall")
+            .is_empty(),
+        "stale chunk must be removed by the replace"
+    );
+}
+
+#[tokio::test]
 async fn index_file_reads_and_indexes_with_id() {
     let dir = tempfile::tempdir().expect("dir");
     let path = dir.path().join("note.org");

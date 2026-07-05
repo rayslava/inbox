@@ -4,6 +4,8 @@
 //! are content-agnostic (org notes today; tax docs / PDFs / articles later),
 //! distinguished by a `source` property and a namespaced `id`.
 
+use std::collections::HashSet;
+
 use grafeo::{GrafeoDB, NodeId};
 use tracing::warn;
 
@@ -97,30 +99,13 @@ pub(super) fn upsert_kb_chunk(
 
     let session = db.session();
     let id_esc = gql_escape(chunk.id);
-    let props = format!(
-        "id: '{id_esc}', value: '{val}', kind: 'kb-chunk', source: '{src}', \
-         note_id: '{nid}', path: '{path}', fingerprint: '{fp}'",
-        val = gql_escape(chunk.value),
-        src = gql_escape(chunk.source),
-        nid = gql_escape(chunk.note_id),
-        path = gql_escape(chunk.path),
-        fp = gql_escape(chunk.fingerprint),
-    );
 
     let existing = session
         .execute(&format!("MATCH (c:KbChunk {{id: '{id_esc}'}}) RETURN c.id"))
         .map_err(|e| InboxError::Memory(format!("kb upsert check: {e}")))?;
 
     let stmt = if existing.is_empty() {
-        chunk.embedding.map_or_else(
-            || format!("INSERT (:KbChunk {{{props}}})"),
-            |emb| {
-                format!(
-                    "INSERT (:KbChunk {{{props}, embedding: vector({})}})",
-                    format_vector(emb)
-                )
-            },
-        )
+        kb_insert_stmt(chunk)
     } else {
         let set_embedding = chunk
             .embedding
@@ -138,6 +123,108 @@ pub(super) fn upsert_kb_chunk(
         .execute(&stmt)
         .map_err(|e| InboxError::Memory(format!("kb upsert: {e}")))?;
     Ok(())
+}
+
+/// Build the `INSERT (:KbChunk {…})` statement for a chunk (with optional
+/// embedding). Used by the upsert insert-branch and the transactional reindex.
+fn kb_insert_stmt(chunk: &KbChunkWrite<'_>) -> String {
+    let props = format!(
+        "id: '{id}', value: '{val}', kind: 'kb-chunk', source: '{src}', \
+         note_id: '{nid}', path: '{path}', fingerprint: '{fp}'",
+        id = gql_escape(chunk.id),
+        val = gql_escape(chunk.value),
+        src = gql_escape(chunk.source),
+        nid = gql_escape(chunk.note_id),
+        path = gql_escape(chunk.path),
+        fp = gql_escape(chunk.fingerprint),
+    );
+    chunk.embedding.map_or_else(
+        || format!("INSERT (:KbChunk {{{props}}})"),
+        |emb| {
+            format!(
+                "INSERT (:KbChunk {{{props}, embedding: vector({})}})",
+                format_vector(emb)
+            )
+        },
+    )
+}
+
+/// A pre-embedded chunk ready for a transactional reindex write.
+pub(super) struct PreparedChunk {
+    pub id: String,
+    pub note_id: String,
+    pub text: String,
+    pub embedding: Option<Vec<f32>>,
+}
+
+/// Atomically replace the chunk set for a `(source, path[, note_scope])` unit:
+/// in a single Grafeo transaction, delete the prior chunks and insert `prepared`
+/// (already embedded outside the transaction). Rolls back on any failure so a
+/// source is never left empty and concurrent recall never sees a gap.
+///
+/// `note_scope = None` deletes every chunk at `(source, path)` — the org-file
+/// case (subtrees may have been added/removed). `Some(note_id)` scopes deletion
+/// to one note — the shared-attachment case (a file linked by several notes).
+pub(super) fn reindex_chunks(
+    db: &GrafeoDB,
+    source: &str,
+    path: &str,
+    note_scope: Option<&str>,
+    prepared: &[PreparedChunk],
+    active_fp: &str,
+) -> Result<(), InboxError> {
+    let session = db.session();
+    session
+        .execute("START TRANSACTION")
+        .map_err(|e| InboxError::Memory(format!("kb reindex begin: {e}")))?;
+
+    let run = || -> Result<(), InboxError> {
+        let note_pred = note_scope
+            .map(|n| format!(" AND c.note_id = '{}'", gql_escape(n)))
+            .unwrap_or_default();
+        let del = format!(
+            "MATCH (c:KbChunk) WHERE c.source = '{}' AND c.path = '{}'{note_pred} DETACH DELETE c",
+            gql_escape(source),
+            gql_escape(path),
+        );
+        session
+            .execute(&del)
+            .map_err(|e| InboxError::Memory(format!("kb reindex delete: {e}")))?;
+
+        // Chunk ids are content-hashed, so two identical chunks under the same
+        // note collapse to one id — insert each id once (the old upsert path
+        // deduped this; a blind insert would create duplicate nodes).
+        let mut inserted: HashSet<&str> = HashSet::new();
+        for c in prepared {
+            if !inserted.insert(c.id.as_str()) {
+                continue;
+            }
+            let write = KbChunkWrite {
+                id: &c.id,
+                value: &c.text,
+                embedding: c.embedding.as_deref(),
+                source,
+                note_id: &c.note_id,
+                path,
+                fingerprint: active_fp,
+            };
+            session
+                .execute(&kb_insert_stmt(&write))
+                .map_err(|e| InboxError::Memory(format!("kb reindex insert: {e}")))?;
+        }
+        Ok(())
+    };
+
+    match run() {
+        Ok(()) => session
+            .execute("COMMIT")
+            .map(|_| ())
+            .map_err(|e| InboxError::Memory(format!("kb reindex commit: {e}"))),
+        Err(e) => {
+            let _ = session.execute("ROLLBACK");
+            Err(e)
+        }
+    }
 }
 
 /// KB-only recall over `:KbChunk` (never touches `:Memory`): hybrid vector+BM25,
@@ -258,10 +345,86 @@ fn kb_node_ids_to_entries(
 #[cfg(test)]
 mod tests {
     use super::{
-        EmbeddingFingerprint, KbChunkWrite, kb_id, kb_recall_entries, memory_id, upsert_kb_chunk,
+        EmbeddingFingerprint, KbChunkWrite, PreparedChunk, kb_id, kb_recall_entries, memory_id,
+        reindex_chunks, upsert_kb_chunk,
     };
     use crate::error::InboxError;
     use grafeo::GrafeoDB;
+
+    fn note_chunk_count(db: &GrafeoDB, note_id: &str) -> usize {
+        db.session()
+            .execute(&format!(
+                "MATCH (c:KbChunk {{note_id: '{note_id}'}}) RETURN c.id"
+            ))
+            .map_or(0, |r| r.iter().count())
+    }
+
+    #[test]
+    fn reindex_note_scope_only_replaces_that_note() {
+        let db = GrafeoDB::new_in_memory();
+        let prep = |note: &str, h: &str, t: &str| PreparedChunk {
+            id: kb_id("attachment", note, "v1", h),
+            note_id: note.to_owned(),
+            text: t.to_owned(),
+            embedding: None,
+        };
+        // Two notes share one attachment path.
+        reindex_chunks(
+            &db,
+            "attachment",
+            "/f.pdf",
+            Some("A"),
+            &[prep("A", "h1", "a")],
+            "FP",
+        )
+        .expect("A");
+        reindex_chunks(
+            &db,
+            "attachment",
+            "/f.pdf",
+            Some("B"),
+            &[prep("B", "h2", "b")],
+            "FP",
+        )
+        .expect("B");
+        assert_eq!(note_chunk_count(&db, "A"), 1);
+        assert_eq!(note_chunk_count(&db, "B"), 1);
+
+        // Re-index only note A → B's chunk for the same path must survive.
+        reindex_chunks(
+            &db,
+            "attachment",
+            "/f.pdf",
+            Some("A"),
+            &[prep("A", "h3", "a2")],
+            "FP",
+        )
+        .expect("A2");
+        assert_eq!(note_chunk_count(&db, "A"), 1, "A replaced, still one chunk");
+        assert_eq!(
+            note_chunk_count(&db, "B"),
+            1,
+            "B's chunk untouched by A's reindex"
+        );
+    }
+
+    #[test]
+    fn reindex_deduplicates_identical_chunk_ids() {
+        let db = GrafeoDB::new_in_memory();
+        let dup = || PreparedChunk {
+            id: kb_id("org", "n", "v1", "hh"),
+            note_id: "n".to_owned(),
+            text: "same".to_owned(),
+            embedding: None,
+        };
+        // Two identical chunks share one content-hashed id.
+        reindex_chunks(&db, "org", "/n.org", None, &[dup(), dup()], "FP").expect("reindex");
+        let n = db
+            .session()
+            .execute("MATCH (c:KbChunk {id: 'kb:org:n:v1:hh'}) RETURN c.id")
+            .map_or(0, |r| r.iter().count());
+        assert_eq!(n, 1, "duplicate chunk ids must collapse to one node");
+    }
 
     #[test]
     fn fingerprint_tag_is_stable() {

@@ -62,13 +62,17 @@ pub async fn index_content(
     path: &str,
     content: &str,
 ) -> Result<usize, InboxError> {
-    let chunks = chunk::chunk_org(content);
-    for c in &chunks {
-        let note_id = c.note_id.as_deref().unwrap_or(fallback_note_id);
-        let id = kb::kb_id(source, note_id, chunk::CHUNKER_VERSION, &c.hash);
-        store.kb_save(&id, &c.text, source, note_id, path).await?;
-    }
-    Ok(chunks.len())
+    let inputs: Vec<(String, String, String)> = chunk::chunk_org(content)
+        .into_iter()
+        .map(|c| {
+            let note_id = c.note_id.unwrap_or_else(|| fallback_note_id.to_owned());
+            let id = kb::kb_id(source, &note_id, chunk::CHUNKER_VERSION, &c.hash);
+            (id, note_id, c.text)
+        })
+        .collect();
+    // Whole-file replace (note_scope = None): a file's subtrees may have been
+    // added or removed, so clear all its chunks and write the current set.
+    store.kb_reindex(source, path, None, inputs).await
 }
 
 /// Read and index a single org file. Returns the number of chunks stored.

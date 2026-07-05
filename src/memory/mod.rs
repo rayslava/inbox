@@ -337,6 +337,48 @@ impl MemoryStore {
         .map_err(|e| InboxError::Memory(e.to_string()))?
     }
 
+    /// Atomically **replace** the KB chunks for a `(source, path)` unit with
+    /// `inputs` (`(id, note_id, text)`), embedding each first. `note_scope` scopes
+    /// the delete: `None` clears all chunks at that path (org file), `Some(note)`
+    /// only that note's (a shared attachment). Returns the number written.
+    ///
+    /// # Errors
+    /// Returns an error if the transactional write fails (it rolls back first).
+    pub async fn kb_reindex(
+        &self,
+        source: &str,
+        path: &str,
+        note_scope: Option<&str>,
+        inputs: Vec<(String, String, String)>,
+    ) -> Result<usize, InboxError> {
+        let mut prepared = Vec::with_capacity(inputs.len());
+        for (id, note_id, text) in inputs {
+            let embedding = if let Some(embed) = &self.embed_client {
+                embed.embed_document(&text).await.ok()
+            } else {
+                None
+            };
+            prepared.push(kb::PreparedChunk {
+                id,
+                note_id,
+                text,
+                embedding,
+            });
+        }
+        let count = prepared.len();
+        let fp = self.fingerprint.tag();
+        let (source, path) = (source.to_owned(), path.to_owned());
+        let note_scope = note_scope.map(str::to_owned);
+        let db = Arc::clone(&self.db);
+
+        tokio::task::spawn_blocking(move || {
+            kb::reindex_chunks(&db, &source, &path, note_scope.as_deref(), &prepared, &fp)
+        })
+        .await
+        .map_err(|e| InboxError::Memory(e.to_string()))??;
+        Ok(count)
+    }
+
     /// KB-only recall (RAG path): hybrid vector+BM25 over `:KbChunk`. Never
     /// returns behavioral `:Memory` entries.
     ///
