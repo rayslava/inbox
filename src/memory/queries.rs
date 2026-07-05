@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use grafeo::{GrafeoDB, NodeId};
 use tracing::warn;
 
@@ -26,6 +28,7 @@ pub(super) fn upsert_memory(
     key: &str,
     value: &str,
     embedding: Option<&[f32]>,
+    fingerprint: &str,
 ) -> Result<(), InboxError> {
     let session = db.session();
 
@@ -39,12 +42,15 @@ pub(super) fn upsert_memory(
     if existing.is_empty() {
         if let Some(emb) = embedding {
             let vec_str = format_vector(emb);
+            // Tag the vector with its embedding space so recall never compares
+            // it against a query embedded under a different model/dims/prefix.
             session
                 .execute(&format!(
                     "INSERT (:Memory {{key: '{key_esc}', value: '{val_esc}', \
-                     embedding: vector({vec_str})}})",
+                     embedding: vector({vec_str}), fingerprint: '{fp}'}})",
                     key_esc = gql_escape(key),
                     val_esc = gql_escape(value),
+                    fp = gql_escape(fingerprint),
                 ))
                 .map_err(|e| InboxError::Memory(format!("insert with embedding: {e}")))?;
         } else {
@@ -62,9 +68,11 @@ pub(super) fn upsert_memory(
             session
                 .execute(&format!(
                     "MATCH (m:Memory {{key: '{key_esc}'}}) \
-                     SET m.value = '{val_esc}', m.embedding = vector({vec_str})",
+                     SET m.value = '{val_esc}', m.embedding = vector({vec_str}), \
+                     m.fingerprint = '{fp}'",
                     key_esc = gql_escape(key),
                     val_esc = gql_escape(value),
+                    fp = gql_escape(fingerprint),
                 ))
                 .map_err(|e| InboxError::Memory(format!("update with embedding: {e}")))?;
         } else {
@@ -139,64 +147,104 @@ pub(super) fn link_memory_to_memory(
     Ok(())
 }
 
+/// Recall memories relevant to `query`, composing two independent sources so
+/// stale embedding spaces can never corrupt results:
+/// 1. **Semantic** — a fingerprint-filtered cosine scan. The `fingerprint`
+///    predicate is applied *before* `cosine_similarity`, so vectors from a
+///    different model/dims/prefix (including mismatched dimensions) never enter
+///    the comparison. This replaces `hybrid_search`, whose internal fusion runs
+///    the vector index over every embedding before any guard could apply.
+/// 2. **Lexical** — an unfiltered BM25 text scan. A minority of slots
+///    (`limit/3`) is reserved for fresh text matches so a lexical hit can
+///    compete even when vector results saturate `limit` — a config change
+///    disables stale vector *ranking* without hiding a text-matchable memory
+///    (memories are authoritative, unlike KB chunks). Vector stays preferred.
+///
+/// Falls back to recent entries only when neither source matches.
 pub(super) fn recall_entries(
     db: &GrafeoDB,
     query: &str,
     query_vec: Option<&[f32]>,
     limit: usize,
+    active_fp: &str,
 ) -> Result<Vec<MemoryEntry>, InboxError> {
-    if query_vec.is_some()
-        && let Ok(results) = db.hybrid_search(
-            "Memory",
-            "value",
-            "embedding",
-            query,
-            query_vec,
-            limit,
-            None,
-        )
-        && !results.is_empty()
-    {
-        return Ok(node_ids_to_entries(db, &results));
-    }
+    let vec_hits = match query_vec {
+        Some(qvec) => cosine_recall(db, qvec, limit, active_fp)?,
+        None => Vec::new(),
+    };
+    let mut seen: HashSet<String> = vec_hits.iter().map(|e| e.key.clone()).collect();
 
+    let mut text_fresh: Vec<MemoryEntry> = Vec::new();
     if !query.trim().is_empty()
         && let Ok(results) = db.text_search("Memory", "value", query, limit)
-        && !results.is_empty()
     {
-        return Ok(node_ids_to_entries(db, &results));
-    }
-
-    if let Some(qvec) = query_vec {
-        let session = db.session();
-        let vec_str = format_vector(qvec);
-        let result = session
-            .execute(&format!(
-                "MATCH (m:Memory) \
-                 WHERE m.embedding IS NOT NULL \
-                 WITH m, cosine_similarity(m.embedding, vector({vec_str})) AS score \
-                 WHERE score > 0.5 \
-                 RETURN m.key, m.value, score \
-                 ORDER BY score DESC LIMIT {limit}"
-            ))
-            .map_err(|e| InboxError::Memory(format!("vector recall: {e}")))?;
-
-        if !result.is_empty() {
-            let mut entries = Vec::new();
-            for row in result.iter() {
-                if row.len() >= 3 {
-                    entries.push(MemoryEntry {
-                        key: value_to_string(&row[0]),
-                        value: value_to_string(&row[1]),
-                        score: value_to_f64(&row[2]),
-                    });
-                }
+        for entry in node_ids_to_entries(db, &results) {
+            if seen.insert(entry.key.clone()) {
+                text_fresh.push(entry);
             }
-            return Ok(entries);
         }
     }
 
-    fallback_recent(db, limit)
+    if vec_hits.is_empty() && text_fresh.is_empty() {
+        return fallback_recent(db, limit);
+    }
+
+    // Reserve a minority of slots for fresh lexical hits, take vector for the
+    // rest, then backfill any remainder (vector leftovers first). Guarantees a
+    // text match competes at saturation while keeping vector preferred.
+    let text_quota = text_fresh.len().min(limit / 3);
+    let vec_take = limit.saturating_sub(text_quota);
+
+    let mut out: Vec<MemoryEntry> = Vec::with_capacity(limit);
+    let mut vit = vec_hits.into_iter();
+    let mut tit = text_fresh.into_iter();
+    for entry in vit.by_ref().take(vec_take) {
+        out.push(entry);
+    }
+    for entry in tit.by_ref().take(text_quota) {
+        out.push(entry);
+    }
+    for entry in vit.chain(tit) {
+        if out.len() >= limit {
+            break;
+        }
+        out.push(entry);
+    }
+    Ok(out)
+}
+
+/// Cosine recall over `:Memory` restricted to the active embedding space.
+fn cosine_recall(
+    db: &GrafeoDB,
+    qvec: &[f32],
+    limit: usize,
+    active_fp: &str,
+) -> Result<Vec<MemoryEntry>, InboxError> {
+    let session = db.session();
+    let vec_str = format_vector(qvec);
+    let result = session
+        .execute(&format!(
+            "MATCH (m:Memory) \
+             WHERE m.embedding IS NOT NULL AND m.fingerprint = '{fp}' \
+             WITH m, cosine_similarity(m.embedding, vector({vec_str})) AS score \
+             WHERE score > 0.5 \
+             RETURN m.key, m.value, score \
+             ORDER BY score DESC LIMIT {limit}",
+            fp = gql_escape(active_fp),
+        ))
+        .map_err(|e| InboxError::Memory(format!("vector recall: {e}")))?;
+
+    let mut entries = Vec::new();
+    for row in result.iter() {
+        if row.len() >= 3 {
+            entries.push(MemoryEntry {
+                key: value_to_string(&row[0]),
+                value: value_to_string(&row[1]),
+                score: value_to_f64(&row[2]),
+            });
+        }
+    }
+    Ok(entries)
 }
 
 pub(super) fn graph_context(

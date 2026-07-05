@@ -138,10 +138,11 @@ impl MemoryStore {
 
         let key = key.to_owned();
         let value = value.to_owned();
+        let fp = self.fingerprint.tag();
         let db = Arc::clone(&self.db);
 
         let result = tokio::task::spawn_blocking(move || {
-            queries::upsert_memory(&db, &key, &value, embedding.as_deref())
+            queries::upsert_memory(&db, &key, &value, embedding.as_deref(), &fp)
         })
         .await
         .map_err(|e| InboxError::Memory(e.to_string()))?;
@@ -233,10 +234,11 @@ impl MemoryStore {
         };
 
         let query = query.to_owned();
+        let fp = self.fingerprint.tag();
         let db = Arc::clone(&self.db);
 
         let result = tokio::task::spawn_blocking(move || {
-            queries::recall_entries(&db, &query, query_vec.as_deref(), limit)
+            queries::recall_entries(&db, &query, query_vec.as_deref(), limit, &fp)
         })
         .await
         .map_err(|e| InboxError::Memory(e.to_string()))?;

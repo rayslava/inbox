@@ -661,33 +661,66 @@ async fn resolve_embed_client_returns_some_on_probe_success() {
 
 // ── recall_entries vector-path tests ─────────────────────────────────────────
 
-fn build_db_with_embedded_memory(key: &str, value: &str, embedding: &[f32]) -> grafeo::GrafeoDB {
+const TEST_FP: &str = "m|3|cosine|none|v1|";
+
+fn build_db_with_fp(key: &str, value: &str, embedding: &[f32], fp: &str) -> grafeo::GrafeoDB {
     let db = grafeo::GrafeoDB::new_in_memory();
     db.create_text_index("Memory", "value").ok();
     super::queries::create_indexes(&db, embedding.len());
-    super::queries::upsert_memory(&db, key, value, Some(embedding)).expect("upsert with embedding");
+    super::queries::upsert_memory(&db, key, value, Some(embedding), fp)
+        .expect("upsert with embedding");
     db
 }
 
+fn build_db_with_embedded_memory(key: &str, value: &str, embedding: &[f32]) -> grafeo::GrafeoDB {
+    build_db_with_fp(key, value, embedding, TEST_FP)
+}
+
 #[test]
-fn recall_entries_hybrid_search_returns_match_when_query_text_matches() {
+fn recall_entries_returns_match_for_query_with_text_and_vector() {
     let db = build_db_with_embedded_memory("rust", "Rust is a systems language", &[0.1, 0.2, 0.3]);
 
-    let results =
-        super::queries::recall_entries(&db, "Rust", Some(&[0.1, 0.2, 0.3]), 5).expect("recall ok");
+    let results = super::queries::recall_entries(&db, "Rust", Some(&[0.1, 0.2, 0.3]), 5, TEST_FP)
+        .expect("recall ok");
 
-    assert!(!results.is_empty(), "hybrid search should return entry");
+    assert!(!results.is_empty(), "should return the matching entry");
     assert_eq!(results[0].key, "rust");
+}
+
+#[test]
+fn recall_entries_text_survives_active_vector_hit() {
+    // Mixed store: one active-fingerprint memory the query vector matches, plus a
+    // stale-fingerprint memory that only matches by text. The text match must not
+    // be hidden by the vector hit (codex regression guard).
+    let db = build_db_with_fp("active", "quantum entanglement", &[1.0, 0.0, 0.0], TEST_FP);
+    super::queries::upsert_memory(
+        &db,
+        "stale",
+        "vintage typewriter",
+        Some(&[0.0, 1.0, 0.0]),
+        "OLD",
+    )
+    .expect("insert stale");
+
+    let hits =
+        super::queries::recall_entries(&db, "typewriter", Some(&[1.0, 0.0, 0.0]), 5, TEST_FP)
+            .expect("recall ok");
+    let keys: Vec<&str> = hits.iter().map(|e| e.key.as_str()).collect();
+    assert!(keys.contains(&"active"), "active vector match present");
+    assert!(
+        keys.contains(&"stale"),
+        "stale-fingerprint text match must survive alongside the vector hit"
+    );
 }
 
 #[test]
 fn recall_entries_vector_only_path_when_query_text_empty() {
     // Empty query text skips both BM25 and the hybrid path's text component;
-    // the raw cosine_similarity branch on lines 172-198 fires.
+    // the raw cosine_similarity fallback fires.
     let db = build_db_with_embedded_memory("topic", "irrelevant text", &[1.0, 0.0, 0.0]);
 
-    let results =
-        super::queries::recall_entries(&db, "", Some(&[1.0, 0.0, 0.0]), 5).expect("recall ok");
+    let results = super::queries::recall_entries(&db, "", Some(&[1.0, 0.0, 0.0]), 5, TEST_FP)
+        .expect("recall ok");
 
     assert!(
         !results.is_empty(),
@@ -702,8 +735,8 @@ fn recall_entries_vector_path_filters_by_similarity_threshold() {
     // and with empty query string we hit fallback_recent which still returns the entry.
     let db = build_db_with_embedded_memory("topic", "hello", &[1.0, 0.0, 0.0]);
 
-    let results =
-        super::queries::recall_entries(&db, "", Some(&[0.0, 1.0, 0.0]), 5).expect("recall ok");
+    let results = super::queries::recall_entries(&db, "", Some(&[0.0, 1.0, 0.0]), 5, TEST_FP)
+        .expect("recall ok");
 
     // fallback_recent returns all Memory nodes regardless of similarity.
     assert_eq!(results.len(), 1);
@@ -711,13 +744,97 @@ fn recall_entries_vector_path_filters_by_similarity_threshold() {
 }
 
 #[test]
+fn recall_entries_vector_path_isolates_stale_fingerprint() {
+    // A memory embedded under a different fingerprint must not match on the
+    // vector (cosine) path even with an identical vector — only the active space.
+    let db = build_db_with_fp("stale", "irrelevant text", &[1.0, 0.0, 0.0], "OLD-FP");
+
+    // Vector path under a different active fingerprint: no vector hit → empty query
+    // falls back to recent (score 0), not a vector match.
+    let vec_hits =
+        super::queries::recall_entries(&db, "", Some(&[1.0, 0.0, 0.0]), 5, "NEW-FP").expect("ok");
+    assert!(
+        vec_hits.iter().all(|e| e.score == 0.0),
+        "stale-fingerprint vector must not produce a similarity match"
+    );
+
+    // But text recall is space-agnostic — the memory is still findable by content.
+    let text_hits =
+        super::queries::recall_entries(&db, "irrelevant", None, 5, "NEW-FP").expect("ok");
+    assert!(
+        text_hits.iter().any(|e| e.key == "stale"),
+        "text recall must still find a stale-fingerprint memory"
+    );
+}
+
+#[test]
+fn upsert_memory_update_path_refreshes_embedding_and_fingerprint() {
+    let db = grafeo::GrafeoDB::new_in_memory();
+    db.create_text_index("Memory", "value").ok();
+    super::queries::create_indexes(&db, 3);
+    // Insert, then update the same key with a new embedding + fingerprint
+    // (exercises the SET-with-embedding branch).
+    super::queries::upsert_memory(&db, "k", "first", Some(&[1.0, 0.0, 0.0]), "FP1").unwrap();
+    super::queries::upsert_memory(&db, "k", "second", Some(&[0.0, 1.0, 0.0]), "FP2").unwrap();
+
+    // The vector path under the new fingerprint matches the refreshed vector.
+    let now =
+        super::queries::recall_entries(&db, "", Some(&[0.0, 1.0, 0.0]), 5, "FP2").expect("ok");
+    assert!(
+        now.iter()
+            .any(|e| e.key == "k" && e.value == "second" && e.score > 0.5),
+        "update must refresh both value and vector under the new fingerprint"
+    );
+    // The old fingerprint no longer matches on the vector path.
+    let old =
+        super::queries::recall_entries(&db, "", Some(&[0.0, 1.0, 0.0]), 5, "FP1").expect("ok");
+    assert!(
+        old.iter().all(|e| e.score == 0.0),
+        "old fingerprint must not vector-match the refreshed embedding"
+    );
+}
+
+#[test]
+fn recall_entries_reserves_slot_for_text_when_vectors_saturate() {
+    // Vector hits saturate `limit`, but a text-only match on a stale-fingerprint
+    // memory must still win a reserved slot (codex saturation guard).
+    let db = grafeo::GrafeoDB::new_in_memory();
+    db.create_text_index("Memory", "value").ok();
+    super::queries::create_indexes(&db, 3);
+    for (k, v) in [
+        ("a1", "alpha one"),
+        ("a2", "alpha two"),
+        ("a3", "alpha three"),
+    ] {
+        super::queries::upsert_memory(&db, k, v, Some(&[1.0, 0.0, 0.0]), TEST_FP).unwrap();
+    }
+    super::queries::upsert_memory(
+        &db,
+        "stale",
+        "unique borscht recipe",
+        Some(&[0.0, 1.0, 0.0]),
+        "OLD",
+    )
+    .unwrap();
+
+    let hits = super::queries::recall_entries(&db, "borscht", Some(&[1.0, 0.0, 0.0]), 3, TEST_FP)
+        .expect("recall ok");
+    let keys: Vec<&str> = hits.iter().map(|e| e.key.as_str()).collect();
+    assert_eq!(hits.len(), 3);
+    assert!(
+        keys.contains(&"stale"),
+        "a text match must reserve a slot despite saturated vector hits, got {keys:?}"
+    );
+}
+
+#[test]
 fn recall_entries_falls_back_to_recent_when_nothing_matches() {
     let db = grafeo::GrafeoDB::new_in_memory();
     db.create_text_index("Memory", "value").ok();
-    super::queries::upsert_memory(&db, "k1", "first", None).unwrap();
-    super::queries::upsert_memory(&db, "k2", "second", None).unwrap();
+    super::queries::upsert_memory(&db, "k1", "first", None, TEST_FP).unwrap();
+    super::queries::upsert_memory(&db, "k2", "second", None, TEST_FP).unwrap();
 
-    let results = super::queries::recall_entries(&db, "", None, 10).expect("recall ok");
+    let results = super::queries::recall_entries(&db, "", None, 10, TEST_FP).expect("recall ok");
     assert_eq!(results.len(), 2);
 }
 
