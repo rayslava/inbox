@@ -91,6 +91,48 @@ fn parse_json_response_full() {
 }
 
 #[test]
+fn parse_json_tolerates_raw_control_chars_in_strings() {
+    // saiga et al. emit a fenced object with LITERAL newlines/tabs inside the
+    // string value, which strict serde_json rejects; the lenient path recovers.
+    let json = "```json\n{\n  \"summary\": \"line one\n\tline two\"\n}\n```";
+    let r = parse_llm_json_response(json, "llama_cpp").unwrap();
+    assert!(r.summary.contains("line one"));
+    assert!(r.summary.contains("line two"));
+}
+
+#[test]
+fn parse_json_control_chars_recovered_after_surrounding_text() {
+    // Control chars inside the string AND extra prose around the object.
+    let json = "Here you go:\n{\"title\":\"T\",\"summary\":\"a\nb\"}\nThanks!";
+    let r = parse_llm_json_response(json, "x").unwrap();
+    assert_eq!(r.title, "T");
+    assert!(r.summary.contains('a') && r.summary.contains('b'));
+}
+
+#[test]
+fn parse_json_still_errors_on_non_json() {
+    assert!(parse_llm_json_response("not json at all, sorry", "x").is_err());
+}
+
+#[test]
+fn parse_json_backslash_before_raw_control_is_fail_safe() {
+    // A backslash immediately before a raw control char inside a string is not
+    // recoverable (the char is consumed by the escape branch verbatim) — but it
+    // fails safely (no corruption), same as before the lenient path existed.
+    let json = "{\"summary\":\"ab\\\nx\"}";
+    assert!(parse_llm_json_response(json, "x").is_err());
+}
+
+#[test]
+fn parse_json_escapes_all_control_char_kinds_with_surrounding_text() {
+    // \r, \t, and an arbitrary control char () inside the string, plus
+    // prose around the object → forces the escape-then-extract fallback path.
+    let json = "prose here\n{\"summary\":\"a\rb\tc\u{0001}d\"}\ntrailing";
+    let r = parse_llm_json_response(json, "x").unwrap();
+    assert!(r.summary.contains('a') && r.summary.contains('d'));
+}
+
+#[test]
 fn parse_json_unwraps_single_element_array() {
     // Some models (e.g. gemma) wrap the object in a JSON array.
     let json = r#"[{"title":"T","tags":["a"],"summary":"S","excerpt":"E"}]"#;

@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use anodized::spec;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -334,28 +336,12 @@ fn truncate_for_log(s: &str, max_chars: usize) -> String {
 pub fn parse_llm_json_response(text: &str, backend: &str) -> Result<LlmResponse, InboxError> {
     let cleaned = strip_markdown_fences(text);
 
-    let json: serde_json::Value = match serde_json::from_str(cleaned) {
-        Ok(v) => v,
-        Err(first_err) => {
-            // Fallback: extract the first complete {…} object from the text.
-            // Handles think-tag artifacts (e.g. `</think>` after the JSON) and
-            // duplicate objects that some models emit.
-            match extract_first_json_object(cleaned)
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-            {
-                Some(v) => {
-                    debug!(
-                        backend,
-                        "LLM response had extra content around JSON — extracted first object"
-                    );
-                    v
-                }
-                None => {
-                    return Err(InboxError::Llm(format!(
-                        "LLM JSON parse error: {first_err}. Raw: {text}"
-                    )));
-                }
-            }
+    let json: serde_json::Value = match parse_json_lenient(cleaned) {
+        Some(v) => v,
+        None => {
+            return Err(InboxError::Llm(format!(
+                "LLM JSON parse error. Raw: {text}"
+            )));
         }
     };
 
@@ -397,6 +383,63 @@ fn strip_markdown_fences(s: &str) -> &str {
         .or_else(|| s.strip_prefix("```"))
         .unwrap_or(s);
     s.strip_suffix("```").unwrap_or(s).trim()
+}
+
+/// Parse `cleaned` as a JSON object, tolerating common local-model quirks:
+/// extra content around the object, and — the frequent one — **raw control
+/// characters inside string values** (a literal newline/tab in `"summary": "…"`)
+/// which strict `serde_json` rejects. Returns `None` only if no attempt parses.
+fn parse_json_lenient(cleaned: &str) -> Option<serde_json::Value> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(cleaned) {
+        return Some(v);
+    }
+    if let Some(v) = extract_first_json_object(cleaned)
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+    {
+        return Some(v);
+    }
+    // Recover from unescaped control chars inside strings, then retry both ways.
+    let escaped = escape_control_chars_in_strings(cleaned);
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&escaped) {
+        return Some(v);
+    }
+    extract_first_json_object(&escaped).and_then(|s| serde_json::from_str(s).ok())
+}
+
+/// Escape raw control characters (`< 0x20`) that appear **inside** JSON string
+/// literals so strict parsers accept them; structural whitespace and already
+/// escaped content are left untouched.
+fn escape_control_chars_in_strings(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_string = false;
+    let mut escape = false;
+    for c in s.chars() {
+        if escape {
+            out.push(c);
+            escape = false;
+            continue;
+        }
+        match c {
+            '\\' if in_string => {
+                out.push(c);
+                escape = true;
+            }
+            '"' => {
+                in_string = !in_string;
+                out.push(c);
+            }
+            _ if in_string && (c as u32) < 0x20 => match c {
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                other => {
+                    let _ = write!(out, "\\u{:04x}", other as u32);
+                }
+            },
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Scan `s` for the first balanced `{…}` JSON object and return the slice.
