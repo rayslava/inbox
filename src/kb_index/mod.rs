@@ -3,6 +3,7 @@
 //! is pure (`chunk`); this module handles note-id extraction, file/dir walking,
 //! and the embed+store round-trip via [`MemoryStore::kb_save`].
 
+pub mod attach;
 pub mod chunk;
 
 use std::path::{Path, PathBuf};
