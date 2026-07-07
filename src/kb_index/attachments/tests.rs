@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 
-use super::{AttachContext, index_file_attachments};
+use super::{AttachContext, get_or_extract, index_file_attachments};
 use crate::error::InboxError;
 use crate::kb_index::extract::{ExtractionFingerprint, TextExtractor};
 use crate::memory::MemoryStore;
@@ -146,20 +146,20 @@ async fn shared_file_extracted_once_indexed_under_each_note() {
     let dir = tempfile::tempdir().expect("dir");
     let notes = dir.path().join("notes");
     fs::create_dir_all(&notes).expect("mkdir");
-    fs::write(notes.join("shared.txt"), b"receipt").expect("write shared");
+    fs::write(notes.join("shared.png"), b"receipt").expect("write shared");
     let org = notes.join("note.org");
     let content = "\
 * First
 :PROPERTIES:
 :ID: aaaa1111-0000-0000-0000-000000000000
 :END:
-Ref [[file:shared.txt]].
+Ref [[file:shared.png]].
 
 * Second
 :PROPERTIES:
 :ID: bbbb2222-0000-0000-0000-000000000000
 :END:
-Also [[file:shared.txt]].
+Also [[file:shared.png]].
 ";
     fs::write(&org, content).expect("write org");
 
@@ -182,7 +182,7 @@ Also [[file:shared.txt]].
 }
 
 #[tokio::test]
-async fn no_links_short_circuits_without_extracting() {
+async fn no_attachments_indexes_nothing() {
     let dir = tempfile::tempdir().expect("dir");
     let org = dir.path().join("plain.org");
     let content = "* Just text\n:PROPERTIES:\n:ID: cccc3333\n:END:\nNo attachments here.\n";
@@ -196,7 +196,83 @@ async fn no_links_short_circuits_without_extracting() {
     assert_eq!(
         calls.load(Ordering::SeqCst),
         0,
-        "no extraction without links"
+        "no extraction when the entry has no attach-dir and no links"
+    );
+}
+
+#[tokio::test]
+async fn get_or_extract_skips_unsupported_extension_without_reading() {
+    let dir = tempfile::tempdir().expect("dir");
+    let zip = dir.path().join("archive.zip");
+    fs::write(&zip, b"not a document").expect("write");
+    let root = std::fs::canonicalize(dir.path()).expect("canon");
+
+    let store = MemoryStore::new_in_memory().expect("store");
+    let (att_ctx, calls) = ctx("unused", vec![]);
+    let out = get_or_extract(
+        &store,
+        att_ctx.extractor.as_ref(),
+        &zip,
+        std::slice::from_ref(&root),
+    )
+    .await;
+    assert!(out.is_none(), "unsupported type must be skipped");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "must not even reach the extractor"
+    );
+}
+
+#[tokio::test]
+async fn get_or_extract_rejects_path_outside_roots() {
+    let dir = tempfile::tempdir().expect("dir");
+    let img = dir.path().join("x.png");
+    fs::write(&img, b"png").expect("write");
+
+    let store = MemoryStore::new_in_memory().expect("store");
+    let (att_ctx, calls) = ctx("unused", vec![]);
+    // Empty canon_roots → the (supported) file is not under any root → rejected.
+    let out = get_or_extract(&store, att_ctx.extractor.as_ref(), &img, &[]).await;
+    assert!(
+        out.is_none(),
+        "out-of-root file must be rejected at extract time"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "rejected before extraction"
+    );
+}
+
+#[tokio::test]
+async fn indexes_attach_tag_file_without_inline_link() {
+    // The real org-attach case: an `:ATTACH:`-tagged entry whose file sits in its
+    // id-dir with NO inline `[[attachment:]]` link. It must still be indexed.
+    let id = "cub-parking-approval";
+    let dir = tempfile::tempdir().expect("dir");
+    let root = attach_layout(dir.path(), id, "doc.pdf", b"%PDF fake");
+    let org = dir.path().join("note.org");
+    let content =
+        format!("* Approval\n:PROPERTIES:\n:ID: {id}\n:END:\nNo inline link, just :ATTACH:.\n");
+    fs::write(&org, &content).expect("write");
+
+    let store = MemoryStore::new_in_memory().expect("store");
+    let (att_ctx, calls) = ctx("Kinshicho parking application form", vec![root]);
+
+    let n = index_file_attachments(&store, &att_ctx, &org, &content).await;
+    assert!(n >= 1, "attach-dir file indexed without an inline link");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "extracted once");
+
+    let hits = store
+        .kb_recall("Kinshicho parking", 5)
+        .await
+        .expect("recall");
+    assert!(
+        hits.iter()
+            .any(|e| e.key.starts_with(&format!("kb:attachment:{id}:"))),
+        "tag-attached file must be recallable under its owning id, got {:?}",
+        hits.iter().map(|e| &e.key).collect::<Vec<_>>()
     );
 }
 
@@ -236,15 +312,20 @@ async fn failed_extraction_degrades_without_error() {
 
 #[tokio::test]
 async fn removed_link_cleans_up_orphan_chunks() {
+    // A `[[file:]]` target in the note dir (NOT an org-attach id-dir), referenced
+    // ONLY by the inline link — removing the link truly un-references it, so the
+    // whole-file replace must clean up its chunk.
     let id = "7b9b13fe-1440-48a9-b4ce-060d85958aa8";
     let dir = tempfile::tempdir().expect("dir");
-    let root = attach_layout(dir.path(), id, "scan.png", b"bytes");
-    let org = dir.path().join("note.org");
-    let with_link = format!("* N\n:PROPERTIES:\n:ID: {id}\n:END:\n[[attachment:scan.png]]\n");
+    let notes = dir.path().join("notes");
+    fs::create_dir_all(&notes).expect("mkdir");
+    fs::write(notes.join("extra.png"), b"data").expect("write");
+    let org = notes.join("note.org");
+    let with_link = format!("* N\n:PROPERTIES:\n:ID: {id}\n:END:\n[[file:extra.png]]\n");
     fs::write(&org, &with_link).expect("write");
 
     let store = MemoryStore::new_in_memory().expect("store");
-    let (att_ctx, _) = ctx("Zylophorbium orphan check", vec![root]);
+    let (att_ctx, _) = ctx("Zylophorbium orphan check", vec![notes.clone()]);
     let n = index_file_attachments(&store, &att_ctx, &org, &with_link).await;
     assert!(n >= 1, "chunk indexed initially");
 

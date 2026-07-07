@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use super::{AttachLink, parse_attach_links, resolve_attachments};
+use super::{AttachLink, list_attachment_dir_files, parse_attach_links, resolve_attachments};
 
 #[test]
 fn parses_attachment_and_file_links() {
@@ -137,6 +137,39 @@ fn rejects_traversal_escape() {
         resolved.is_empty(),
         "path escaping the root must be rejected"
     );
+}
+
+#[test]
+fn lists_all_files_in_entry_attach_dir() {
+    // org-attach `:ATTACH:` case: files live in the id-dir with no inline link.
+    let id = "7b9b13fe-1440-48a9-b4ce-060d85958aa8";
+    let (dir, root) = attach_layout("doc.pdf", id, "pdf");
+    let sub = root.join(&id[0..2]).join(&id[2..]);
+    fs::write(sub.join("photo.jpg"), "jpg").expect("write jpg");
+    fs::create_dir_all(sub.join("nested")).expect("mkdir"); // dirs must be skipped
+    let note_dir = dir.path().join("notes");
+    fs::create_dir_all(&note_dir).expect("mkdir notes");
+
+    let files = list_attachment_dir_files(id, &note_dir, std::slice::from_ref(&root));
+    let names: Vec<String> = files
+        .iter()
+        .filter_map(|p| p.file_name()?.to_str().map(str::to_owned))
+        .collect();
+    assert!(names.contains(&"doc.pdf".to_owned()), "{names:?}");
+    assert!(names.contains(&"photo.jpg".to_owned()), "{names:?}");
+    assert_eq!(files.len(), 2, "only the two regular files, not the dir");
+}
+
+#[test]
+fn attach_dir_listing_is_empty_for_unknown_id() {
+    let dir = tempfile::tempdir().expect("dir");
+    let root = dir.path().to_path_buf();
+    let files = list_attachment_dir_files(
+        "0000ffff-1111-2222-3333-444455556666",
+        dir.path(),
+        std::slice::from_ref(&root),
+    );
+    assert!(files.is_empty(), "no attach-dir → no files");
 }
 
 #[test]

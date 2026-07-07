@@ -57,6 +57,13 @@ enum FileKind {
     Unsupported,
 }
 
+/// True if `path` is a file type the extractor handles (image or PDF), by
+/// extension. Lets a caller skip unsupported files **before** reading them.
+#[must_use]
+pub fn is_extractable(path: &Path) -> bool {
+    !matches!(classify(path), FileKind::Unsupported)
+}
+
 /// Classify a file by (lowercased) extension.
 fn classify(path: &Path) -> FileKind {
     let ext = path

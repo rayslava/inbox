@@ -13,10 +13,15 @@ use tracing::warn;
 use crate::config::Config;
 use crate::memory::{MemoryStore, kb};
 
-use super::attach::{parse_attach_links, resolve_attachments};
+use super::attach::{list_attachment_dir_files, parse_attach_links, resolve_attachments};
 use super::chunk;
-use super::extract::{ShellExtractor, TextExtractor};
+use super::extract::{ShellExtractor, TextExtractor, is_extractable};
 use super::{ATTACH_SOURCE, extract_note_id};
+
+/// Skip attachment files larger than this (bytes) — they are read fully into
+/// memory to hash, so cap the blast radius of an accidental huge file in an
+/// attach dir. Generous for scanned PDFs; excludes videos/archives.
+const MAX_ATTACHMENT_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Extractor + confinement roots for the attachment-indexing pass.
 pub struct AttachContext {
@@ -85,27 +90,42 @@ pub async fn index_file_attachments(
     let note_dir = file_path.parent().unwrap_or_else(|| Path::new("."));
 
     // Map each resolved file to the owning entry ids that reference it, so a
-    // file is extracted once but indexed under every owning note. Cheap scan
-    // first: most notes carry no attachment links.
+    // file is extracted once but indexed under every owning note. Two sources
+    // per entry: inline `[[attachment:]]`/`[[file:]]` links, AND every file in
+    // the entry's org-attach id-dir. The id-dir scan is org-attach id-dir
+    // *discovery* (any entry whose id-dir exists — which is how the `:ATTACH:`
+    // tag manifests on disk), the common case in real org-roam corpora.
+    let file_note = extract_note_id(content, file_path);
     let mut by_file: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
-    if content.contains("[[attachment:") || content.contains("[[file:") {
-        let file_note = extract_note_id(content, file_path);
-        for c in chunk::chunk_org(content) {
-            let links = parse_attach_links(&c.text);
-            if links.is_empty() {
-                continue;
-            }
-            let owning = c.note_id.unwrap_or_else(|| file_note.clone());
-            for path in resolve_attachments(Some(&owning), &links, note_dir, &ctx.roots) {
-                by_file.entry(path).or_default().insert(owning.clone());
-            }
+    let mut owning_ids: BTreeSet<String> = BTreeSet::new();
+    for c in chunk::chunk_org(content) {
+        let owning = c.note_id.unwrap_or_else(|| file_note.clone());
+        let links = parse_attach_links(&c.text);
+        for path in resolve_attachments(Some(&owning), &links, note_dir, &ctx.roots) {
+            by_file.entry(path).or_default().insert(owning.clone());
+        }
+        owning_ids.insert(owning);
+    }
+    // Enumerate each entry's attach-dir once (a non-attach id simply has no dir).
+    for owning in &owning_ids {
+        for path in list_attachment_dir_files(owning, note_dir, &ctx.roots) {
+            by_file.entry(path).or_default().insert(owning.clone());
         }
     }
+
+    // Canonical roots for a re-confinement check at extract time (the enumerated
+    // paths were confined at listing time, but re-check narrows the TOCTOU
+    // window before we read/OCR).
+    let canon_roots: Vec<PathBuf> = ctx
+        .roots
+        .iter()
+        .filter_map(|r| std::fs::canonicalize(r).ok())
+        .collect();
 
     let mut inputs: Vec<(String, String, String)> = Vec::new();
     for (path, owners) in by_file {
         let (Some(text), Some(apath)) = (
-            get_or_extract(store, ctx.extractor.as_ref(), &path).await,
+            get_or_extract(store, ctx.extractor.as_ref(), &path, &canon_roots).await,
             path.to_str(),
         ) else {
             continue;
@@ -140,14 +160,34 @@ pub async fn index_file_attachments(
 /// Return the extracted text for `path`, from the `:KbSource` cache when the
 /// file bytes and extractor fingerprint are unchanged, else by running the
 /// extractor and caching the result. `None` = unsupported / empty / failed /
-/// non-UTF-8 path — the caller omits it from the replacement set.
+/// oversized / out-of-root / non-UTF-8 path — the caller omits it from the
+/// replacement set.
 async fn get_or_extract(
     store: &MemoryStore,
     extractor: &dyn TextExtractor,
     path: &Path,
+    canon_roots: &[PathBuf],
 ) -> Option<String> {
+    // Skip unsupported types BEFORE any read (a dir scan can surface arbitrary
+    // files; don't read a video/archive just to hash it).
+    if !is_extractable(path) {
+        return None;
+    }
     let canonical = std::fs::canonicalize(path).ok()?;
+    // Re-confine: the real (symlink-resolved) target must still be under a root.
+    if !canon_roots.iter().any(|r| canonical.starts_with(r)) {
+        warn!(
+            "attachment escaped roots at extract time: {}",
+            canonical.display()
+        );
+        return None;
+    }
     let cpath = canonical.to_str()?.to_owned();
+    // Cap the in-memory hash read.
+    if std::fs::metadata(&canonical).is_ok_and(|m| m.len() > MAX_ATTACHMENT_BYTES) {
+        warn!("attachment too large, skipping: {}", canonical.display());
+        return None;
+    }
 
     // Hash the file bytes off the async worker; key on `len:hash` so a byte
     // change that collided the 64-bit hash still differs by length.

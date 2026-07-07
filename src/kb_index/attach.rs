@@ -82,6 +82,52 @@ fn candidate_bases(owning_id: Option<&str>, note_dir: &Path, roots: &[PathBuf]) 
     bases
 }
 
+/// Canonicalize `p` and return it only if it is a regular file confined under
+/// one of `canon_roots`. `canonicalize` resolves `..`/symlinks and requires
+/// existence, so this covers "exists + is a file + confined + no traversal /
+/// symlink escape". NOTE: a path-time check — a caller shipping bytes off-box
+/// (the HTTP OCR path) must re-confine at open time (TOCTOU).
+fn confine(p: &Path, canon_roots: &[PathBuf]) -> Option<PathBuf> {
+    let c = std::fs::canonicalize(p).ok()?;
+    let is_file = std::fs::metadata(&c).is_ok_and(|m| m.is_file());
+    (is_file && canon_roots.iter().any(|r| c.starts_with(r))).then_some(c)
+}
+
+fn canon_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .filter_map(|r| std::fs::canonicalize(r).ok())
+        .collect()
+}
+
+/// List every regular file in the owning entry's org-attach directories
+/// (`root/id[0:2]/id[2:]` under each root, plus ancestor `data/` dirs),
+/// **root-confined**. This is how org-attach attaches files via the `:ATTACH:`
+/// tag — present in the id-dir with **no inline link** — so it complements
+/// [`resolve_attachments`]. Returns canonical, deduped paths.
+#[must_use]
+pub fn list_attachment_dir_files(
+    owning_id: &str,
+    note_dir: &Path,
+    roots: &[PathBuf],
+) -> Vec<PathBuf> {
+    let canon_roots = canon_roots(roots);
+    let mut out: Vec<PathBuf> = Vec::new();
+    for base in candidate_bases(Some(owning_id), note_dir, roots) {
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if let Some(c) = confine(&entry.path(), &canon_roots)
+                && !out.contains(&c)
+            {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
 /// Resolve `links` for an entry whose owning org id is `owning_id` to existing,
 /// **root-confined** files. `roots` is the allowlist (org-attach id-dir,
 /// `attachments_dir`, KB root); `note_dir` anchors relative `[[file:]]` links and
@@ -93,20 +139,8 @@ pub fn resolve_attachments(
     note_dir: &Path,
     roots: &[PathBuf],
 ) -> Vec<PathBuf> {
-    let canon_roots: Vec<PathBuf> = roots
-        .iter()
-        .filter_map(|r| std::fs::canonicalize(r).ok())
-        .collect();
-    // `canonicalize` resolves `..`/symlinks and requires existence; combined with
-    // the regular-file check this covers "exists + is a file + confined + no
-    // traversal/symlink escape". NOTE: this is a path-time check — a caller that
-    // ships bytes off-box (the HTTP OCR path) must re-confine at open time, since
-    // the file could be swapped between here and the read (TOCTOU).
-    let confined = |p: &Path| -> Option<PathBuf> {
-        let c = std::fs::canonicalize(p).ok()?;
-        let is_file = std::fs::metadata(&c).is_ok_and(|m| m.is_file());
-        (is_file && canon_roots.iter().any(|r| c.starts_with(r))).then_some(c)
-    };
+    let canon_roots = canon_roots(roots);
+    let confined = |p: &Path| -> Option<PathBuf> { confine(p, &canon_roots) };
 
     let bases = candidate_bases(owning_id, note_dir, roots);
     let mut out: Vec<PathBuf> = Vec::new();
