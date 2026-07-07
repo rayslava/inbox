@@ -5,6 +5,7 @@
 
 pub mod attach;
 pub mod chunk;
+pub mod extract;
 
 use std::path::{Path, PathBuf};
 
