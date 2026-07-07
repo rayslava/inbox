@@ -984,3 +984,43 @@ async fn vector_store_trait_path_exercises_all_methods() {
     // Graph traversal result may vary; exercising the path is enough here.
     let _ = vs.context("fox", 1).await.expect("context");
 }
+
+#[tokio::test]
+async fn kb_extract_cache_roundtrips_and_invalidates() {
+    let store = MemoryStore::new_in_memory().expect("in-memory store");
+
+    // Miss on empty cache.
+    assert!(
+        store
+            .kb_extract_cache_get("/a.pdf", "h1", "shell|eng|v1|false")
+            .await
+            .is_none()
+    );
+
+    store
+        .kb_extract_cache_put("/a.pdf", "h1", "shell|eng|v1|false", "ocr text", "t0")
+        .await
+        .expect("put");
+
+    // Hit on exact match.
+    assert_eq!(
+        store
+            .kb_extract_cache_get("/a.pdf", "h1", "shell|eng|v1|false")
+            .await
+            .as_deref(),
+        Some("ocr text")
+    );
+    // Changed bytes or extractor config → miss.
+    assert!(
+        store
+            .kb_extract_cache_get("/a.pdf", "h2", "shell|eng|v1|false")
+            .await
+            .is_none()
+    );
+    assert!(
+        store
+            .kb_extract_cache_get("/a.pdf", "h1", "shell|rus|v1|false")
+            .await
+            .is_none()
+    );
+}

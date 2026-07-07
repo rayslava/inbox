@@ -227,6 +227,85 @@ pub(super) fn reindex_chunks(
     }
 }
 
+/// Look up cached extraction **output** for an attachment file. A hit requires
+/// the same canonical `path`, `file_hash`, **and** `extraction_fp`, so a changed
+/// file or a changed extractor config (languages/backend/version) misses and
+/// forces re-extraction. The returned text is re-chunkable for any owning note
+/// without re-running OCR. Query errors degrade to a miss (`None`).
+pub(super) fn kb_source_lookup(
+    db: &GrafeoDB,
+    canonical_path: &str,
+    file_hash: &str,
+    extraction_fp: &str,
+) -> Option<String> {
+    // `ORDER BY indexed_at DESC LIMIT 1`: the write path keeps one row per path,
+    // but should a duplicate ever slip in (e.g. an interleaved concurrent put),
+    // lookup stays deterministic and prefers the newest entry.
+    let q = format!(
+        "MATCH (s:KbSource {{path: '{p}'}}) \
+         WHERE s.file_hash = '{h}' AND s.extraction_fp = '{fp}' \
+         RETURN s.text ORDER BY s.indexed_at DESC LIMIT 1",
+        p = gql_escape(canonical_path),
+        h = gql_escape(file_hash),
+        fp = gql_escape(extraction_fp),
+    );
+    let res = db.session().execute(&q).ok()?;
+    res.iter()
+        .next()
+        .and_then(|row| row.first().map(value_to_string))
+}
+
+/// Upsert the extraction-output cache entry for `canonical_path`. The path is the
+/// identity (one row per file): in a single transaction the prior entry is
+/// cleared and the new one inserted, so a changed `file_hash`/`extraction_fp`
+/// supersedes stale text atomically — no torn clear-without-insert state, and no
+/// duplicate row from an interleaved writer. This is a cache — a rolled-back
+/// write only causes a later re-extraction, never a correctness loss.
+pub(super) fn kb_source_store(
+    db: &GrafeoDB,
+    canonical_path: &str,
+    file_hash: &str,
+    extraction_fp: &str,
+    text: &str,
+    indexed_at: &str,
+) -> Result<(), InboxError> {
+    let session = db.session();
+    let p = gql_escape(canonical_path);
+    session
+        .execute("START TRANSACTION")
+        .map_err(|e| InboxError::Memory(format!("kb source begin: {e}")))?;
+
+    let run = || -> Result<(), InboxError> {
+        session
+            .execute(&format!(
+                "MATCH (s:KbSource {{path: '{p}'}}) DETACH DELETE s"
+            ))
+            .map_err(|e| InboxError::Memory(format!("kb source clear: {e}")))?;
+        session
+            .execute(&format!(
+                "INSERT (:KbSource {{path: '{p}', file_hash: '{h}', \
+                 extraction_fp: '{fp}', text: '{t}', indexed_at: '{ts}'}})",
+                h = gql_escape(file_hash),
+                fp = gql_escape(extraction_fp),
+                t = gql_escape(text),
+                ts = gql_escape(indexed_at),
+            ))
+            .map_err(|e| InboxError::Memory(format!("kb source insert: {e}")))?;
+        Ok(())
+    };
+
+    match run() {
+        Ok(()) => session
+            .execute("COMMIT")
+            .map(|_| ())
+            .map_err(|e| InboxError::Memory(format!("kb source commit: {e}"))),
+        Err(e) => {
+            let _ = session.execute("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
 /// KB-only recall over `:KbChunk` (never touches `:Memory`): hybrid vector+BM25,
 /// then BM25 text, then a **pure-vector cosine fallback** so semantic-only
 /// queries (cross-lingual, paraphrase, vague) still match when there is no
@@ -345,8 +424,8 @@ fn kb_node_ids_to_entries(
 #[cfg(test)]
 mod tests {
     use super::{
-        EmbeddingFingerprint, KbChunkWrite, PreparedChunk, kb_id, kb_recall_entries, memory_id,
-        reindex_chunks, upsert_kb_chunk,
+        EmbeddingFingerprint, KbChunkWrite, PreparedChunk, kb_id, kb_recall_entries,
+        kb_source_lookup, kb_source_store, memory_id, reindex_chunks, upsert_kb_chunk,
     };
     use crate::error::InboxError;
     use grafeo::GrafeoDB;
@@ -424,6 +503,74 @@ mod tests {
             .execute("MATCH (c:KbChunk {id: 'kb:org:n:v1:hh'}) RETURN c.id")
             .map_or(0, |r| r.iter().count());
         assert_eq!(n, 1, "duplicate chunk ids must collapse to one node");
+    }
+
+    #[test]
+    fn kb_source_cache_hits_only_on_matching_hash_and_fp() {
+        let db = GrafeoDB::new_in_memory();
+        kb_source_store(
+            &db,
+            "/a.pdf",
+            "hash1",
+            "shell|eng|v1|false",
+            "cached text",
+            "t0",
+        )
+        .expect("store");
+
+        // Exact match → hit.
+        assert_eq!(
+            kb_source_lookup(&db, "/a.pdf", "hash1", "shell|eng|v1|false").as_deref(),
+            Some("cached text")
+        );
+        // Changed file bytes → miss (must re-extract).
+        assert!(kb_source_lookup(&db, "/a.pdf", "hash2", "shell|eng|v1|false").is_none());
+        // Changed extractor config → miss (must re-extract).
+        assert!(kb_source_lookup(&db, "/a.pdf", "hash1", "shell|rus|v1|false").is_none());
+        // Different file → miss.
+        assert!(kb_source_lookup(&db, "/b.pdf", "hash1", "shell|eng|v1|false").is_none());
+    }
+
+    #[test]
+    fn kb_source_store_supersedes_stale_entry() {
+        let db = GrafeoDB::new_in_memory();
+        kb_source_store(&db, "/a.pdf", "h1", "fp1", "old", "t0").expect("first");
+        // Re-extract with new bytes+config → single row, new text; old gone.
+        kb_source_store(&db, "/a.pdf", "h2", "fp2", "new", "t1").expect("second");
+
+        assert_eq!(
+            kb_source_lookup(&db, "/a.pdf", "h2", "fp2").as_deref(),
+            Some("new")
+        );
+        assert!(
+            kb_source_lookup(&db, "/a.pdf", "h1", "fp1").is_none(),
+            "stale entry must not linger"
+        );
+        let rows = db
+            .session()
+            .execute("MATCH (s:KbSource {path: '/a.pdf'}) RETURN s.path")
+            .map_or(0, |r| r.iter().count());
+        assert_eq!(rows, 1, "one cache row per file");
+    }
+
+    #[test]
+    fn kb_source_lookup_is_deterministic_across_duplicate_rows() {
+        // Even if two rows for one path/hash/fp ever coexist (e.g. an interleaved
+        // concurrent put), lookup must deterministically return the newest.
+        let db = GrafeoDB::new_in_memory();
+        for (ts, text) in [("t0", "older"), ("t1", "newer")] {
+            db.session()
+                .execute(&format!(
+                    "INSERT (:KbSource {{path: '/a.pdf', file_hash: 'h', \
+                     extraction_fp: 'fp', text: '{text}', indexed_at: '{ts}'}})"
+                ))
+                .expect("insert dup");
+        }
+        assert_eq!(
+            kb_source_lookup(&db, "/a.pdf", "h", "fp").as_deref(),
+            Some("newer"),
+            "newest indexed_at must win"
+        );
     }
 
     #[test]

@@ -404,6 +404,54 @@ impl MemoryStore {
         .map_err(|e| InboxError::Memory(e.to_string()))
     }
 
+    /// Look up cached extraction **output** for an attachment file. Returns the
+    /// stored text when the canonical `path`, `file_hash`, and `extraction_fp`
+    /// all match — so the caller can re-chunk it for a new owning note without
+    /// re-running OCR. A miss (changed file or extractor config) returns `None`.
+    pub async fn kb_extract_cache_get(
+        &self,
+        canonical_path: &str,
+        file_hash: &str,
+        extraction_fp: &str,
+    ) -> Option<String> {
+        let (p, h, fp) = (
+            canonical_path.to_owned(),
+            file_hash.to_owned(),
+            extraction_fp.to_owned(),
+        );
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || kb::kb_source_lookup(&db, &p, &h, &fp))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Store extraction output for an attachment file, superseding any prior
+    /// entry for the same canonical path.
+    ///
+    /// # Errors
+    /// Returns an error if the write fails.
+    pub async fn kb_extract_cache_put(
+        &self,
+        canonical_path: &str,
+        file_hash: &str,
+        extraction_fp: &str,
+        text: &str,
+        indexed_at: &str,
+    ) -> Result<(), InboxError> {
+        let (p, h, fp, t, ts) = (
+            canonical_path.to_owned(),
+            file_hash.to_owned(),
+            extraction_fp.to_owned(),
+            text.to_owned(),
+            indexed_at.to_owned(),
+        );
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || kb::kb_source_store(&db, &p, &h, &fp, &t, &ts))
+            .await
+            .map_err(|e| InboxError::Memory(e.to_string()))?
+    }
+
     /// Test helper: create a `MemoryStore` backed by an in-memory Grafeo database.
     ///
     /// # Errors
