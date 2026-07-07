@@ -84,7 +84,7 @@ async fn index_file_reads_and_indexes_with_id() {
     .expect("write");
 
     let store = MemoryStore::new_in_memory().expect("store");
-    let n = index_file(&store, &path).await.expect("index_file");
+    let n = index_file(&store, &path, None).await.expect("index_file");
     assert!(n >= 1);
 
     let hits = store.kb_recall("gamma", 5).await.expect("kb_recall");
@@ -191,7 +191,7 @@ async fn index_directory_indexes_org_and_skips_others() {
         .expect("write hidden");
 
     let store = MemoryStore::new_in_memory().expect("store");
-    let n = index_directory(&store, dir.path())
+    let n = index_directory(&store, dir.path(), None)
         .await
         .expect("index_directory");
     assert_eq!(n, 2, "only a.org + b.org");
@@ -226,7 +226,7 @@ async fn index_directory_skips_syncthing_artifacts() {
     .expect("write conflict");
 
     let store = MemoryStore::new_in_memory().expect("store");
-    let n = index_directory(&store, dir.path())
+    let n = index_directory(&store, dir.path(), None)
         .await
         .expect("index_directory");
     assert_eq!(

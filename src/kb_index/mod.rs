@@ -4,6 +4,7 @@
 //! and the embed+store round-trip via [`MemoryStore::kb_save`].
 
 pub mod attach;
+pub mod attachments;
 pub mod chunk;
 pub mod extract;
 
@@ -16,6 +17,9 @@ use crate::memory::{MemoryStore, kb};
 
 /// Source tag for chunks indexed from the local org corpus.
 pub const ORG_SOURCE: &str = "org";
+
+/// Source tag for chunks extracted from org attachments (OCR/PDF text).
+pub const ATTACH_SOURCE: &str = "attachment";
 
 /// Extract the file-level note id: the `:ID:` **inside the top-of-file
 /// `:PROPERTIES:` drawer** (before the first heading), else the file stem. Only a
@@ -77,23 +81,33 @@ pub async fn index_content(
     store.kb_reindex(source, path, None, inputs).await
 }
 
-/// Read and index a single org file. Returns the number of chunks stored.
+/// Read and index a single org file's body chunks, plus its attachment chunks
+/// when `attach` is provided. Returns the total number of chunks stored.
 ///
 /// # Errors
-/// Returns an error if the file cannot be read or a chunk fails to store.
-pub async fn index_file(store: &MemoryStore, path: &Path) -> Result<usize, InboxError> {
+/// Returns an error if the file cannot be read or a body chunk fails to store.
+/// Attachment failures degrade to a warning (they never fail the file).
+pub async fn index_file(
+    store: &MemoryStore,
+    path: &Path,
+    attach: Option<&attachments::AttachContext>,
+) -> Result<usize, InboxError> {
     let content = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| InboxError::Memory(format!("read {}: {e}", path.display())))?;
     let note_id = extract_note_id(&content, path);
-    index_content(
+    let mut total = index_content(
         store,
         ORG_SOURCE,
         &note_id,
         &path.to_string_lossy(),
         &content,
     )
-    .await
+    .await?;
+    if let Some(ctx) = attach {
+        total += attachments::index_file_attachments(store, ctx, path, &content).await;
+    }
+    Ok(total)
 }
 
 /// Index every `*.org` file under `dir` (recursively), skipping hidden entries,
@@ -102,7 +116,11 @@ pub async fn index_file(store: &MemoryStore, path: &Path) -> Result<usize, Inbox
 ///
 /// # Errors
 /// Returns an error only if the directory cannot be scanned.
-pub async fn index_directory(store: &MemoryStore, dir: &Path) -> Result<usize, InboxError> {
+pub async fn index_directory(
+    store: &MemoryStore,
+    dir: &Path,
+    attach: Option<&attachments::AttachContext>,
+) -> Result<usize, InboxError> {
     let dir = dir.to_path_buf();
     let files = tokio::task::spawn_blocking(move || collect_org_files(&dir))
         .await
@@ -110,7 +128,7 @@ pub async fn index_directory(store: &MemoryStore, dir: &Path) -> Result<usize, I
 
     let mut total = 0;
     for path in files {
-        match index_file(store, &path).await {
+        match index_file(store, &path, attach).await {
             Ok(n) => total += n,
             Err(e) => warn!("kb_index: skipping {}: {e}", path.display()),
         }
@@ -149,7 +167,8 @@ pub async fn index_corpus(cfg: &crate::config::Config) -> Result<usize, InboxErr
         PathBuf::from,
     );
     let store = MemoryStore::open(&cfg.memory, &db_path).await?;
-    index_directory(&store, root).await
+    let attach = attachments::AttachContext::from_config(cfg);
+    index_directory(&store, root, attach.as_ref()).await
 }
 
 /// Recursively collect indexable `*.org` files, skipping hidden entries,

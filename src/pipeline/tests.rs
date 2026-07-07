@@ -30,6 +30,7 @@ pub(super) fn test_config(policy: crate::config::JsShellPolicy) -> Config {
             preprocessing: crate::config::PreprocessingConfig::default(),
             resume: crate::config::ResumeConfig::default(),
             image_analysis: crate::config::ImageAnalysisConfig::default(),
+            attachment_extract: crate::config::pipeline::AttachmentExtractConfig::default(),
             memo_tags: vec!["memo".into()],
         },
         llm: crate::test_helpers::no_llm_config(),

@@ -353,6 +353,28 @@ enabled = true
 # interface_min_chars = 24
 # Note: per-image size is capped by [llm].vision_max_bytes (default 5 MiB).
 
+# ── Attachment text extraction (OCR / PDF) for KB indexing ────────────────────
+# Extract searchable text from org attachments (scanned PDFs / images) during
+# `inbox index-kb`, indexed as `source="attachment"` chunks bound to the owning
+# entry's :ID:. Extraction OUTPUT is cached (keyed by file bytes + config), so a
+# file linked by several notes is OCR'd once.
+[pipeline.attachment_extract]
+# Enable attachment extraction during KB indexing. Default: false.
+enabled = false
+# Backend: "shell" shells out to local tesseract / pdftotext / pdftoppm.
+# backend = "shell"
+# tesseract language list. Default: "rus+jpn+eng".
+# languages = "rus+jpn+eng"
+# A digital PDF whose pdftotext output is below this many chars is treated as
+# scanned → rasterize + OCR fallback. Default: 40.
+# min_chars = 40
+# Per-subprocess timeout (seconds). Default: 120.
+# timeout_secs = 120
+# Extra attachment roots (the org-attach id-dir, e.g. ~/Sync/orgmode-attach).
+# [general].attachments_dir and [memory].kb_root are always included. Every
+# resolved file is confined to one of these roots (deny-by-default).
+# roots = ["/home/user/Sync/orgmode-attach"]
+
 # ── Syncthing ─────────────────────────────────────────────────────────────────
 
 [syncthing]

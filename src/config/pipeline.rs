@@ -14,6 +14,9 @@ pub struct PipelineConfig {
     pub resume: ResumeConfig,
     #[serde(default)]
     pub image_analysis: ImageAnalysisConfig,
+    /// Text extraction (OCR / PDF) from org attachments for KB indexing.
+    #[serde(default)]
+    pub attachment_extract: AttachmentExtractConfig,
     /// Hashtags that mark a message as a plain memo: URL fetch and the LLM
     /// enrichment call are skipped and the content is written straight to org.
     /// Image OCR still runs, so an image memo sent while vision is down is held
@@ -29,6 +32,7 @@ impl Default for PipelineConfig {
             preprocessing: PreprocessingConfig::default(),
             resume: ResumeConfig::default(),
             image_analysis: ImageAnalysisConfig::default(),
+            attachment_extract: AttachmentExtractConfig::default(),
             memo_tags: default_memo_tags(),
         }
     }
@@ -36,6 +40,65 @@ impl Default for PipelineConfig {
 
 fn default_memo_tags() -> Vec<String> {
     vec!["memo".into()]
+}
+
+// ── Attachment text extraction (OCR / PDF) ─────────────────────────────────────
+
+/// Configuration for extracting searchable text from org attachments (scanned
+/// PDFs / images) during KB indexing. The `shell` backend shells out to local
+/// `tesseract` / `pdftotext` / `pdftoppm`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AttachmentExtractConfig {
+    /// Enable attachment text extraction during KB indexing.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Extraction backend: `"shell"` (local binaries) today.
+    #[serde(default = "default_extract_backend")]
+    pub backend: String,
+    /// tesseract language list, e.g. `"rus+jpn+eng"`.
+    #[serde(default = "default_extract_languages")]
+    pub languages: String,
+    /// A digital PDF whose `pdftotext` output is below this many chars is treated
+    /// as scanned → rasterize + OCR fallback. Default: 40.
+    #[serde(default = "default_extract_min_chars")]
+    pub min_chars: usize,
+    /// Per-subprocess timeout (seconds). Default: 120.
+    #[serde(default = "default_extract_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Extra attachment root directories (e.g. the org-attach id-dir like
+    /// `~/Sync/orgmode-attach`). `attachments_dir` and `[memory].kb_root` are
+    /// always included. Every resolved file is confined to one of these roots.
+    #[serde(default)]
+    pub roots: Vec<String>,
+}
+
+impl Default for AttachmentExtractConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: default_extract_backend(),
+            languages: default_extract_languages(),
+            min_chars: default_extract_min_chars(),
+            timeout_secs: default_extract_timeout_secs(),
+            roots: Vec::new(),
+        }
+    }
+}
+
+fn default_extract_backend() -> String {
+    "shell".into()
+}
+
+fn default_extract_languages() -> String {
+    "rus+jpn+eng".into()
+}
+
+fn default_extract_min_chars() -> usize {
+    40
+}
+
+fn default_extract_timeout_secs() -> u64 {
+    120
 }
 
 // ── Image analysis ─────────────────────────────────────────────────────────────

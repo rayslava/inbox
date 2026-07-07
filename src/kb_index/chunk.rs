@@ -132,8 +132,15 @@ fn heading_level_text(line: &str) -> Option<(usize, String)> {
 /// ids are content-addressed; not cryptographic.
 #[must_use]
 pub fn stable_hash(s: &str) -> String {
+    stable_hash_bytes(s.as_bytes())
+}
+
+/// FNV-1a 64-bit hash over raw bytes (hex) — for hashing file contents (images,
+/// PDFs) where a lossy UTF-8 view would drop bytes.
+#[must_use]
+pub fn stable_hash_bytes(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.bytes() {
+    for &b in bytes {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
